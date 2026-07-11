@@ -85,9 +85,34 @@ _LATEX_ESCAPE_MAP: Dict[str, str] = {
 }
 _LATEX_ESCAPE_RE = re.compile("|".join(re.escape(k) for k in _LATEX_ESCAPE_MAP))
 
+# Common Unicode punctuation that the template's T1/Computer-Modern setup has no
+# glyphs for (tectonic's XeTeX engine silently DROPS them, corrupting both the
+# PDF and ATS text extraction). Master resumes come from PDF extraction and
+# tailored bullets mirror JD language, so curly quotes, dashes, bullets, and
+# NBSP are routine. Normalize them to ASCII/TeX equivalents BEFORE the specials
+# pass -- every replacement is an ASCII non-special, so the escape pass below
+# stays correct and engine-independent.
+_UNICODE_NORMALIZE_MAP: Dict[str, str] = {
+    "‘": "'", "’": "'", "‚": ",", "′": "'",  # single quotes / prime
+    "ʼ": "'", "´": "'", "`": "`",
+    "“": '"', "”": '"', "„": ",,", "″": '"',  # double quotes / prime
+    "–": "--", "—": "---",  # en / em dash
+    "‐": "-", "‑": "-", "‒": "-", "―": "---", "−": "-",  # hyphens / minus
+    "•": "-", "·": "-", "‧": "-",  # bullets
+    "…": "...",  # ellipsis
+    " ": " ", " ": " ", " ": " ", " ": " ",  # non-breaking / thin spaces
+    " ": " ", " ": " ", " ": " ",
+    "­": "",  # soft hyphen (invisible) -> drop
+}
+_UNICODE_TRANSLATE = {ord(k): v for k, v in _UNICODE_NORMALIZE_MAP.items()}
+
 
 def latex_escape(text: Optional[str]) -> Optional[str]:
     """Escape the ten LaTeX special characters in ``text``.
+
+    First normalizes common Unicode punctuation (curly quotes, en/em dashes,
+    bullets, ellipsis, NBSP) to ASCII/TeX equivalents so the T1-encoded engine
+    does not silently drop glyphs it cannot render.
 
     ``None`` passes through as ``None`` so callers can distinguish "absent" from
     "empty" and guard optional fields. Non-string values are coerced with
@@ -95,7 +120,8 @@ def latex_escape(text: Optional[str]) -> Optional[str]:
     """
     if text is None:
         return None
-    return _LATEX_ESCAPE_RE.sub(lambda m: _LATEX_ESCAPE_MAP[m.group()], str(text))
+    normalized = str(text).translate(_UNICODE_TRANSLATE)
+    return _LATEX_ESCAPE_RE.sub(lambda m: _LATEX_ESCAPE_MAP[m.group()], normalized)
 
 
 def _esc(value: Any) -> Optional[str]:
@@ -221,11 +247,26 @@ def _project_ctx(projects: Optional[List[Project]]) -> List[Dict[str, Any]]:
     ctx: List[Dict[str, Any]] = []
     for p in projects or []:
         tech = p.technologies or p.skills
+        name = _esc(p.name)
+        tech_line = _join_escaped(tech, ", ")
+        url = _esc(p.url)
+        # Pre-join the heading from only the pieces that are present (same
+        # pattern as _contact_line) so the ``$|$`` separator never dangles when
+        # a project has no name but does carry technologies or a URL.
+        pieces: List[str] = []
+        if name:
+            pieces.append(r"\textbf{" + name + "}")
+        if tech_line:
+            pieces.append(r"\emph{" + tech_line + "}")
+        if url:
+            pieces.append(url)
+        heading = " $|$ ".join(pieces) if pieces else None
         ctx.append(
             {
-                "name": _esc(p.name),
-                "tech_line": _join_escaped(tech, ", "),
-                "url": _esc(p.url),
+                "name": name,
+                "tech_line": tech_line,
+                "url": url,
+                "heading": heading,
                 "dates": _date_range(p.startDate, p.endDate),
                 "highlights": _esc_list(p.highlights),
             }
@@ -277,8 +318,13 @@ class RenderResult:
     pdf: Optional[Path] = None
 
 
-def _compile_pdf(tex_path: Path, out_dir: Path) -> Path:
-    """Compile ``tex_path`` to PDF with ``tectonic``; raise on missing binary/failure."""
+def ensure_tectonic() -> str:
+    """Return the ``tectonic`` executable path, or raise an actionable RenderError.
+
+    Exposed so callers (e.g. the orchestrator's preflight) can fail fast BEFORE
+    spending paced LLM calls when PDF output is requested on a machine without
+    tectonic, instead of discovering it only at compile time.
+    """
     exe = shutil.which("tectonic")
     if exe is None:
         raise RenderError(
@@ -287,6 +333,12 @@ def _compile_pdf(tex_path: Path, out_dir: Path) -> Path:
             "https://tectonic-typesetting.github.io/en-US/install.html), or pass "
             "compile_pdf=False (CLI: --no-pdf) to write only the .tex source."
         )
+    return exe
+
+
+def _compile_pdf(tex_path: Path, out_dir: Path) -> Path:
+    """Compile ``tex_path`` to PDF with ``tectonic``; raise on missing binary/failure."""
+    exe = ensure_tectonic()
     proc = subprocess.run(
         [exe, tex_path.name],
         cwd=str(out_dir),
@@ -446,7 +498,8 @@ def _short(text: Optional[str], limit: int = 32) -> str:
 # returning on the first tier with a candidate:
 #   (a) work bullets beyond 2 per position
 #   (b) whole projects beyond 2
-#   (c) skill groups
+#   (c) skill groups (keeping at least one -- skills are the densest keyword
+#       carrier, so the Technical Skills section is never zeroed out here)
 #   (d) oldest low-relevance position's remaining bullets down to 1
 #   (e) whole lowest-relevance position
 # Education and the header/basics are never trimmed. Ties are broken by recency
@@ -485,8 +538,13 @@ def _trim_tier_b(sr: ScoredResume, projects: List[ScoredProject]) -> Optional[st
 
 
 def _trim_tier_c(sr: ScoredResume, skills: List[ScoredSkill]) -> Optional[str]:
-    """(c) Drop the lowest-relevance skill group."""
-    if not skills:
+    """(c) Drop the lowest-relevance skill group, keeping at least one.
+
+    Skills are the resume's densest keyword carrier (1 line per group), so we
+    never zero out the whole Technical Skills section here — tiers (d)/(e) absorb
+    any further overflow from work bullets/positions at better keyword economy.
+    """
+    if len(skills) <= 1:
         return None
     idx = min(range(len(skills)), key=lambda i: (skills[i].relevance, i))
     dropped = skills.pop(idx)

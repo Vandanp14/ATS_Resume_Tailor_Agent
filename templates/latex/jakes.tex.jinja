@@ -126,7 +126,7 @@
   \resumeSubHeadingListStart
   \BLOCK{ for p in projects }
     \resumeProjectHeading
-      {\textbf{\VAR{ p.name or '' }}\BLOCK{ if p.tech_line } $|$ \emph{\VAR{ p.tech_line }}\BLOCK{ endif }\BLOCK{ if p.url } $|$ \VAR{ p.url }\BLOCK{ endif }}{\VAR{ p.dates or '' }}
+      {\VAR{ p.heading or '' }}{\VAR{ p.dates or '' }}
       \BLOCK{ if p.highlights }
       \resumeItemListStart
         \BLOCK{ for h in p.highlights }
