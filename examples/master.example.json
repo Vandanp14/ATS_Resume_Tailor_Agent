@@ -1,0 +1,188 @@
+{
+  "basics": {
+    "name": "Jordan Alvarez",
+    "email": "jordan.alvarez.dev@gmail.com",
+    "phone": "+1 (720) 555-0193",
+    "url": "https://jordanalvarez.dev",
+    "summary": "Software engineer with 6 years of experience building and operating backend services and data-heavy web applications. Strongest in Python and TypeScript; comfortable owning features end to end from Postgres schema to React UI. Regular open-source contributor (Apache Airflow, published PyPI provider package).",
+    "location": {
+      "city": "Denver",
+      "region": "Colorado",
+      "countryCode": "US"
+    },
+    "profiles": [
+      {
+        "network": "GitHub",
+        "username": "jordanalvarez-dev",
+        "url": "https://github.com/jordanalvarez-dev"
+      },
+      {
+        "network": "LinkedIn",
+        "username": "jordan-alvarez-dev",
+        "url": "https://www.linkedin.com/in/jordan-alvarez-dev"
+      }
+    ]
+  },
+  "work": [
+    {
+      "name": "Brightline Health",
+      "position": "Senior Software Engineer",
+      "url": "https://www.brightlinehealth.example.com",
+      "startDate": "2023-06",
+      "summary": "Series-B health-tech startup (~40 engineers); care-coordination platform team.",
+      "highlights": [
+        "Designed and built the appointment-scheduling service (Python, FastAPI, PostgreSQL) handling 25k bookings/day across 3 clinic networks; p95 latency held under 120 ms",
+        "Cut the nightly claims-reconciliation batch from 4.5 h to 40 min by replacing row-by-row ORM processing with set-based SQL and a Redis-backed dedupe cache",
+        "Led migration of 7 services from EC2-hosted Docker Compose to AWS ECS Fargate with blue/green deploys via GitHub Actions, eliminating deploy-window downtime",
+        "On-call owner for the scheduling domain; wrote the team's incident-response runbook and drove MTTR from ~90 min to ~25 min over two quarters",
+        "Mentored two junior engineers through their first production feature launches; ran weekly design-review sessions for the platform team"
+      ]
+    },
+    {
+      "name": "Corvid Analytics",
+      "position": "Software Engineer",
+      "url": "https://www.corvidanalytics.example.com",
+      "startDate": "2021-02",
+      "endDate": "2023-05",
+      "summary": "B2B analytics SaaS; full-stack work on the customer-facing reporting product.",
+      "highlights": [
+        "Built the self-serve report builder (React, TypeScript, Redux) used by 300+ customer accounts; reduced support tickets for custom reports by 60%",
+        "Implemented a Kafka-based event ingestion pipeline (Python consumers, Avro schemas) processing ~50M events/day into a Postgres + S3 warehouse",
+        "Contributed upstream to Apache Airflow: 3 merged PRs including a fix for a sensor deadlock under high parallelism (apache/airflow#28xxx) and provider documentation improvements",
+        "Introduced contract tests between the ingestion API and consumers (pytest, schemathesis), catching 4 breaking changes before production in the first quarter",
+        "Containerized the legacy report-rendering service and moved CI from Jenkins to GitHub Actions, cutting median pipeline time from 22 min to 9 min"
+      ]
+    },
+    {
+      "name": "Riverbend Software",
+      "position": "Software Developer",
+      "url": "https://www.riverbendsoftware.example.com",
+      "startDate": "2019-07",
+      "endDate": "2021-01",
+      "summary": "Consultancy building custom web applications for logistics and local-government clients.",
+      "highlights": [
+        "Developed a Django + PostgreSQL fleet-maintenance system for a regional logistics client, digitizing a paper process for 120 vehicles and 3 depots",
+        "Built REST APIs (Django REST Framework) with role-based access control consumed by web and mobile clients",
+        "Raised test coverage on the firm's shared Django starter kit from 30% to 85% and made it the default for new client projects"
+      ]
+    }
+  ],
+  "education": [
+    {
+      "institution": "University of Colorado Boulder",
+      "url": "https://www.colorado.edu",
+      "area": "Computer Science",
+      "studyType": "Bachelor of Science",
+      "startDate": "2015-08",
+      "endDate": "2019-05",
+      "score": "3.7/4.0",
+      "courses": [
+        "Databases",
+        "Distributed Systems",
+        "Operating Systems",
+        "Algorithms",
+        "Software Engineering Methods"
+      ]
+    }
+  ],
+  "skills": [
+    {
+      "name": "Languages",
+      "level": "Advanced",
+      "keywords": ["Python", "TypeScript", "JavaScript", "SQL", "Go (basic)"]
+    },
+    {
+      "name": "Backend",
+      "level": "Advanced",
+      "keywords": [
+        "FastAPI",
+        "Django",
+        "Django REST Framework",
+        "Node.js",
+        "REST API design",
+        "Celery"
+      ]
+    },
+    {
+      "name": "Frontend",
+      "level": "Intermediate",
+      "keywords": ["React", "Next.js", "Redux", "Tailwind CSS"]
+    },
+    {
+      "name": "Data & Infrastructure",
+      "level": "Advanced",
+      "keywords": [
+        "PostgreSQL",
+        "Redis",
+        "Kafka",
+        "Docker",
+        "AWS (ECS, S3, Lambda, RDS)",
+        "GitHub Actions",
+        "Terraform (basic)"
+      ]
+    },
+    {
+      "name": "Testing & Quality",
+      "level": "Advanced",
+      "keywords": ["pytest", "Playwright", "schemathesis", "contract testing"]
+    }
+  ],
+  "projects": [
+    {
+      "name": "Ledgerline",
+      "startDate": "2022-03",
+      "description": "Self-hosted personal-finance tracker with bank-CSV import, rule-based categorization, and monthly trend dashboards.",
+      "highlights": [
+        "Live at https://ledgerline.app with ~400 monthly active users",
+        "FastAPI backend, React/TypeScript frontend, PostgreSQL; deployed on a single VPS with Docker Compose and Caddy",
+        "Rule engine supports user-defined categorization with regex and amount predicates; 95% of transactions auto-categorized for typical users"
+      ],
+      "url": "https://github.com/jordanalvarez-dev/ledgerline",
+      "technologies": ["Python", "FastAPI", "React", "TypeScript", "PostgreSQL", "Docker"]
+    },
+    {
+      "name": "pgstream-watch",
+      "startDate": "2023-01",
+      "description": "Change-data-capture CLI that tails PostgreSQL logical replication slots and streams row changes to webhooks or Kafka topics.",
+      "highlights": [
+        "Handles slot lag monitoring, at-least-once delivery with local WAL checkpointing, and schema-change detection",
+        "Used in production by two small teams (per GitHub issues); 210+ stars"
+      ],
+      "url": "https://github.com/jordanalvarez-dev/pgstream-watch",
+      "technologies": ["Python", "PostgreSQL", "Kafka", "asyncio"]
+    },
+    {
+      "name": "SketchSync",
+      "startDate": "2021-09",
+      "endDate": "2022-02",
+      "description": "Real-time collaborative whiteboard: multiple cursors, shape editing, and offline merge via CRDTs (Yjs) over WebSockets.",
+      "highlights": [
+        "Custom WebSocket presence layer with room-based fan-out; tested to 50 concurrent editors per room",
+        "Conflict-free offline editing using Yjs document snapshots persisted to Postgres"
+      ],
+      "url": "https://github.com/jordanalvarez-dev/sketchsync",
+      "technologies": ["TypeScript", "Node.js", "WebSockets", "Yjs", "React"]
+    },
+    {
+      "name": "airflow-provider-clickhouse",
+      "startDate": "2022-08",
+      "description": "Open-source Apache Airflow provider package for ClickHouse: hooks, operators, and a bulk-load transfer operator. Published to PyPI.",
+      "highlights": [
+        "4k+ downloads/month on PyPI; maintained through three Airflow minor-version releases",
+        "Merged community PRs from 6 external contributors; CI matrix across Airflow 2.6-2.9"
+      ],
+      "url": "https://github.com/jordanalvarez-dev/airflow-provider-clickhouse",
+      "technologies": ["Python", "Apache Airflow", "ClickHouse", "GitHub Actions"]
+    },
+    {
+      "name": "loadshed",
+      "startDate": "2024-02",
+      "description": "Small Go middleware library for adaptive load shedding in HTTP services, based on tail-latency signals instead of fixed rate limits.",
+      "highlights": [
+        "Implements the CoDel-inspired queue-delay heuristic; benchmarked against fixed token buckets under bursty load"
+      ],
+      "url": "https://github.com/jordanalvarez-dev/loadshed",
+      "technologies": ["Go", "HTTP middleware"]
+    }
+  ]
+}

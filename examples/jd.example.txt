@@ -1,0 +1,42 @@
+Senior Backend Engineer — Platform Team
+Nimbus Freight Technologies | Denver, CO (hybrid) or Remote (US)
+
+About us
+Nimbus builds the operating system for mid-size freight brokers: quoting,
+load tracking, and settlement in one platform. We process events from
+40,000+ trucks daily and are growing the platform team that owns our core
+services and data pipeline.
+
+What you'll do
+- Design, build, and operate Python backend services that power quoting and
+  real-time load tracking (FastAPI/Flask-class frameworks, PostgreSQL)
+- Own services end to end: schema design, API contracts, deployment,
+  observability, and on-call
+- Evolve our event pipeline (Kafka) that fans tracking updates out to
+  customer webhooks and internal consumers
+- Migrate services from our legacy VM setup onto Kubernetes (EKS); improve
+  deploy safety and rollout automation
+- Extend our public GraphQL API used by customer integrations
+- Review code, mentor mid-level engineers, and contribute to architecture
+  decisions across the platform group
+
+Must-haves
+- 5+ years of professional software engineering experience
+- Strong Python in production (we use FastAPI; Django/Flask fine)
+- Deep PostgreSQL experience: schema design, query optimization, and
+  operating databases under real load
+- Production experience on AWS
+- Hands-on experience with Kubernetes in production
+- Experience designing and versioning GraphQL APIs
+- CI/CD ownership (we use GitHub Actions)
+
+Nice-to-haves
+- Kafka or another event-streaming system at scale
+- Terraform / infrastructure-as-code
+- React/TypeScript comfort (we're backend-heavy but full-stack-friendly)
+- Open-source involvement — we sponsor maintainers and love upstream work
+- Logistics, marketplace, or other high-throughput operational domain
+  experience
+
+Compensation: $165k-$205k base + equity, depending on level and location.
+Nimbus is an equal opportunity employer.
