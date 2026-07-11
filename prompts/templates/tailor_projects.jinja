@@ -30,7 +30,7 @@ Return ONLY a JSON object with this structure:
       "highlights": ["Plain-string bullet", "..."],
       "url": "The project's GitHub/live link from the master, or null",
       "technologies": ["Tech from the master", "..."],
-      "skills": null,
+      "skills": "The master project's skills/stack list if it uses `skills` instead of `technologies`, else null",
       "relevance": "integer 0-100, how relevant this project is to the target job"
     }
   ]
@@ -44,6 +44,11 @@ Return ONLY a JSON object with this structure:
   does not state.
 - `url` is copied from the master exactly, or `null`. NEVER invent a link to make
   a project look stronger, and never drop a real link that the master provides.
+- `technologies` and `skills` both come from the master. Keep whichever the master
+  used to list the project's stack — if the master states a project's stack under
+  `skills`, copy it to `skills` (do not null it out just because the examples
+  below have no skills). Only set `skills` to `null` when the master project has no
+  skills field.
 - Order projects by `relevance` (integer 0-100), highest first. Rank genuine
   open-source contributions to other people's projects and complex/impactful work
   above tutorial-grade projects.
@@ -73,7 +78,7 @@ figure is in the master, so it survives — no new metric was invented:
       "endDate": null,
       "description": "Contributed batching and retry improvements to the kafka-python client library, merged upstream, strengthening reliability of distributed message processing.",
       "highlights": [
-        "Merged 6 pull requests improving consumer retry logic upstream.",
+        "Merged 6 pull requests improving retry logic upstream.",
         "Added integration tests covering the batching path."
       ],
       "url": "https://github.com/dpkp/kafka-python/pulls?q=author:jdoe",
@@ -86,7 +91,7 @@ figure is in the master, so it survives — no new metric was invented:
       "startDate": null,
       "endDate": null,
       "description": "A simple task tracker built while learning React.",
-      "highlights": ["CRUD task list with local-storage persistence."],
+      "highlights": ["Task tracker built while learning React."],
       "url": null,
       "technologies": ["React"],
       "skills": null,

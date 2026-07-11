@@ -59,17 +59,25 @@ relevance score is invalid output.
 Target job: Backend Engineer; must-haves Python, PostgreSQL, REST APIs, AWS; top
 keywords "distributed systems" (5), "payment processing" (5).
 
-Master work entry:
+Master work entry (as it arrives at runtime — a JSON dump, not prose):
 """
-Acme Payments — Software Engineer — Mar 2021 to Present
-- Worked on the billing service and helped migrate it to AWS.
-- Built internal REST APIs used by other teams.
-- Fixed performance problems in our Postgres database.
+{
+  "name": "Acme Payments",
+  "position": "Software Engineer",
+  "startDate": "2021-03",
+  "highlights": [
+    "Worked on the billing service and helped migrate it to AWS.",
+    "Built internal REST APIs used by other teams.",
+    "Fixed performance problems in our Postgres database."
+  ]
+}
 """
 
 Correct output. Note carefully:
-- Employer "Acme Payments", title "Software Engineer", and dates ("2021-03",
-  ongoing → `null`) are copied VERBATIM.
+- Employer "Acme Payments", title "Software Engineer", and the dates are copied
+  VERBATIM: `startDate` stays "2021-03" byte-for-byte, and because the master
+  has no `endDate` the output keeps it `null`. Dates are never reformatted —
+  copy exactly what the master JSON holds.
 - "migrate it to AWS" is in the master, so AWS stays. No metric was invented
   (there is no "reduced latency by 30%").
 - "Postgres" is rendered as "PostgreSQL" — the SAME technology in the JD's spelling.
