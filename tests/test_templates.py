@@ -111,15 +111,25 @@ TEMPLATE_SPECS = {
     "system_message": ({"stage": "work tailor"}, None),
 }
 
-# Templates that MUST include the shared truth-floor / ATS-rubric partial.
-TAILORING_TEMPLATES = [
+# Templates that MUST include the shared truth-floor partial (neutral policy
+# voice): the four section tailors AND the scorer/auditor.
+TRUTH_FLOOR_TEMPLATES = [
     "tailor_summary",
     "tailor_skills",
     "tailor_work",
     "tailor_projects",
     "match_score",
 ]
-# Templates that must NOT include it (no master facts to protect / not tailoring).
+# Templates that carry the second-person ATS-rubric *pressure* — the tailors
+# only. The scorer must NOT get these imperatives (they would bias the audit).
+ATS_PRESSURE_TEMPLATES = [
+    "tailor_summary",
+    "tailor_skills",
+    "tailor_work",
+    "tailor_projects",
+]
+# Templates that must NOT include any tailoring partial (no master facts to
+# protect / not tailoring).
 NON_PARTIAL_TEMPLATES = ["jd_parse", "system_message"]
 
 
@@ -231,8 +241,8 @@ def test_tailor_work_example_uses_object_bullets_and_preserves_facts(tm):
     # Employer / title / dates preserved verbatim from the master excerpt.
     assert entry.name == "Acme Payments"
     assert entry.position == "Software Engineer"
-    assert entry.startDate == "2021-03"
-    assert entry.endDate is None  # "Present" -> null
+    assert entry.startDate == "2021-03"  # copied verbatim from the JSON master
+    assert entry.endDate is None  # master has no endDate -> stays null
     # highlights are ScoredBullet OBJECTS with text + relevance, not bare strings.
     assert entry.highlights and all(b.text and 0 <= b.relevance <= 100 for b in entry.highlights)
     joined = " ".join(b.text for b in entry.highlights)
@@ -279,14 +289,30 @@ def test_match_score_example_detects_one_truth_violation(tm):
 # --- shared partial is included once, and only where it belongs --------------
 
 
-@pytest.mark.parametrize("name", TAILORING_TEMPLATES)
-def test_partial_included_exactly_once(tm: TemplateManager, name: str):
+@pytest.mark.parametrize("name", TRUTH_FLOOR_TEMPLATES)
+def test_truth_floor_included_exactly_once(tm: TemplateManager, name: str):
     rendered = _render(tm, name)
     assert rendered.count(PARTIAL_MARKER) == 1, (
         f"{name} must include the truth-floor partial exactly once"
     )
-    # And the ATS-rubric pressure rides along with the truth floor.
+
+
+@pytest.mark.parametrize("name", ATS_PRESSURE_TEMPLATES)
+def test_ats_pressure_rides_along_with_the_tailors(tm: TemplateManager, name: str):
+    rendered = _render(tm, name)
     assert PARTIAL_ATS_MARKER in rendered
+
+
+def test_match_score_gets_truth_floor_but_not_tailoring_imperatives(tm: TemplateManager):
+    # The scorer is an auditor: it needs the truth-floor RULES to check against,
+    # but must NOT be handed the second-person "you are the tailor, rewrite
+    # aggressively / bias toward what the evaluator rewards" imperatives, which
+    # would soften the audit (finding 14).
+    rendered = _render(tm, "match_score")
+    assert PARTIAL_MARKER in rendered  # truth floor present (incl. GSSoC≠GSoC rule)
+    assert PARTIAL_ATS_MARKER not in rendered  # ATS pressure NOT present
+    assert "Rewrite aggressively" not in rendered
+    assert "bias selection, ordering, and emphasis" not in rendered
 
 
 @pytest.mark.parametrize("name", NON_PARTIAL_TEMPLATES)

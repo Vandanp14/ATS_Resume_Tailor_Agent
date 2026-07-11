@@ -231,6 +231,8 @@ def _run(
     monkeypatch.setattr(tailor, "call_llm_with_retry", stub)
     monkeypatch.setattr(tailor, "_render_resume", render_mock)
     monkeypatch.setattr(tailor, "_fit_to_one_page", fit_mock)
+    # PDF-path unit tests don't need a real toolchain: no-op the tectonic preflight.
+    monkeypatch.setattr(tailor, "_ensure_tectonic", lambda: None)
 
     pipeline = tailor.TailorPipeline(
         model="gemini-3.1-flash-lite",
@@ -393,25 +395,67 @@ def test_education_passthrough_byte_identical(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_pacer_sleeps_between_calls(monkeypatch, tmp_path):
+class _FlakyProvider:
+    """Fake provider whose ``chat`` returns queued raw payloads in order."""
+
+    def __init__(self, payloads):
+        self._payloads = list(payloads)
+        self.calls = 0
+
+    def chat(self, **kwargs):
+        self.calls += 1
+        content = self._payloads[min(self.calls - 1, len(self._payloads) - 1)]
+        return {"message": {"role": "assistant", "content": content}}
+
+
+def test_paced_provider_gates_every_request(monkeypatch):
+    # The pacer sits at the provider seam: the first request is free, each
+    # subsequent one sleeps for the min-interval shortfall.
     sleep_mock = MagicMock()
     monkeypatch.setattr(tailor.time, "sleep", sleep_mock)
 
-    out = tmp_path / "out"
-    _run(monkeypatch, out, [_good_report()], no_pdf=True, call_interval=4.5)
+    inner = _FlakyProvider(['{"summary": "ok"}'])
+    paced = tailor._PacedProvider(inner, tailor.RatePacer(4.5))
+    for _ in range(3):
+        paced.chat(model="m", messages=[])
 
-    # 6 LLM calls -> the first is free, the other 5 are spaced by a sleep.
-    assert sleep_mock.call_count == 5
+    assert inner.calls == 3
+    assert sleep_mock.call_count == 2  # first free, next two spaced
     for call in sleep_mock.call_args_list:
         assert call.args[0] == pytest.approx(4.5, abs=0.5)
 
 
-def test_pacer_disabled_when_interval_zero(monkeypatch, tmp_path):
+def test_paced_provider_paces_retries_inside_call_llm_with_retry(monkeypatch):
+    # Finding 5: call_llm_with_retry fires correction retries back-to-back; with
+    # pacing at the provider seam, EACH physical request is throttled — not just
+    # the first request of the invocation.
     sleep_mock = MagicMock()
     monkeypatch.setattr(tailor.time, "sleep", sleep_mock)
 
-    out = tmp_path / "out"
-    _run(monkeypatch, out, [_good_report()], no_pdf=True, call_interval=0.0)
+    # First response is invalid JSON (forces one retry), second is valid.
+    inner = _FlakyProvider(["not json at all", '{"summary": "recovered"}'])
+    paced = tailor._PacedProvider(inner, tailor.RatePacer(4.5))
+
+    result = tailor.call_llm_with_retry(
+        paced,
+        "m",
+        messages=[{"role": "user", "content": "x"}],
+        response_model=TailoredSummary,
+    )
+
+    assert result.summary == "recovered"
+    assert inner.calls == 2  # original + one correction retry
+    assert sleep_mock.call_count == 1  # first request free, the retry is paced
+
+
+def test_paced_provider_disabled_when_interval_zero(monkeypatch):
+    sleep_mock = MagicMock()
+    monkeypatch.setattr(tailor.time, "sleep", sleep_mock)
+
+    inner = _FlakyProvider(['{"summary": "ok"}'])
+    paced = tailor._PacedProvider(inner, tailor.RatePacer(0.0))
+    for _ in range(3):
+        paced.chat(model="m", messages=[])
 
     sleep_mock.assert_not_called()
 
@@ -519,3 +563,233 @@ def test_batch_mid_batch_resource_exhausted_exits_75(monkeypatch, tmp_path, caps
     assert "wait and re-run" in err
     assert "01" in err  # completed list
     assert "02" in err and "03" in err  # remaining list
+
+
+# ---------------------------------------------------------------------------
+# Truth-violation re-run guarantee + loose section-name matching
+# ---------------------------------------------------------------------------
+
+
+def _run_master(monkeypatch, out, master_dict, reports, *, no_pdf=True):
+    """Run one pipeline over a custom master; returns (rc, stub)."""
+    stub = LLMStub(reports)
+    monkeypatch.setattr(tailor, "call_llm_with_retry", stub)
+    monkeypatch.setattr(tailor, "_render_resume", MagicMock())
+    monkeypatch.setattr(
+        tailor,
+        "_fit_to_one_page",
+        MagicMock(return_value=JSONResume.model_validate(master_dict)),
+    )
+    monkeypatch.setattr(tailor, "_ensure_tectonic", lambda: None)
+    pipeline = tailor.TailorPipeline(
+        model="gemini-3.1-flash-lite", call_interval=0.0, provider=MagicMock()
+    )
+    rc = pipeline.run(
+        JSONResume.model_validate(master_dict),
+        "Hiring a Backend Engineer.",
+        out,
+        no_pdf=no_pdf,
+    )
+    return rc, stub
+
+
+def _high_cov_violation(section="work"):
+    return MatchReport(
+        coverage_pct=95.0,  # ABOVE threshold — only the violation should drive a re-run
+        missing_must_haves=[],
+        weak_sections=[],
+        truth_violations=[
+            TruthViolation(
+                section=section,
+                claim="Led a team of 8 engineers",
+                reason="The master lists this role as an individual contributor.",
+            )
+        ],
+    )
+
+
+def test_truth_violation_with_passing_coverage_still_triggers_rerun(
+    monkeypatch, tmp_path
+):
+    # Mutation-killer for `or bool(report.truth_violations)` in _needs_rerun:
+    # coverage 95 >= 80, but a violation must still force the corrective re-run.
+    out = tmp_path / "out"
+    rc, stub, render_mock, _ = _run(
+        monkeypatch, out, [_high_cov_violation(), _good_report()], no_pdf=True
+    )
+    assert rc == 0  # the mandated re-run cleared the violation
+    assert stub.count(TailoredWork) == 2  # offending section re-tailored once
+    assert "Led a team of 8 engineers" in stub.calls_for(TailoredWork)[1]["user"]
+    for model in (TailoredSummary, TailoredSkills, TailoredProjects):
+        assert stub.count(model) == 1  # only the offending section re-ran
+    render_mock.assert_called_once()
+
+
+def test_noncanonical_violation_section_maps_and_reruns(monkeypatch, tmp_path):
+    # A weak scorer names the section loosely ("Work Experience"); it must still
+    # map to `work` and re-run rather than silently aborting with exit 1.
+    out = tmp_path / "out"
+    rc, stub, render_mock, _ = _run(
+        monkeypatch,
+        out,
+        [_high_cov_violation(section="Work Experience"), _good_report()],
+        no_pdf=True,
+    )
+    assert rc == 0
+    assert stub.count(TailoredWork) == 2
+    assert "Led a team of 8 engineers" in stub.calls_for(TailoredWork)[1]["user"]
+
+
+def test_unmappable_violation_section_reruns_all_sections(monkeypatch, tmp_path):
+    # A violation whose section maps to nothing tailorable must NOT dead-end:
+    # fall back to re-running every tailorable section (violation named in each).
+    out = tmp_path / "out"
+    report = MatchReport(
+        coverage_pct=95.0,
+        missing_must_haves=[],
+        weak_sections=[],
+        truth_violations=[
+            TruthViolation(
+                section="entire resume body",
+                claim="Fabricated award",
+                reason="not present in the master",
+            )
+        ],
+    )
+    rc, stub, _, _ = _run(monkeypatch, out, [report, _good_report()], no_pdf=True)
+    assert rc == 0
+    for model in (TailoredSummary, TailoredSkills, TailoredWork, TailoredProjects):
+        assert stub.count(model) == 2  # all re-run under the fallback
+    assert "Fabricated award" in stub.calls_for(TailoredWork)[1]["user"]
+
+
+def test_truth_violation_clears_prior_success_artifacts(monkeypatch, tmp_path):
+    # Success then failure into the SAME dir: the stale resume must be cleared so
+    # the directory state matches the "No resume was written" message.
+    out = tmp_path / "out"
+    _run(monkeypatch, out, [_good_report()], no_pdf=True)
+    assert (out / "tailored.json").is_file()
+
+    rc, _, _, _ = _run(
+        monkeypatch, out, [_violation_report(), _violation_report()], no_pdf=True
+    )
+    assert rc == 1
+    assert not (out / "tailored.json").exists()  # stale artifact removed
+    assert (out / "match_report.json").is_file()  # diagnostic remains
+
+
+# ---------------------------------------------------------------------------
+# Passthrough sections + empty-section short-circuit
+# ---------------------------------------------------------------------------
+
+
+def test_passthrough_sections_survive_to_tailored_json(monkeypatch, tmp_path):
+    master = dict(MASTER)
+    master["awards"] = [{"title": "Google Summer of Code 2023"}]
+    master["certificates"] = [{"name": "AWS Solutions Architect"}]
+    out = tmp_path / "out"
+    rc, _ = _run_master(monkeypatch, out, master, [_good_report()])
+    assert rc == 0
+    tailored = json.loads((out / "tailored.json").read_text())
+    assert tailored["awards"] == [{"title": "Google Summer of Code 2023"}]
+    assert tailored["certificates"] == [{"name": "AWS Solutions Architect"}]
+
+
+def test_empty_master_sections_skip_llm_calls(monkeypatch, tmp_path):
+    master = {
+        "basics": {"name": "New Grad", "summary": "Recent CS graduate."},
+        "education": [{"institution": "State U", "area": "CS", "studyType": "BS"}],
+        "skills": [{"name": "Languages", "keywords": ["Python"]}],
+        # no work, no projects
+    }
+    out = tmp_path / "out"
+    rc, stub = _run_master(monkeypatch, out, master, [_good_report()])
+    assert rc == 0
+    assert stub.count(TailoredWork) == 0  # empty slice -> no LLM call
+    assert stub.count(TailoredProjects) == 0
+    assert stub.count(TailoredSummary) == 1
+    assert stub.count(TailoredSkills) == 1
+    tailored = json.loads((out / "tailored.json").read_text())
+    assert "work" not in tailored and "projects" not in tailored
+
+
+# ---------------------------------------------------------------------------
+# Batch: failure exit code, RenderError isolation, stale-.done under --force
+# ---------------------------------------------------------------------------
+
+
+def test_batch_returns_nonzero_when_a_jd_fails(monkeypatch, tmp_path):
+    master_path, jd_dir, out_dir = _write_batch_fixture(
+        tmp_path, {"01": "JD one Python"}
+    )
+    monkeypatch.setattr(tailor, "_render_resume", MagicMock())
+    stub = LLMStub([_violation_report(), _violation_report()])
+    monkeypatch.setattr(tailor, "call_llm_with_retry", stub)
+
+    rc = tailor.main(_batch_argv(master_path, jd_dir, out_dir))
+    assert rc == 1  # a failed JD makes the batch non-zero (scriptable)
+    assert not (out_dir / "01" / ".done").exists()
+    assert (out_dir / "01" / "match_report.json").is_file()
+
+
+def test_batch_render_error_is_isolated_per_jd(monkeypatch, tmp_path):
+    master_path, jd_dir, out_dir = _write_batch_fixture(
+        tmp_path, {"01": "JD one", "02": "JD two", "03": "JD three"}
+    )
+    monkeypatch.setattr(tailor, "call_llm_with_retry", LLMStub([_good_report()]))
+    monkeypatch.setattr(tailor, "_render_resume", MagicMock())
+    monkeypatch.setattr(tailor, "_ensure_tectonic", lambda: None)
+
+    def fit(scored, od):
+        if od.name == "02":
+            raise tailor.RenderError(
+                "Exceeded the one-page fit cap of 25 trim iterations"
+            )
+        return _master()
+
+    monkeypatch.setattr(tailor, "_fit_to_one_page", fit)
+
+    # PDF mode (no --no-pdf) so the fit loop runs; preflight is stubbed above.
+    argv = [
+        "batch",
+        "--master",
+        str(master_path),
+        "--jd-dir",
+        str(jd_dir),
+        "--out-dir",
+        str(out_dir),
+        "--call-interval",
+        "0",
+    ]
+    rc = tailor.main(argv)
+    assert rc == 1  # 02 failed
+    assert (out_dir / "01" / ".done").is_file()
+    assert (out_dir / "03" / ".done").is_file()  # 03 reached despite 02's failure
+    assert not (out_dir / "02" / ".done").exists()
+    assert (out_dir / "02" / "tailored.json").is_file()  # 02's LLM work persisted
+
+
+def test_batch_force_failure_clears_stale_done_and_allows_retry(monkeypatch, tmp_path):
+    master_path, jd_dir, out_dir = _write_batch_fixture(
+        tmp_path, {"01": "JD one Python"}
+    )
+    monkeypatch.setattr(tailor, "_render_resume", MagicMock())
+
+    ok = LLMStub([_good_report()])
+    monkeypatch.setattr(tailor, "call_llm_with_retry", ok)
+    assert tailor.main(_batch_argv(master_path, jd_dir, out_dir)) == 0
+    assert (out_dir / "01" / ".done").is_file()
+
+    # --force re-run that now fails the truth floor.
+    bad = LLMStub([_violation_report(), _violation_report()])
+    monkeypatch.setattr(tailor, "call_llm_with_retry", bad)
+    assert tailor.main(_batch_argv(master_path, jd_dir, out_dir, "--force")) == 1
+    assert not (out_dir / "01" / ".done").exists()  # stale marker invalidated
+    assert not (out_dir / "01" / "tailored.json").exists()  # stale resume cleared
+
+    # The documented recovery (plain re-run) must RE-PROCESS 01, not skip it.
+    retry = LLMStub([_good_report()])
+    monkeypatch.setattr(tailor, "call_llm_with_retry", retry)
+    assert tailor.main(_batch_argv(master_path, jd_dir, out_dir)) == 0
+    assert len(retry.calls) > 0  # re-processed, not masked as done
+    assert (out_dir / "01" / ".done").is_file()

@@ -146,6 +146,13 @@ completed and which remain, and exits with code 75 (`EX_TEMPFAIL`):
 
 That is the whole recovery procedure: wait, re-run the same command.
 
+**Exit codes (batch):** `0` when every JD completed or was skipped, `75`
+(`EX_TEMPFAIL`) on quota exhaustion, and `1` when one or more JDs failed (a
+truth-floor violation, an extraction error, or a render failure) — those JDs are
+listed under "Failed" and are retried on the next run. A JD that cannot render
+(e.g. it never fits one page) is marked failed and skipped; it never aborts the
+rest of the batch, and its tailored `.json`/report are still written.
+
 ### Single-JD mode
 
 ```bash
@@ -162,6 +169,8 @@ Single-run flags (work in both modes):
 | Flag | Default | Meaning |
 |---|---|---|
 | `-o OUT_DIR` | — | Output directory (single-JD mode) |
+| `--model NAME` | `gemini-3.1-flash-lite` | LLM model to use (default comes from `DEFAULT_MODEL` in `.env`; the shipped `.env.example` sets `gemini-3.1-flash-lite`) |
+| `--hiring-agent-path DIR` | `~/Desktop/hackerank_ats/hiring-agent` | hiring-agent checkout used by `--ats-score`; point it at your checkout if it lives elsewhere |
 | `--threshold N` | `80` | Minimum JD coverage %; below it, weak sections are re-tailored with gap feedback |
 | `--max-passes N` | `2` | Total tailoring passes cap (bounded iteration — no runaway loops) |
 | `--no-pdf` | off | Skip PDF compilation (no tectonic needed); also skips the one-page fit loop, with a warning |
@@ -206,9 +215,11 @@ The final PDF is exactly one page, automatically:
 - A deterministic trim loop (no extra LLM calls) then renders, counts pages,
   and while the PDF exceeds one page drops the single lowest-relevance item
   per iteration, in fixed priority order: (a) work bullets beyond 2 per
-  position, (b) whole projects beyond 2, (c) skill groups, (d) the oldest
-  low-relevance position's remaining bullets down to 1, (e) the whole
-  lowest-relevance position. Ties break by recency (older goes first).
+  position, (b) whole projects beyond 2, (c) skill groups (keeping at least one
+  — the Technical Skills section, the densest ATS keyword carrier, is never
+  zeroed out), (d) the oldest low-relevance position's remaining bullets down to
+  1, (e) the whole lowest-relevance position. Ties break by recency (older goes
+  first).
 - Education and the header/contact block are never trimmed.
 - Hard cap of 25 trim iterations, then the run fails loudly rather than
   shipping a two-page "one-pager".

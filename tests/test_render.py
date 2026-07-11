@@ -89,6 +89,21 @@ def test_latex_escape_none_and_blank():
     assert latex_escape("") == ""
 
 
+def test_latex_escape_normalizes_unicode_punctuation():
+    # Curly quotes, en/em dashes, bullets, ellipsis, and NBSP have no glyph in
+    # the template's T1 setup; they must be normalized to ASCII, not passed
+    # through (which XeTeX would silently drop).
+    assert latex_escape("team’s") == "team's"
+    assert latex_escape("“vision”") == '"vision"'
+    assert latex_escape("a–b") == "a--b"  # en dash
+    assert latex_escape("a—b") == "a---b"  # em dash
+    assert latex_escape("a•b") == "a-b"  # bullet
+    assert latex_escape("done…") == "done..."  # ellipsis
+    assert latex_escape("a b") == "a b"  # non-breaking space
+    # Normalization runs BEFORE the specials pass, so specials still escape.
+    assert latex_escape("5+ yrs — 100% ‘x’") == r"5+ yrs --- 100\% 'x'"
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -228,6 +243,20 @@ def test_null_heavy_resume_omits_everything_cleanly():
     assert "Rust" in body
 
 
+def test_project_heading_no_dangling_separator_when_name_missing():
+    # A project with no name but with tech/url must not emit a leading "$|$"
+    # (the renderer's no-dangling-separator contract).
+    r = JSONResume(
+        projects=[Project(name=None, technologies=["Python"], url="https://g.h/x")]
+    )
+    body = _document_body(render_tex(r))
+    # The two present pieces are still separated ...
+    assert r"\emph{Python} $|$ https://g.h/x" in body
+    # ... but there is no empty \textbf{} and no leading separator.
+    assert r"\textbf{}" not in body
+    assert "{ $|$" not in body
+
+
 def test_no_education_section_when_absent():
     r = JSONResume(basics=Basics(name="X"), work=[Work(name="Co", position="Eng")])
     body = _document_body(render_tex(r))
@@ -315,14 +344,31 @@ def test_trim_order_exact_sequence():
         "tier-a: pos#0 bullet 'a20' (rel=20)",  # B now has 2 bullets; only A eligible
         "tier-a: pos#0 bullet 'a30' (rel=30)",  # A down to 2 bullets -> tier-a exhausted
         "tier-b: project 'P3' (rel=25)",        # projects >2 -> drop lowest
-        "tier-c: skill group 'Sk2' (rel=20)",   # projects now 2 -> skills
-        "tier-c: skill group 'Sk1' (rel=80)",   # skills drained
+        "tier-c: skill group 'Sk2' (rel=20)",   # projects now 2 -> drop weakest skill group
+        # tier-c floors at ONE group: Sk1 (rel=80) is kept, so the Technical
+        # Skills section is never zeroed out -> the loop moves on to tier-d.
         "tier-d: pos#1 bullet 'b50' (rel=50)",  # oldest low-rel position (B) -> bullets to 1
         "tier-d: pos#0 bullet 'a80' (rel=80)",  # then A -> bullets to 1
         "tier-e: position 'B' (rel=40)",        # whole lowest-relevance position first
         "tier-e: position 'A' (rel=90)",        # then the last position
-        None,                                    # education/header never trimmed -> nothing left
+        None,                                    # education/header/last skill group never trimmed
     ]
+
+
+def test_trim_tier_c_keeps_last_skill_group():
+    # A resume whose only trimmable content is skill groups keeps the last group:
+    # skills are the densest keyword carrier, never zeroed out by tier (c).
+    sr = ScoredResume(
+        basics=Basics(name="Keep"),
+        skills=[
+            ScoredSkill(name="Hi", relevance=90),
+            ScoredSkill(name="Lo", relevance=10),
+        ],
+    )
+    assert _next_trim(sr) == "tier-c: skill group 'Lo' (rel=10)"
+    # One group left -> tier (c) refuses to drain it; nothing else applies.
+    assert _next_trim(sr) is None
+    assert [s.name for s in sr.skills] == ["Hi"]
 
 
 def test_trim_never_touches_education_or_header():
