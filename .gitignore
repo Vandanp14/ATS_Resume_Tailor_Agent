@@ -1,0 +1,20 @@
+# Secrets — NEVER commit (holds a real GEMINI_API_KEY)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.pytest_cache/
+
+# Generated resume artifacts
+out/
+output/
+*.pdf
+
+# Orchestration / internal reports
+.superpowers/
+
+# NOTE: do NOT ignore test_*.py — hiring-agent's .gitignore did, which silently
+# excluded every test file from version control. Keep tests tracked.
