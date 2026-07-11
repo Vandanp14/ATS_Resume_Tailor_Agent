@@ -53,8 +53,9 @@
 - Pipeline per spec §Architecture: parse JD → 4 section tailors (education passthrough) → assemble scored resume → match-score → iterate weak/violating sections only (max 2 passes, threshold default 80) → `fit_to_one_page` (unless `--no-pdf`, then strip_relevance + warn) → final render via `render.py`.
 - Truth violations: re-run offending section with violation appended to prompt; if violations persist after max passes → exit nonzero, no render, loud message.
 - CLI: `python tailor.py master.json jd.txt -o out/ [--threshold 80] [--max-passes 2] [--no-pdf] [--ats-score]`. `--ats-score`: sibling-path import of hiring-agent `ResumeEvaluator`, evaluate `convert_json_resume_to_text` of tailored resume, print category scores.
-- Outputs: `out/tailored.json`, `out/resume.tex`, `out/resume.pdf` (unless `--no-pdf`), `out/match_report.json`.
-- Tests (mocked `call_llm_with_retry` throughout): happy path single pass; low-coverage triggers exactly one targeted re-run of only weak sections; truth violation blocks render and exits nonzero; education passthrough byte-identical.
+- **Batch mode** (spec §Batch drop-folder): `python tailor.py batch [--jd-dir jds/] [--out-dir output/] [--delay-seconds N] [--force] [+ single-run flags]` — sequential over `*.txt`, per-JD output dir named by file stem, `.done` marker for idempotent skip, catch escaped `ResourceExhausted` at the batch loop → print completed/remaining JD lists + "wait and re-run; completed JDs will be skipped" → exit code 75 (EX_TEMPFAIL). Create `jds/` with a README placeholder in repo.
+- Outputs per JD: `tailored.json`, `resume.tex`, `resume.pdf` (unless `--no-pdf`), `match_report.json`, `.done`.
+- Tests (mocked `call_llm_with_retry` throughout): happy path single pass; low-coverage triggers exactly one targeted re-run of only weak sections; truth violation blocks render and exits nonzero; education passthrough byte-identical; batch: 3 fixture JDs → 3 output dirs, re-run skips `.done` dirs, mid-batch ResourceExhausted → clean exit 75 with correct completed/remaining lists, `--force` re-processes.
 
 ## Wave 4 — Live verification (single agent, depends on all)
 

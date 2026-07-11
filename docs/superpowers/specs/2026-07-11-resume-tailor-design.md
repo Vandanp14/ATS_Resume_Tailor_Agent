@@ -70,6 +70,15 @@ The final PDF must be exactly one page, fully automated:
 3. Education is never trimmed. Header/contact never trimmed. Ties broken by recency (older goes first).
 4. One-page enforcement requires `tectonic` (page count needs a real compile); with `--no-pdf` the fit loop is skipped and a warning is printed.
 
+## Batch drop-folder mode + quota resilience (added per user directive)
+
+Primary UX is a drop folder: put any number of `*.txt` JDs in `jds/`, run once, get per-JD output dirs.
+
+1. **Batch CLI:** `python tailor.py batch [--jd-dir jds/] [--out-dir output/] [+ all single-run flags]` — processes every `*.txt` in `--jd-dir` sequentially (never parallel — respects Gemini rate limits), writing `output/<jd-filename-stem>/{tailored.json, resume.tex, resume.pdf, match_report.json}`.
+2. **Idempotent resume-after-failure:** a JD dir containing a `.done` marker is skipped on re-run (`--force` re-does everything). A run killed mid-JD leaves no `.done` → that JD restarts cleanly next run.
+3. **Quota handling:** provider-level backoff (copied from hiring-agent) absorbs transient 429s. If quota is truly exhausted (backoff retries exhausted → ResourceExhausted escapes), the batch runner catches it, prints exactly which JDs completed and which remain, and exits cleanly with: "Gemini quota exhausted — wait and re-run the same command; completed JDs will be skipped." Optional `--delay-seconds N` inserts a pause between JDs to stay under rate limits proactively.
+4. Single-JD mode (`python tailor.py master.json jd.txt -o out/`) remains for one-offs.
+
 ## Key design decisions
 
 1. **Education passthrough** — no LLM call; copied verbatim from master (nothing to tailor, eliminates a fabrication surface).
