@@ -13,6 +13,10 @@ out/
 output/
 *.pdf
 
+# Personal data — your real resume stays local
+master.json
+jds/*.txt
+
 # Orchestration / internal reports
 .superpowers/
 
