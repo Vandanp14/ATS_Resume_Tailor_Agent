@@ -50,9 +50,25 @@ master.json + jd.txt
 | Templates | `prompts/templates/*.jinja` + `template_manager.py` (copied) | `jd_parse.jinja`, `tailor_summary.jinja`, `tailor_skills.jinja`, `tailor_work.jinja`, `tailor_projects.jinja`, `match_score.jinja`, shared `_tailoring_rules.jinja` partial (content policy stated once). Every template: worked example (input→output), explicit null rules, hiring-agent few-shot conventions |
 | Orchestrator | `tailor.py` | CLI: `python tailor.py master.json jd.txt -o out/ [--threshold 80] [--max-passes 2] [--no-pdf]`. Writes `out/tailored.json`, `out/resume.tex`, `out/resume.pdf`, `out/match_report.json` |
 | Renderer | `render.py` + `templates/latex/jakes.tex.jinja` | Jinja2 fills Jake's-Resume-style template (custom Jinja delimiters `\VAR{}`/`\BLOCK{}` to avoid LaTeX brace collisions); LaTeX-escapes all user text (`&`, `%`, `$`, `#`, `_`, `~`, `^`, `\`); compiles via `tectonic` (self-contained, auto-downloads packages); `--no-pdf` skips compile for machines without tectonic |
-| Bootstrap | `bootstrap_master.py` | One-time: PDF → master.json via the hiring-agent extraction pipeline (documented as optional; imports hiring-agent from sibling path or reuses its extraction code copied in) |
+| Bootstrap | `bootstrap_master.py` | One-time: PDF → master.json. Imports the hiring-agent checkout via `sys.path` insertion of a `--hiring-agent-path` argument (default `~/Desktop/hackerank_ats/hiring-agent`) and calls its `PDFHandler.extract_json_from_pdf`. Optional utility — not part of the tailoring pipeline, no code copied for it |
 | Config | `.env` / `.env.example`, `prompt.py` | Same shape as hiring-agent: `LLM_PROVIDER`, `DEFAULT_MODEL=gemini-3.1-flash-lite`, `GEMINI_API_KEY`; model-parameter + provider maps |
 | Tests | `tests/` + `pytest.ini` | Unit (mocked): retry plumbing reused smoke, template rendering assertions (non-vacuous — assert distinctive instruction/example content), renderer escaping, scorer-loop control flow. Integration (`-m integration`, live gemini-3.1-flash-lite): JD parse on a real JD, one full tailor pass on a fixture master+JD, truth-floor spot-check (fixture master lacking a JD must-have → assert not fabricated into work history) |
+
+## ATS-rubric optimization (added per user directive)
+
+The tailored resume must maximize the score assigned by the **hiring-agent evaluator** (sibling project — its rubric is fully known: open_source ≤35, self_projects ≤30, production ≤25, technical_skills ≤10, bonus ≤20 incl. GSoC/portfolio/LinkedIn/startup lines, deductions for tutorial-grade projects, missing links, Hacktoberfest-only OSS). Two mechanisms:
+
+1. **Baked-in (always on):** `_tailoring_rules.jinja` encodes the rubric as tailoring pressure — surface open-source contributions to other people's projects prominently; prefer complex/impactful projects over tutorial-grade ones; every selected project must carry its GitHub/live link from the master; surface startup/founder/early-stage and production experience; include portfolio + LinkedIn URLs when present in master; name GSoC/Outreachy-class programs explicitly and never conflate "Girl Script Summer of Code" with GSoC. All within the truth floor — the rubric shapes *selection and emphasis*, never fabrication.
+2. **Live check (optional):** `--ats-score` flag runs the hiring-agent evaluator on the tailored resume via the same sibling-path import as bootstrap, printing its category scores next to the JD match report. Off by default (extra LLM calls).
+
+## One-page auto-fit (added per user directive)
+
+The final PDF must be exactly one page, fully automated:
+
+1. **Relevance scoring at generation time:** every tailor stage emits a `relevance` score (0-100, JD-driven) per item — each work bullet, each project, each skill group. The whole master is considered; nothing is pre-truncated before scoring.
+2. **Deterministic trim loop (no extra LLM calls):** render → count PDF pages (pypdf) → if >1 page, drop the lowest-relevance items in a fixed priority order — (a) work bullets beyond 2 per position, (b) whole projects beyond 2, (c) skill groups, (d) oldest low-relevance position's remaining bullets to 1, (e) whole lowest-relevance position — one item per iteration, re-render, repeat until 1 page (hard cap 25 iterations, then fail loudly).
+3. Education is never trimmed. Header/contact never trimmed. Ties broken by recency (older goes first).
+4. One-page enforcement requires `tectonic` (page count needs a real compile); with `--no-pdf` the fit loop is skipped and a warning is printed.
 
 ## Key design decisions
 
