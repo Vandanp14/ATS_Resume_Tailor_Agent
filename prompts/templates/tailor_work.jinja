@@ -1,0 +1,98 @@
+Rewrite the candidate's work experience for the target job. For each position,
+reword the bullets into the job's language and mirror its keywords — but keep
+every employer, title, and date exactly as the master states them, and invent
+NOTHING. Score each position and each bullet for job relevance.
+
+{% include "_tailoring_rules.jinja" %}
+
+--- Target job profile (parsed JD) ---
+
+{{ jd_profile_json }}
+
+--- Master resume work experience (the ONLY source of truth for facts) ---
+
+{{ master_work_json }}
+
+{% if feedback %}
+## Revision feedback (a previous attempt fell short — fix this specifically)
+
+{{ feedback }}
+
+{% endif %}
+Return ONLY a JSON object with this structure:
+{
+  "work": [
+    {
+      "name": "Employer name — copied VERBATIM from the master",
+      "position": "Job title — copied VERBATIM from the master",
+      "url": "Employer URL from the master, or null",
+      "startDate": "Start date from the master, unchanged",
+      "endDate": "End date from the master, unchanged, or null if current",
+      "summary": "A one-line role summary, or null",
+      "relevance": "integer 0-100, how relevant this whole position is to the target job",
+      "highlights": [
+        {"text": "A reworded bullet mirroring the JD, built only from master facts", "relevance": "integer 0-100"}
+      ]
+    }
+  ]
+}
+
+**CRITICAL — highlights are OBJECTS, not strings.** Each highlight is
+`{"text": ..., "relevance": ...}`, never a bare string. A bullet with no
+relevance score is invalid output.
+
+**RULES:**
+- `name`, `position`, `startDate`, `endDate`, `url` are copied from the master
+  unchanged. Never alter or invent an employer, title, or date.
+- Reword bullets to match the JD's phrasing and surface its keywords — but only
+  keywords the master already supports for THAT job. If the JD stresses a term the
+  master does not back up for this position, do NOT add it.
+- Never invent a metric or number. If the master bullet has no figure, the
+  reworded bullet has no figure.
+- `relevance` (position and per-bullet) is an integer 0-100. Order bullets within
+  a position from most to least relevant.
+- Set `summary` and `url` to `null` when the master does not provide them — never
+  a placeholder string.
+
+## Worked example
+
+Target job: Backend Engineer; must-haves Python, PostgreSQL, REST APIs, AWS; top
+keywords "distributed systems" (5), "payment processing" (5).
+
+Master work entry:
+"""
+Acme Payments — Software Engineer — Mar 2021 to Present
+- Worked on the billing service and helped migrate it to AWS.
+- Built internal REST APIs used by other teams.
+- Fixed performance problems in our Postgres database.
+"""
+
+Correct output. Note carefully:
+- Employer "Acme Payments", title "Software Engineer", and dates ("2021-03",
+  ongoing → `null`) are copied VERBATIM.
+- "migrate it to AWS" is in the master, so AWS stays. No metric was invented
+  (there is no "reduced latency by 30%").
+- "Postgres" is rendered as "PostgreSQL" — the SAME technology in the JD's spelling.
+- The JD's headline keywords "distributed systems" and "payment processing" are
+  NOT inserted anywhere: this master entry never demonstrates them, so mirroring
+  them would be fabrication. Keyword mirroring rephrases truth; it does not add facts.
+{
+  "work": [
+    {
+      "name": "Acme Payments",
+      "position": "Software Engineer",
+      "url": null,
+      "startDate": "2021-03",
+      "endDate": null,
+      "summary": null,
+      "relevance": 90,
+      "highlights": [
+        {"text": "Designed and built internal REST APIs consumed by multiple engineering teams.", "relevance": 88},
+        {"text": "Developed and maintained the billing service, migrating it to AWS cloud infrastructure.", "relevance": 85},
+        {"text": "Optimized PostgreSQL query performance, resolving long-standing database bottlenecks.", "relevance": 82}
+      ]
+    }
+  ]
+}
+
+**IMPORTANT**: Return ONLY valid JSON. Do not include any explanatory text.

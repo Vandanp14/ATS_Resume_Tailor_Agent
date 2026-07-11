@@ -1,0 +1,56 @@
+Extract a structured profile from this job description. You are reading the JOB
+POSTING, not a resume — capture what the employer is asking for.
+
+--- The job description starts here ---
+
+{{ jd_text }}
+
+--- The job description ends here ---
+
+Return ONLY a JSON object with this structure:
+{
+  "role": "The job title the posting is hiring for (e.g. 'Backend Engineer')",
+  "seniority": "One of junior/mid/senior/staff/lead if stated or clearly implied, else null",
+  "domain": "The business/technical domain if stated (e.g. 'fintech payments'), else null",
+  "must_have_skills": ["Hard requirements the candidate must have"],
+  "nice_to_have_skills": ["Preferred/bonus skills that are not required"],
+  "keywords": [
+    {"term": "An ATS keyword or phrase from the posting", "weight": "integer 1-5, 5 = most critical"}
+  ]
+}
+
+**RULES:**
+- `weight` MUST be an integer from 1 to 5 (5 = the posting stresses it most; 1 = mentioned in passing). Never 0, never above 5.
+- Put a skill in `must_have_skills` only when the posting frames it as required ("must have", "required", "X+ years of"). Preferred/"nice to have"/"bonus" skills go in `nice_to_have_skills`.
+- `seniority` and `domain` are `null` when the posting does not state them — never guess a placeholder like "N/A" or "unknown".
+- Extract keywords the way an ATS would: concrete technologies, methodologies, and responsibilities actually named in the posting. Do not invent keywords the posting never uses.
+
+## Worked example
+
+Example job description:
+"""
+We are hiring a Backend Engineer to join our payments team. You will build and
+scale distributed services that process customer payments. Required: 3+ years of
+Python, strong PostgreSQL, and experience designing REST APIs on AWS. Bonus
+points for Kubernetes or Go. You'll own services end to end, including CI/CD.
+"""
+
+Correct output (note `seniority` is `null` — the posting never states a level; "3+ years" is not by itself a seniority label):
+{
+  "role": "Backend Engineer",
+  "seniority": null,
+  "domain": "payments",
+  "must_have_skills": ["Python", "PostgreSQL", "REST APIs", "AWS"],
+  "nice_to_have_skills": ["Kubernetes", "Go"],
+  "keywords": [
+    {"term": "distributed systems", "weight": 5},
+    {"term": "payment processing", "weight": 5},
+    {"term": "PostgreSQL", "weight": 4},
+    {"term": "REST APIs", "weight": 4},
+    {"term": "AWS", "weight": 4},
+    {"term": "CI/CD", "weight": 3},
+    {"term": "Kubernetes", "weight": 2}
+  ]
+}
+
+**IMPORTANT**: Return ONLY valid JSON. Do not include any explanatory text.

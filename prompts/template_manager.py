@@ -35,12 +35,23 @@ class TemplateManager:
         self._load_templates()
 
     def _load_templates(self):
-        """Load all available templates."""
-        # Registered by Wave 2 (Task B). Each entry maps a logical template
-        # name to its .jinja filename under `self.template_dir`, e.g.
-        #   "jd_parse": "jd_parse.jinja",
-        #   "tailor_summary": "tailor_summary.jinja", ...
-        template_files: Dict[str, str] = {}
+        """Load all available templates.
+
+        Each entry maps a logical template name to its ``.jinja`` filename
+        under ``self.template_dir``. ``_tailoring_rules.jinja`` is intentionally
+        NOT registered here: it is a shared partial (truth floor + ATS-rubric
+        pressure) pulled in via ``{% include %}`` by the tailor_* and
+        match_score templates, never rendered standalone.
+        """
+        template_files: Dict[str, str] = {
+            "jd_parse": "jd_parse.jinja",
+            "tailor_summary": "tailor_summary.jinja",
+            "tailor_skills": "tailor_skills.jinja",
+            "tailor_work": "tailor_work.jinja",
+            "tailor_projects": "tailor_projects.jinja",
+            "match_score": "match_score.jinja",
+            "system_message": "system_message.jinja",
+        }
 
         for section_name, filename in template_files.items():
             try:

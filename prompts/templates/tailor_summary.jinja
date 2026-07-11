@@ -1,0 +1,54 @@
+Write a tailored professional summary that positions this candidate for the
+target job. Draw ONLY on the master resume; aim the wording at the job.
+
+{% include "_tailoring_rules.jinja" %}
+
+--- Target job profile (parsed JD) ---
+
+{{ jd_profile_json }}
+
+--- Master resume (the ONLY source of truth for facts) ---
+
+{{ master_json }}
+
+{% if feedback %}
+## Revision feedback (a previous attempt fell short — fix this specifically)
+
+{{ feedback }}
+
+{% endif %}
+Return ONLY a JSON object with this structure:
+{
+  "summary": "A 2-4 sentence summary, first-person-implied (no 'I'), mirroring the job's language, built only from facts in the master resume."
+}
+
+**RULES:**
+- Every claim in the summary must be supported by the master resume. Do NOT state
+  a years-of-experience number, a metric, or a technology that the master does not
+  contain.
+- Mirror the job's must-have skills and top keywords WHEN the master genuinely
+  supports them. If the job stresses a skill the master lacks, leave it out — do
+  not claim it.
+- Output the summary text only. Do not wrap it in quotes-within-quotes or add a
+  name/title line.
+
+## Worked example
+
+Target job: Backend Engineer, payments domain; must-haves Python, PostgreSQL,
+REST APIs, AWS; top keywords "distributed systems", "payment processing".
+
+Master resume excerpt:
+"""
+basics.summary: "Software engineer, 4 years, backend focus."
+work: Acme Payments — Software Engineer (2021-03 to Present): built the billing
+      service, migrated it to AWS, designed internal REST APIs, tuned Postgres.
+skills: Python, Go, PostgreSQL, Redis, AWS, Docker.
+"""
+
+Correct output (note: "4 years" and every technology below are in the master;
+"distributed systems" is NOT claimed because the master never demonstrates it):
+{
+  "summary": "Backend engineer with 4 years building and scaling payment-processing services in Python and PostgreSQL on AWS. Designed internal REST APIs and owned the billing service end to end, from database tuning to cloud migration. Comfortable across the backend stack with Go, Redis, and Docker."
+}
+
+**IMPORTANT**: Return ONLY valid JSON. Do not include any explanatory text.

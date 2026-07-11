@@ -1,0 +1,71 @@
+Score how well the TAILORED resume matches the target job, and audit it against
+the MASTER resume for any fabricated content. You are the truth-enforcement and
+coverage checkpoint of the pipeline.
+
+{% include "_tailoring_rules.jinja" %}
+
+--- Target job profile (parsed JD) ---
+
+{{ jd_profile_json }}
+
+--- Tailored resume (the output being audited) ---
+
+{{ tailored_resume_json }}
+
+--- Master resume (ground truth — every tailored fact must trace back to this) ---
+
+{{ master_json }}
+
+Return ONLY a JSON object with this structure:
+{
+  "coverage_pct": "float 0-100: share of the JD's must-haves and weighted keywords the tailored resume genuinely covers",
+  "missing_must_haves": ["Each JD must-have the tailored resume does not cover"],
+  "weak_sections": ["Section names (summary/skills/work/projects) that under-sell relevant experience"],
+  "truth_violations": [
+    {
+      "section": "The section containing the fabrication (e.g. 'work')",
+      "claim": "The exact fabricated claim as written in the tailored resume",
+      "reason": "Why it violates the truth floor, citing what the master actually says"
+    }
+  ],
+  "notes": "Brief overall assessment, or null"
+}
+
+**RULES:**
+- Compare EVERY tailored claim against the master. Flag as a truth violation any
+  employer, title, date, degree, certification, project, link, metric/number, or
+  technology in the tailored resume that the master does not support. Quote the
+  offending claim in `claim`.
+- A must-have that is simply absent from the master (and therefore correctly not
+  fabricated) is a `missing_must_haves` entry, NOT a truth violation.
+- `coverage_pct` is a float 0-100. `truth_violations` is `[]` when the tailored
+  resume is clean. `notes` is `null` when there is nothing to add.
+- Do not reward fabrication: a resume that invents a keyword to raise coverage
+  must be flagged, not scored higher.
+
+## Worked example
+
+Target job: Backend Engineer; must-haves Python, PostgreSQL, REST APIs, AWS,
+Kubernetes. Master: Acme Payments — Software Engineer (individual contributor);
+skills include Python, PostgreSQL, AWS, REST APIs, Docker (no Kubernetes, no
+management role). Tailored resume added the bullet "Led a team of 8 engineers"
+and mirrored the other must-haves accurately.
+
+Correct output (note: Kubernetes is a genuine gap, so it is a missing must-have,
+NOT a violation; the invented team-lead claim IS a violation with the master
+quoted as evidence):
+{
+  "coverage_pct": 78.0,
+  "missing_must_haves": ["Kubernetes"],
+  "weak_sections": ["skills"],
+  "truth_violations": [
+    {
+      "section": "work",
+      "claim": "Led a team of 8 engineers at Acme Payments",
+      "reason": "The master lists this role as 'Software Engineer' (individual contributor) with no management or team-lead responsibility; the team size and leadership are fabricated."
+    }
+  ],
+  "notes": "Coverage is below the 80% threshold mainly because Kubernetes (a must-have) is absent from the master and was correctly not fabricated. The work section contains one truth violation that must be removed before rendering."
+}
+
+**IMPORTANT**: Return ONLY valid JSON. Do not include any explanatory text.

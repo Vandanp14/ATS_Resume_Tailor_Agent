@@ -1,0 +1,98 @@
+Select, order, and score the candidate's projects for the target job. Lead with
+the projects that best match the job and that the automated evaluator rewards,
+reword their descriptions into the job's language, and keep every link — but
+invent nothing.
+
+{% include "_tailoring_rules.jinja" %}
+
+--- Target job profile (parsed JD) ---
+
+{{ jd_profile_json }}
+
+--- Master resume projects (the ONLY source of truth for facts) ---
+
+{{ master_projects_json }}
+
+{% if feedback %}
+## Revision feedback (a previous attempt fell short — fix this specifically)
+
+{{ feedback }}
+
+{% endif %}
+Return ONLY a JSON object with this structure:
+{
+  "projects": [
+    {
+      "name": "Project name from the master",
+      "startDate": "From the master, or null",
+      "endDate": "From the master, or null",
+      "description": "Reworded to mirror the JD, built only from master facts",
+      "highlights": ["Plain-string bullet", "..."],
+      "url": "The project's GitHub/live link from the master, or null",
+      "technologies": ["Tech from the master", "..."],
+      "skills": null,
+      "relevance": "integer 0-100, how relevant this project is to the target job"
+    }
+  ]
+}
+
+**NOTE — project highlights are PLAIN STRINGS** here (unlike work highlights).
+
+**RULES:**
+- Include only projects present in the master. Reword descriptions/highlights into
+  the JD's vocabulary, but do not add technologies, links, or metrics the master
+  does not state.
+- `url` is copied from the master exactly, or `null`. NEVER invent a link to make
+  a project look stronger, and never drop a real link that the master provides.
+- Order projects by `relevance` (integer 0-100), highest first. Rank genuine
+  open-source contributions to other people's projects and complex/impactful work
+  above tutorial-grade projects.
+- Set any field the master does not provide to `null` — never a placeholder.
+
+## Worked example
+
+Target job: Backend Engineer; keywords "distributed systems", "message processing".
+
+Master projects:
+"""
+1. kafka-python — contributed batching + retry improvements to the kafka-python
+   client library, 6 PRs merged upstream; added integration tests.
+   https://github.com/dpkp/kafka-python/pulls?q=author:jdoe  (Python, Kafka)
+2. Todo App — a simple task tracker built while learning React. No link.
+"""
+
+Correct output. Note: the upstream open-source contribution leads with high
+relevance and keeps its link; the tutorial-grade "Todo App" is ranked last with
+low relevance and its `url` stays `null` (we do NOT fabricate a link); the "6 PRs"
+figure is in the master, so it survives — no new metric was invented:
+{
+  "projects": [
+    {
+      "name": "kafka-python (open-source contributor)",
+      "startDate": null,
+      "endDate": null,
+      "description": "Contributed batching and retry improvements to the kafka-python client library, merged upstream, strengthening reliability of distributed message processing.",
+      "highlights": [
+        "Merged 6 pull requests improving consumer retry logic upstream.",
+        "Added integration tests covering the batching path."
+      ],
+      "url": "https://github.com/dpkp/kafka-python/pulls?q=author:jdoe",
+      "technologies": ["Python", "Kafka"],
+      "skills": null,
+      "relevance": 88
+    },
+    {
+      "name": "Todo App",
+      "startDate": null,
+      "endDate": null,
+      "description": "A simple task tracker built while learning React.",
+      "highlights": ["CRUD task list with local-storage persistence."],
+      "url": null,
+      "technologies": ["React"],
+      "skills": null,
+      "relevance": 15
+    }
+  ]
+}
+
+**IMPORTANT**: Return ONLY valid JSON. Do not include any explanatory text.

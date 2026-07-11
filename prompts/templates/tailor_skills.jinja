@@ -1,0 +1,69 @@
+Re-organize and score the candidate's skills for the target job. Select and
+group the master's skills so the most job-relevant ones lead, and assign each
+group a JD-driven relevance score.
+
+{% include "_tailoring_rules.jinja" %}
+
+--- Target job profile (parsed JD) ---
+
+{{ jd_profile_json }}
+
+--- Master resume skills (the ONLY source of truth) ---
+
+{{ master_skills_json }}
+
+{% if feedback %}
+## Revision feedback (a previous attempt fell short — fix this specifically)
+
+{{ feedback }}
+
+{% endif %}
+Return ONLY a JSON object with this structure:
+{
+  "skills": [
+    {
+      "name": "Skill group/category name",
+      "level": null,
+      "keywords": ["Individual skill", "..."],
+      "relevance": "integer 0-100, how relevant this group is to the target job"
+    }
+  ]
+}
+
+**RULES:**
+- Include ONLY skills present in the master. You may regroup and reorder them and
+  align a group's name to the job's vocabulary, but never add a skill the master
+  does not list.
+- Always set `level` to `null` — resumes rarely state proficiency, so do not
+  invent "Beginner"/"Expert".
+- `relevance` is an integer 0-100: 100 = a must-have the job centers on, low
+  values for groups the job does not care about. Order groups from most to least
+  relevant.
+- `keywords` must never be empty for a group; drop the group instead.
+
+## Worked example
+
+Target job: Backend Engineer; must-haves Python, PostgreSQL, REST APIs, AWS;
+nice-to-haves Docker.
+
+Master resume skills:
+"""
+Languages: Python, Go, SQL, JavaScript
+Databases: PostgreSQL, Redis
+Cloud/DevOps: AWS, Docker, CI/CD
+Frontend: React
+"""
+
+Correct output (note the backend-relevant groups lead with high relevance and
+Frontend trails with low relevance; nothing new was added, `level` is always
+`null`):
+{
+  "skills": [
+    {"name": "Languages", "level": null, "keywords": ["Python", "Go", "SQL"], "relevance": 95},
+    {"name": "Databases", "level": null, "keywords": ["PostgreSQL", "Redis"], "relevance": 90},
+    {"name": "Cloud & DevOps", "level": null, "keywords": ["AWS", "Docker", "CI/CD"], "relevance": 85},
+    {"name": "Frontend", "level": null, "keywords": ["React"], "relevance": 20}
+  ]
+}
+
+**IMPORTANT**: Return ONLY valid JSON. Do not include any explanatory text.
