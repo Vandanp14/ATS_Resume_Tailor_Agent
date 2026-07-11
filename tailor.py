@@ -51,6 +51,7 @@ from models import (
 from llm_utils import LLMExtractionError, call_llm_with_retry, initialize_llm_provider
 from prompt import DEFAULT_MODEL, MODEL_PARAMETERS
 from prompts.template_manager import TemplateManager
+from render import RenderError  # exception type only; the render/fit calls stay lazy
 
 # ResourceExhausted escapes the provider's own backoff only when quota is truly
 # gone; it is NOT caught by call_llm_with_retry (which only handles bad output),
@@ -78,6 +79,64 @@ QUOTA_EXIT_CODE = 75  # EX_TEMPFAIL — signals "transient; wait and re-run"
 # The sections we can actually re-tailor. Education is a passthrough (never
 # fabricated by us), basics are contact facts — neither is re-runnable.
 TAILORABLE_SECTIONS = ("summary", "skills", "work", "projects")
+
+# Substring/synonym needles for canonicalizing a loosely-named section from the
+# (deliberately weak) scorer — e.g. "Work Experience", "profile", "projects[0]".
+# Order matters: first match wins. Keeps the spec's "truth violations always
+# trigger a re-run of the offending section" guarantee from silently dead-ending
+# when the scorer returns a non-canonical label.
+_SECTION_SYNONYMS = (
+    ("summary", ("summary", "profile", "objective")),
+    ("skills", ("skill", "technolog", "competenc")),
+    ("work", ("work", "experience", "employment", "professional")),
+    ("projects", ("project", "portfolio")),
+)
+
+
+def _canonical_section(name: str) -> Optional[str]:
+    """Map a possibly-loose scorer section label to a canonical tailorable name.
+
+    Returns one of ``TAILORABLE_SECTIONS`` or ``None`` when nothing matches (so
+    callers can fall back to re-running all sections rather than aborting).
+    """
+    canon = (name or "").strip().lower()
+    if not canon:
+        return None
+    if canon in TAILORABLE_SECTIONS:
+        return canon
+    for section, needles in _SECTION_SYNONYMS:
+        if any(needle in canon for needle in needles):
+            return section
+    return None
+
+
+def _ensure_tectonic() -> None:
+    """Preflight: raise ``render.RenderError`` if tectonic is not on PATH.
+
+    Kept as a thin, monkeypatchable seam so PDF-mode runs fail fast before any
+    paced LLM spend on a machine that cannot compile the PDF.
+    """
+    from render import ensure_tectonic
+
+    ensure_tectonic()
+
+
+class _PacedProvider:
+    """Wrap an LLM provider so the free-tier pacer gates EVERY physical request.
+
+    ``call_llm_with_retry`` may fire up to two correction retries per invocation;
+    pacing at the provider seam (rather than once per invocation) keeps all of
+    those requests under the free-tier RPM ceiling, honoring the documented
+    "≤ 14 requests/min by construction" guarantee even on the retry path.
+    """
+
+    def __init__(self, provider: Any, pacer: "RatePacer"):
+        self._provider = provider
+        self._pacer = pacer
+
+    def chat(self, *args: Any, **kwargs: Any) -> Any:
+        self._pacer.wait()
+        return self._provider.chat(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +217,12 @@ class TailorPipeline:
             "stream": False,
             **MODEL_PARAMETERS.get(self.model, {"temperature": 0.1, "top_p": 0.9}),
         }
-        self.provider = (
+        raw_provider = (
             provider if provider is not None else initialize_llm_provider(self.model)
         )
+        # Pace at the provider seam so retries inside call_llm_with_retry are
+        # throttled too (see _PacedProvider).
+        self.provider = _PacedProvider(raw_provider, self.pacer)
 
     # -- LLM plumbing --------------------------------------------------------
 
@@ -174,7 +236,9 @@ class TailorPipeline:
             {"role": "system", "content": system or ""},
             {"role": "user", "content": user},
         ]
-        self.pacer.wait()
+        # NB: pacing happens inside self.provider (a _PacedProvider), so every
+        # physical request — including call_llm_with_retry's correction retries —
+        # is throttled, not just the first request of each invocation.
         return call_llm_with_retry(
             self.provider,
             self.model,
@@ -275,6 +339,16 @@ class TailorPipeline:
             work=work,
             skills=skills,
             projects=projects,
+            # Passthrough sections: carried verbatim from the master so no master
+            # facts are lost from tailored.json / the --ats-score input. The LaTeX
+            # template ignores them (Jake's v1 scope), so the PDF is unaffected.
+            volunteer=master.volunteer,
+            awards=master.awards,
+            certificates=master.certificates,
+            publications=master.publications,
+            languages=master.languages,
+            interests=master.interests,
+            references=master.references,
         )
 
     def _scored_resume(self, master: JSONResume, components: Dict[str, Any]) -> Any:
@@ -285,6 +359,14 @@ class TailorPipeline:
             work=list(components["work"].work),
             skills=list(components["skills"].skills),
             projects=list(components["projects"].projects),
+            # Passthrough sections (never trimmed by the fit loop; see render.py).
+            volunteer=master.volunteer,
+            awards=master.awards,
+            certificates=master.certificates,
+            publications=master.publications,
+            languages=master.languages,
+            interests=master.interests,
+            references=master.references,
         )
 
     # -- Iteration control ---------------------------------------------------
@@ -293,24 +375,27 @@ class TailorPipeline:
         return report.coverage_pct < self.threshold or bool(report.truth_violations)
 
     def _rerun_sections(self, report: MatchReport) -> Set[str]:
-        """Which tailorable sections to re-run: weak (if under threshold) + violating."""
+        """Which tailorable sections to re-run: weak (if under threshold) + violating.
+
+        Section labels are canonicalized leniently (``_canonical_section``) so a
+        weak scorer naming "Work Experience"/"profile"/"projects[0]" still maps to
+        a re-runnable section. When there is a reason to re-run but nothing maps to
+        an actionable section, fall back to re-running ALL tailorable sections
+        rather than aborting untried — this preserves the spec guarantee that a
+        truth violation always triggers a corrective re-run.
+        """
         sections: Set[str] = set()
-        if report.coverage_pct < self.threshold:
+        low_coverage = report.coverage_pct < self.threshold
+        if low_coverage:
             for name in report.weak_sections:
-                canon = name.strip().lower()
-                if canon in TAILORABLE_SECTIONS:
+                canon = _canonical_section(name)
+                if canon:
                     sections.add(canon)
         for violation in report.truth_violations:
-            canon = violation.section.strip().lower()
-            if canon in TAILORABLE_SECTIONS:
+            canon = _canonical_section(violation.section)
+            if canon:
                 sections.add(canon)
-        # Coverage is low but the scorer named nothing actionable: re-run all
-        # tailorable sections so the pass can still make progress.
-        if (
-            not sections
-            and report.coverage_pct < self.threshold
-            and not report.truth_violations
-        ):
+        if not sections and (low_coverage or report.truth_violations):
             sections = set(TAILORABLE_SECTIONS)
         return sections
 
@@ -330,7 +415,11 @@ class TailorPipeline:
                     + "."
                 )
         for violation in report.truth_violations:
-            if violation.section.strip().lower() == section:
+            canon = _canonical_section(violation.section)
+            # Attach the claim to its mapped section; if the label was too loose
+            # to map (canon is None), surface it in every re-run section so the
+            # offending claim is still named somewhere.
+            if canon == section or canon is None:
                 lines.append(
                     f'REMOVE or CORRECT this fabricated claim: "{violation.claim}" '
                     f"— {violation.reason}"
@@ -344,23 +433,38 @@ class TailorPipeline:
             )
         return "\n".join(lines)
 
-    def _rerun_section(
+    def _tailor_or_empty(
         self,
         section: str,
-        feedback: str,
+        master: JSONResume,
         jd_json: str,
         master_json: str,
         master_skills_json: str,
         master_work_json: str,
         master_projects_json: str,
+        feedback: Optional[str] = None,
     ) -> Any:
+        """Tailor one section, or short-circuit to an empty result with no LLM call.
+
+        When the master's slice for skills/work/projects is empty there is
+        nothing to tailor: calling the LLM would only waste a paced call/quota
+        slot and hand a weak model an empty list next to a keyword-rich JD —
+        a needless fabrication surface. Summary always runs (it draws on the
+        whole master).
+        """
         if section == "summary":
             return self._tailor_summary(jd_json, master_json, feedback=feedback)
         if section == "skills":
+            if not master.skills:
+                return TailoredSkills(skills=[])
             return self._tailor_skills(jd_json, master_skills_json, feedback=feedback)
         if section == "work":
+            if not master.work:
+                return TailoredWork(work=[])
             return self._tailor_work(jd_json, master_work_json, feedback=feedback)
         if section == "projects":
+            if not master.projects:
+                return TailoredProjects(projects=[])
             return self._tailor_projects(
                 jd_json, master_projects_json, feedback=feedback
             )
@@ -391,6 +495,16 @@ class TailorPipeline:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        # Preflight: in PDF mode, fail fast if tectonic is missing BEFORE spending
+        # any paced LLM calls (their output would otherwise be discarded when the
+        # render stage later discovers the missing binary).
+        if not no_pdf:
+            try:
+                _ensure_tectonic()
+            except RenderError as exc:
+                _print_render_failure(exc, out_dir)
+                return 1
+
         master_json = json.dumps(master.model_dump(exclude_none=True), indent=2)
         master_skills_json = json.dumps(
             [s.model_dump(exclude_none=True) for s in (master.skills or [])], indent=2
@@ -408,10 +522,16 @@ class TailorPipeline:
 
         logger.info("[2/5] Tailoring sections (summary, skills, work, projects) ...")
         components: Dict[str, Any] = {
-            "summary": self._tailor_summary(jd_json, master_json),
-            "skills": self._tailor_skills(jd_json, master_skills_json),
-            "work": self._tailor_work(jd_json, master_work_json),
-            "projects": self._tailor_projects(jd_json, master_projects_json),
+            section: self._tailor_or_empty(
+                section,
+                master,
+                jd_json,
+                master_json,
+                master_skills_json,
+                master_work_json,
+                master_projects_json,
+            )
+            for section in TAILORABLE_SECTIONS
         }
 
         logger.info("[3/5] Scoring JD match ...")
@@ -432,14 +552,15 @@ class TailorPipeline:
                 ordered,
             )
             for section in ordered:
-                components[section] = self._rerun_section(
+                components[section] = self._tailor_or_empty(
                     section,
-                    self._build_feedback(section, report),
+                    master,
                     jd_json,
                     master_json,
                     master_skills_json,
                     master_work_json,
                     master_projects_json,
+                    feedback=self._build_feedback(section, report),
                 )
             passes_done += 1
             plain = self._plain_resume(master, components)
@@ -448,23 +569,42 @@ class TailorPipeline:
         # Truth-floor gate: fabricated content after the max passes is fatal.
         if report.truth_violations:
             self._write_report(out_dir, report)
+            # Clear any prior successful run's artifacts so the directory state
+            # matches the "No resume was written" message (no stale resume.pdf/
+            # tailored.json sitting next to a violation-bearing report).
+            _clear_stale_artifacts(out_dir)
             _print_violation_failure(report, out_dir)
             return 1
 
-        logger.info("[5/5] Rendering ...")
-        if no_pdf:
-            logger.warning(
-                "--no-pdf: skipping PDF compilation and the one-page fit loop; the "
-                "resume may exceed one page."
-            )
-            final = plain
-            _render_resume(final, out_dir, False)
-        else:
-            scored = self._scored_resume(master, components)
-            final = _fit_to_one_page(scored, out_dir)
-
-        self._write_json(out_dir / "tailored.json", final.model_dump(exclude_none=True))
+        # Persist the machine-readable artifacts BEFORE rendering so a render/fit
+        # failure never discards completed (paid) LLM work. tailored.json holds
+        # the pre-fit plain resume; the fit stage overwrites it with the trimmed
+        # version once the PDF actually renders.
         self._write_report(out_dir, report)
+        self._write_json(out_dir / "tailored.json", plain.model_dump(exclude_none=True))
+
+        logger.info("[5/5] Rendering ...")
+        try:
+            if no_pdf:
+                logger.warning(
+                    "--no-pdf: skipping PDF compilation and the one-page fit loop; "
+                    "the resume may exceed one page."
+                )
+                final = plain
+                _render_resume(final, out_dir, False)
+            else:
+                scored = self._scored_resume(master, components)
+                final = _fit_to_one_page(scored, out_dir)
+                self._write_json(
+                    out_dir / "tailored.json", final.model_dump(exclude_none=True)
+                )
+        except RenderError as exc:
+            # Per-JD isolation: the tailored content is already persisted, so
+            # return non-zero (batch marks the JD failed and continues) instead
+            # of crashing the whole run/batch with a traceback.
+            _print_render_failure(exc, out_dir)
+            return 1
+
         logger.info("Done: coverage=%.0f%%, wrote %s", report.coverage_pct, out_dir)
 
         if ats_score:
@@ -476,6 +616,35 @@ class TailorPipeline:
 # ---------------------------------------------------------------------------
 # Messages
 # ---------------------------------------------------------------------------
+
+
+def _clear_stale_artifacts(out_dir: Path) -> None:
+    """Remove any prior run's resume artifacts from ``out_dir``.
+
+    Used on the truth-floor abort path so a failed run never leaves an outdated
+    tailored.json / resume.tex / resume.pdf next to a violation-bearing report.
+    ``match_report.json`` is intentionally NOT removed (it is the diagnostic).
+    """
+    for name in ("tailored.json", "resume.tex", "resume.pdf"):
+        (out_dir / name).unlink(missing_ok=True)
+
+
+def _print_render_failure(exc: Exception, out_dir: Path) -> None:
+    bar = "!" * 72
+    print("\n" + bar, file=sys.stderr)
+    print(
+        "RENDER FAILURE — the tailored resume could not be rendered to a "
+        "one-page PDF.",
+        file=sys.stderr,
+    )
+    print(f"  {exc}", file=sys.stderr)
+    print(
+        f"Tailored content was still saved to {out_dir / 'tailored.json'} and "
+        f"{out_dir / 'match_report.json'} (no LLM work lost). Compile the .tex "
+        "elsewhere (e.g. Overleaf), or resolve the issue and re-run.",
+        file=sys.stderr,
+    )
+    print(bar + "\n", file=sys.stderr)
 
 
 def _print_violation_failure(report: MatchReport, out_dir: Path) -> None:
@@ -757,6 +926,12 @@ def run_batch(args: argparse.Namespace) -> int:
             skipped.append(stem)
             continue
 
+        # Invalidate any stale completion marker up front so a failed or
+        # interrupted (re-)run — e.g. --force after editing the master — never
+        # leaves the JD masked as "done" for later plain runs. Combined with
+        # writing .done only on rc==0 below, this restores idempotent resume.
+        (jd_out / ".done").unlink(missing_ok=True)
+
         logger.info("Processing %s ...", stem)
         jd_text = jd_path.read_text(encoding="utf-8")
         try:
@@ -769,9 +944,11 @@ def run_batch(args: argparse.Namespace) -> int:
                 hiring_agent_path=args.hiring_agent_path,
             )
         except ResourceExhausted:
-            remaining = [
-                p.stem for p in jds if not (out_dir / p.stem / ".done").exists()
-            ]
+            # Force-aware: a stale .done from a prior run must NOT count a JD as
+            # complete this run, so compute "remaining" from what we actually
+            # finished/skipped this pass rather than from on-disk markers.
+            done_now = set(completed) | set(skipped)
+            remaining = [p.stem for p in jds if p.stem not in done_now]
             _print_quota_exhausted(completed, remaining)
             return QUOTA_EXIT_CODE
         except LLMExtractionError as exc:
@@ -792,7 +969,9 @@ def run_batch(args: argparse.Namespace) -> int:
             time.sleep(args.delay_seconds)
 
     _print_batch_summary(completed, skipped, failed)
-    return 0
+    # Non-zero when any JD failed so scripted/cron callers can detect it; 0 for
+    # all-completed/skipped, 75 reserved for quota exhaustion (returned above).
+    return 1 if failed else 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
