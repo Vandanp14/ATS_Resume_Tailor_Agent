@@ -1,0 +1,159 @@
+%% Jake's-Resume-style, single-column, ATS-safe LaTeX template.
+%%
+%% Rendered by render.py through a Jinja2 environment configured with
+%% LaTeX-safe delimiters so ordinary TeX braces never collide with Jinja.
+%% The delimiters are: VAR (variable interpolation, already LaTeX-escaped in
+%% Python), BLOCK (control flow: if / for / endif / endfor) and a hash-brace
+%% Jinja comment form. Do not write those delimiter tokens literally in this
+%% file outside of an actual tag -- Jinja parses them wherever they appear,
+%% even inside a LaTeX comment.
+%%
+%% Every interpolated value is escaped in render.py (& % $ # _ { } ~ ^ \) and
+%% passed in as either an escaped string or a null. Optional fields are wrapped
+%% in BLOCK-if guards so a missing value emits *nothing* -- no placeholder text,
+%% no dangling "$|$" separators, no empty itemize environments.
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{titlesec}
+\usepackage{enumitem}
+
+%% Margins (Jake's tight one-page geometry, no external geometry package).
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1.0in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+
+\pagestyle{empty}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+%% Section formatting.
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\titlerule \vspace{-5pt}]
+
+%% Ensure ATS text extraction picks up real glyphs (pdfTeX only; guarded so
+%% the template also compiles under XeTeX/LuaTeX engines that lack it).
+\ifdefined\pdfgentounicode
+  \input{glyphtounicode}
+  \pdfgentounicode=1
+\fi
+
+%% Custom commands (adapted from Jake Gutierrez's resume, dependency-light).
+\newcommand{\resumeItem}[1]{
+  \item\small{
+    {#1 \vspace{-2pt}}
+  }
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+\begin{document}
+
+%%---------- HEADING ----------
+\begin{center}
+    \BLOCK{ if name }
+    \textbf{\Huge \scshape \VAR{ name }} \\ \vspace{1pt}
+    \BLOCK{ endif }
+    \BLOCK{ if contact_line }
+    \small \VAR{ contact_line }
+    \BLOCK{ endif }
+\end{center}
+
+\BLOCK{ if summary }
+\vspace{2pt}
+\small{\VAR{ summary }}
+\vspace{2pt}
+\BLOCK{ endif }
+
+\BLOCK{ if education }
+%%---------- EDUCATION ----------
+\section{Education}
+  \resumeSubHeadingListStart
+  \BLOCK{ for e in education }
+    \resumeSubheading
+      {\VAR{ e.institution or '' }}{\VAR{ e.dates or '' }}
+      {\VAR{ e.degree or '' }}{\VAR{ e.score or '' }}
+  \BLOCK{ endfor }
+  \resumeSubHeadingListEnd
+\BLOCK{ endif }
+
+\BLOCK{ if work }
+%%---------- EXPERIENCE ----------
+\section{Experience}
+  \resumeSubHeadingListStart
+  \BLOCK{ for w in work }
+    \resumeSubheading
+      {\VAR{ w.name or '' }}{\VAR{ w.dates or '' }}
+      {\VAR{ w.position or '' }}{\VAR{ w.location or '' }}
+      \BLOCK{ if w.highlights }
+      \resumeItemListStart
+        \BLOCK{ for h in w.highlights }
+        \resumeItem{\VAR{ h }}
+        \BLOCK{ endfor }
+      \resumeItemListEnd
+      \BLOCK{ endif }
+  \BLOCK{ endfor }
+  \resumeSubHeadingListEnd
+\BLOCK{ endif }
+
+\BLOCK{ if projects }
+%%---------- PROJECTS ----------
+\section{Projects}
+  \resumeSubHeadingListStart
+  \BLOCK{ for p in projects }
+    \resumeProjectHeading
+      {\textbf{\VAR{ p.name or '' }}\BLOCK{ if p.tech_line } $|$ \emph{\VAR{ p.tech_line }}\BLOCK{ endif }\BLOCK{ if p.url } $|$ \VAR{ p.url }\BLOCK{ endif }}{\VAR{ p.dates or '' }}
+      \BLOCK{ if p.highlights }
+      \resumeItemListStart
+        \BLOCK{ for h in p.highlights }
+        \resumeItem{\VAR{ h }}
+        \BLOCK{ endfor }
+      \resumeItemListEnd
+      \BLOCK{ endif }
+  \BLOCK{ endfor }
+  \resumeSubHeadingListEnd
+\BLOCK{ endif }
+
+\BLOCK{ if skills }
+%%---------- TECHNICAL SKILLS ----------
+\section{Technical Skills}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+    \BLOCK{ for s in skills }
+    \BLOCK{ if s.name and s.keywords_line }
+     \textbf{\VAR{ s.name }}{: \VAR{ s.keywords_line }} \\
+    \BLOCK{ elif s.name }
+     \textbf{\VAR{ s.name }} \\
+    \BLOCK{ elif s.keywords_line }
+     \VAR{ s.keywords_line } \\
+    \BLOCK{ endif }
+    \BLOCK{ endfor }
+    }}
+ \end{itemize}
+\BLOCK{ endif }
+
+\end{document}
