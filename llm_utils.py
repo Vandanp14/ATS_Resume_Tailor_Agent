@@ -1,212 +1,270 @@
-"""
-Utility functions for LLM providers.
-"""
+"""Bounded structured-output calls for Ollama and the supported Google SDK."""
+
+from __future__ import annotations
 
 import json
-import logging
+import random
 import re
-from typing import Any, Dict, List, Optional, Type
+import time
+from collections.abc import Callable
+from typing import Any, Protocol
+
 from pydantic import BaseModel, ValidationError
-from models import ModelProvider, OllamaProvider, GeminiProvider
-from prompt import MODEL_PROVIDER_MAPPING, GEMINI_API_KEY
 
-logger = logging.getLogger(__name__)
+from models import ModelProvider
+from prompt import GEMINI_API_KEY, MODEL_PROVIDER_MAPPING
 
 
-class LLMExtractionError(Exception):
-    """Raised when an LLM response cannot be parsed as JSON or fails schema validation."""
+class ChatProvider(Protocol):
+    def chat(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]: ...
 
-    def __init__(self, message: str, raw_response: str):
+
+class LLMExtractionError(RuntimeError):
+    def __init__(self, message: str, raw_response: str = "", attempts: int = 0):
         super().__init__(message)
         self.raw_response = raw_response
+        self.attempts = attempts
 
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
-_GREEDY_FENCE_RE = re.compile(r"```(?:json)?\s*(.*)\s*```", re.IGNORECASE | re.DOTALL)
-_LEADING_FENCE_RE = re.compile(r"^```(?:json)?\s*", re.IGNORECASE)
-
-
-def _brace_slice(text: str) -> Optional[str]:
-    """Return the substring from the first '{' to the last '}', or None."""
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-    return text[start : end + 1]
-
-
-def _parses_as_json(text: str) -> bool:
-    try:
-        json.loads(text)
-        return True
-    except (ValueError, TypeError):
-        return False
+_THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 
 
 def extract_json_from_response(response_text: str) -> str:
-    """
-    Extract JSON content from a raw LLM response, stripping <think> blocks
-    and markdown code fences (any casing, with or without leading/trailing prose).
-
-    Handles weak-model quirks: multiple fenced blocks (prose reasoning fenced
-    separately from the JSON), JSON payloads whose string values contain
-    internal ``` sequences, and unclosed fences from truncated output.
-    """
-    response_text = response_text.strip()
-
-    if "<think>" in response_text:
-        think_start = response_text.find("<think>")
-        think_end = response_text.find("</think>")
-        if think_start != -1 and think_end != -1:
-            response_text = response_text[:think_start] + response_text[think_end + 8 :]
-        response_text = response_text.strip()
-
-    # Collect fenced-block candidates: every non-greedy (shortest) block, plus
-    # a greedy first-fence-to-LAST-fence candidate that survives internal ```
-    # sequences inside JSON string values.
-    candidates = [m.group(1).strip() for m in _FENCE_RE.finditer(response_text)]
-    greedy_match = _GREEDY_FENCE_RE.search(response_text)
-    if greedy_match:
-        greedy_candidate = greedy_match.group(1).strip()
-        if greedy_candidate not in candidates:
-            candidates.append(greedy_candidate)
-
-    if candidates:
-        # Prefer the first candidate that is itself a JSON object.
-        for candidate in candidates:
-            if candidate.startswith("{") and _parses_as_json(candidate):
-                return candidate
-        # Next best: a candidate containing a parseable {...} slice.
-        for candidate in candidates:
-            sliced = _brace_slice(candidate)
-            if sliced is not None and _parses_as_json(sliced):
-                return candidate
-        # Fences exist but none holds usable JSON — scan the whole original
-        # text for a parseable object (the JSON may sit outside the fences).
-        whole = _brace_slice(response_text)
-        if whole is not None and _parses_as_json(whole):
-            return whole
-        return candidates[0]
-
-    # No complete fenced block (e.g. a weaker model truncated its output before
-    # closing the fence). Fall back to stripping a bare leading fence marker so
-    # we still degrade gracefully instead of returning the marker verbatim.
-    leading_match = _LEADING_FENCE_RE.match(response_text)
-    if leading_match:
-        return response_text[leading_match.end() :].strip()
-
-    return response_text
+    """Extract the first parseable JSON object from common model wrappers."""
+    text = _THINK_RE.sub("", response_text).strip()
+    candidates = [match.group(1).strip() for match in _FENCE_RE.finditer(text)]
+    candidates.append(text)
+    for candidate in candidates:
+        start, end = candidate.find("{"), candidate.rfind("}")
+        payload = (
+            candidate[start : end + 1] if start >= 0 and end > start else candidate
+        )
+        try:
+            json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        return payload
+    return text.removeprefix("```json").removeprefix("```").strip()
 
 
-def initialize_llm_provider(model_name: str) -> Any:
-    """
-    Initialize the appropriate LLM provider based on the model name.
+class OllamaProvider:
+    def __init__(self) -> None:
+        try:
+            import ollama
+        except ModuleNotFoundError as exc:  # pragma: no cover - environment guard
+            raise RuntimeError(
+                "Install the 'ollama' package to use a local model."
+            ) from exc
+        self.client = ollama
 
-    Args:
-        model_name: The name of the model to use
+    def chat(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "options": {**(options or {}), "num_ctx": 32768},
+        }
+        if kwargs.get("format") is not None:
+            schema = kwargs["format"]
+            params["format"] = (
+                schema.model_json_schema() if isinstance(schema, type) else schema
+            )
+        return self.client.chat(**params)
 
-    Returns:
-        An initialized LLM provider (either OllamaProvider or GeminiProvider)
 
-    Raises:
-        ValueError: if model_name looks like a Gemini model but isn't in
-            MODEL_PROVIDER_MAPPING (prevents silently routing a mistyped or
-            newly-released Gemini model name to Ollama).
-    """
-    model_provider = MODEL_PROVIDER_MAPPING.get(model_name)
+class GeminiProvider:
+    """Adapter over ``google-genai`` with a stable chat-shaped interface."""
 
-    if model_provider is None:
+    def __init__(
+        self,
+        api_key: str,
+        timeout_ms: int = 30_000,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        from google import genai
+        from google.genai import types
+
+        self._types = types
+        self._progress_callback = progress_callback
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                timeout=timeout_ms,
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
+        )
+
+    @staticmethod
+    def _retryable(exc: Exception) -> bool:
+        code = getattr(exc, "code", None)
+        status = getattr(exc, "status_code", None)
+        message = str(exc).lower()
+        return (
+            code in {429, 500, 503, 504}
+            or status in {429, 500, 503, 504}
+            or any(
+                token in message
+                for token in (
+                    "resource_exhausted",
+                    "service unavailable",
+                    "deadline exceeded",
+                )
+            )
+        )
+
+    @staticmethod
+    def _retry_after(exc: Exception) -> float | None:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", {})
+        raw = headers.get("retry-after") if headers else None
+        try:
+            return max(float(raw), 0.0) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def chat(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        types = self._types
+        system_parts = [m["content"] for m in messages if m["role"] == "system"]
+        contents = [
+            types.Content(
+                role="model" if message["role"] == "assistant" else "user",
+                parts=[types.Part.from_text(text=message["content"])],
+            )
+            for message in messages
+            if message["role"] != "system"
+        ]
+        schema = kwargs.get("format")
+        if isinstance(schema, type) and issubclass(schema, BaseModel):
+            schema = schema.model_json_schema()
+        config = types.GenerateContentConfig(
+            system_instruction="\n\n".join(system_parts) or None,
+            temperature=(options or {}).get("temperature"),
+            top_p=(options or {}).get("top_p"),
+            max_output_tokens=(options or {}).get("max_output_tokens", 8192),
+            response_mime_type="application/json" if schema is not None else None,
+            response_json_schema=schema,
+        )
+        for attempt in range(3):
+            try:
+                response = self.client.models.generate_content(
+                    model=model, contents=contents, config=config
+                )
+                if not response.text:
+                    raise ValueError("Gemini returned no text content")
+                return {"message": {"role": "assistant", "content": response.text}}
+            except Exception as exc:
+                if attempt == 2 or not self._retryable(exc):
+                    raise
+                retry_after = self._retry_after(exc)
+                delay = (
+                    retry_after
+                    if retry_after is not None
+                    else random.uniform(0, min(20.0, 0.2 * (2**attempt)))
+                )
+                if self._progress_callback:
+                    self._progress_callback(
+                        f"Gemini transport retry {attempt + 2}/3 after {delay:.1f}s: {exc}"
+                    )
+                time.sleep(delay)
+        raise AssertionError("unreachable")
+
+
+def initialize_llm_provider(
+    model_name: str,
+    progress_callback: Callable[[str], None] | None = None,
+) -> ChatProvider:
+    provider = MODEL_PROVIDER_MAPPING.get(model_name)
+    if provider is None:
         if model_name.startswith("gemini-"):
             raise ValueError(
-                f"Unrecognized Gemini model '{model_name}' — add it to "
-                "MODEL_PROVIDER_MAPPING and MODEL_PARAMETERS in prompt.py "
-                "before using it. Refusing to silently fall back to Ollama."
+                f"Unrecognized Gemini model '{model_name}'; refusing fallback."
             )
-        model_provider = ModelProvider.OLLAMA
-
-    if model_provider == ModelProvider.GEMINI:
+        provider = ModelProvider.OLLAMA
+    if provider == ModelProvider.GEMINI:
         if not GEMINI_API_KEY:
-            logger.warning("⚠️ Gemini API key not found. Falling back to Ollama.")
-            return OllamaProvider()
-        logger.info(f"🔄 Using Google Gemini API provider with model {model_name}")
-        return GeminiProvider(api_key=GEMINI_API_KEY)
-
-    logger.info(f"🔄 Using Ollama provider with model {model_name}")
+            raise RuntimeError("Gemini selected but GEMINI_API_KEY is not configured.")
+        return GeminiProvider(GEMINI_API_KEY, progress_callback=progress_callback)
     return OllamaProvider()
 
 
+def _is_ollama(provider: Any) -> bool:
+    seen: set[int] = set()
+    current = provider
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OllamaProvider):
+            return True
+        current = vars(current).get("_provider")
+    return False
+
+
 def call_llm_with_retry(
-    provider: Any,
+    provider: ChatProvider,
     model: str,
-    messages: List[Dict[str, str]],
-    response_model: Type[BaseModel],
-    options: Optional[Dict[str, Any]] = None,
-    max_retries: int = 2,
+    messages: list[dict[str, str]],
+    response_model: type[BaseModel],
+    options: dict[str, Any] | None = None,
+    max_retries: int = 1,
 ) -> BaseModel:
-    """
-    Call an LLM provider, parse and validate the JSON response against
-    response_model, and re-prompt with the validation error on failure.
-
-    Raises LLMExtractionError after max_retries failed attempts.
-    """
-    chat_format = (
-        response_model.model_json_schema()
-        if isinstance(provider, OllamaProvider)
-        else response_model
-    )
-
+    """Make one structured call and at most one schema-correction call."""
     current_messages = list(messages)
     last_raw = ""
-    last_error: Optional[Exception] = None
-
+    last_error: Exception = ValueError("no response")
     for attempt in range(max_retries + 1):
-        chat_kwargs = {"model": model, "messages": current_messages, "format": chat_format}
-        if options is not None:
-            chat_kwargs["options"] = options
-
-        raw_text = ""
         try:
-            # The provider call itself must sit inside the try: on Gemini a
-            # truncated (finish_reason=MAX_TOKENS) or safety-blocked response
-            # makes the SDK's response.text accessor raise ValueError, and a
-            # malformed provider payload raises KeyError — both must get the
-            # same retry-then-LLMExtractionError treatment as bad JSON.
-            response = provider.chat(**chat_kwargs)
-            raw_text = response["message"]["content"]
-            last_raw = raw_text
-
-            cleaned = extract_json_from_response(raw_text)
-            json_start = cleaned.find("{")
-            json_end = cleaned.rfind("}")
-            if json_start != -1 and json_end != -1:
-                cleaned = cleaned[json_start : json_end + 1]
-            parsed = json.loads(cleaned)
-            return response_model(**parsed)
-        except (json.JSONDecodeError, ValidationError, TypeError, ValueError, KeyError) as e:
-            last_error = e
-            if attempt < max_retries:
-                if raw_text:
-                    correction = (
-                        f"Your previous response was invalid: {e}. "
-                        "Return ONLY the corrected JSON, matching the schema exactly, "
-                        "with no extra commentary."
-                    )
-                else:
-                    # Provider-side failure (empty, blocked, or cut-off
-                    # response) — there is no raw text to echo back, so use an
-                    # empty assistant turn and phrase the correction for it.
-                    correction = (
-                        "Your previous response was empty or was cut off. "
-                        "Return ONLY the complete JSON, matching the schema exactly, "
-                        "with no extra commentary."
-                    )
-                current_messages = current_messages + [
-                    {"role": "assistant", "content": raw_text},
-                    {"role": "user", "content": correction},
-                ]
-                continue
-
+            response = provider.chat(
+                model=model,
+                messages=current_messages,
+                options=options,
+                format=(
+                    response_model.model_json_schema()
+                    if _is_ollama(provider)
+                    else response_model
+                ),
+            )
+            last_raw = response["message"]["content"]
+            payload = json.loads(extract_json_from_response(last_raw))
+            return response_model.model_validate(payload)
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            ValidationError,
+        ) as exc:
+            last_error = exc
+            if attempt >= max_retries:
+                break
+            current_messages = list(messages) + [
+                {
+                    "role": "user",
+                    "content": (
+                        "The prior response did not match the required schema: "
+                        f"{exc}. Return one complete JSON object matching the schema; "
+                        "include every requested item and no commentary."
+                    ),
+                }
+            ]
     raise LLMExtractionError(
-        f"Failed to get valid JSON after {max_retries + 1} attempts: {last_error}",
+        f"Structured response failed after {max_retries + 1} attempts: {last_error}",
         raw_response=last_raw,
-    ) from last_error
+        attempts=max_retries + 1,
+    )

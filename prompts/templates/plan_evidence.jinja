@@ -1,0 +1,70 @@
+Build the internal evidence plan for the selected work destinations. Compare the
+complete master fact bank with the target job, then allocate the strongest
+distinct evidence to the destination where it creates the most relevant
+accomplishment narrative.
+
+{% include "_truth_floor.jinja" %}
+
+<<<TARGET_JOB_PROFILE>>>
+{{ jd_profile_json }}
+<<<END_TARGET_JOB_PROFILE>>>
+
+<<<GLOBAL_MASTER_EVIDENCE>>>
+{{ global_evidence_json }}
+<<<END_GLOBAL_MASTER_EVIDENCE>>>
+
+<<<SELECTED_WORK_DESTINATIONS>>>
+{{ selected_work_destinations_json }}
+<<<END_SELECTED_WORK_DESTINATIONS>>>
+
+<<<REQUIRED_BULLET_TARGETS>>>
+{{ bullet_targets_json }}
+<<<END_REQUIRED_BULLET_TARGETS>>>
+
+{% if feedback %}
+Revision feedback:
+<<<REVISION_FEEDBACK>>>
+{{ feedback }}
+<<<END_REVISION_FEEDBACK>>>
+{% endif %}
+
+Return exactly one assignment per required future work bullet. Every selected
+destination must receive its exact required count. Assignments must be distinct,
+collectively useful, and ordered by destination relevance.
+
+Return ONLY:
+{
+  "assignments": [
+    {
+      "assignment_id": "allocation-1",
+      "destination_work_id": "work[0]",
+      "source_fact_ids": ["projects[2].highlights[0]"],
+      "matched_requirements": ["supported JD requirement"],
+      "intended_accomplishment": "specific STAR accomplishment to communicate",
+      "inferred_impact": {
+        "inference_id": "impact-1",
+        "destination_work_id": "work[0]",
+        "source_fact_ids": ["projects[2].highlights[0]"],
+        "inference_basis": "why this exact point estimate is professionally plausible",
+        "final_claim": "reduced processing time by 35%"
+      }
+    }
+  ]
+}
+
+Rules:
+- Use only source_fact_ids present in GLOBAL_MASTER_EVIDENCE. Never create an ID.
+- Evidence may come from ANY work role, project, or skill group and may be
+  assigned to ANY selected work destination. This cross-entry attribution is
+  intentional. The destination employer, title, dates, and URL are never changed.
+- Each assignment represents one future bullet and must have at least one fact.
+- Prefer verified metrics already present in source facts.
+- When useful evidence has no verified metric, you MAY create one plausible,
+  conservative point estimate. It must contain an exact-looking number, not a
+  range and not words such as approximately/about/roughly. Record its basis and
+  final claim in inferred_impact. Otherwise set inferred_impact to null.
+- For inferred_impact, repeat the assignment's destination_work_id and the exact
+  same source_fact_ids so traceability is complete.
+- Do not infer employers, titles, dates, schools, degrees, URLs, technologies
+  absent from the full master, or accomplishments unrelated to the source facts.
+- Return only the JSON object.

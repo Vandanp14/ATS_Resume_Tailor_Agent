@@ -6,9 +6,13 @@ the tailoring pipeline (JD parsing, per-section tailoring, and match scoring).
 The template registry is intentionally empty here; Wave 2 (Task B) fills it.
 """
 
-import os
-from typing import Dict, Optional
+import logging
+from pathlib import Path
+
 from jinja2 import Environment, FileSystemLoader, Template
+
+
+logger = logging.getLogger(__name__)
 
 
 class TemplateManager:
@@ -16,8 +20,8 @@ class TemplateManager:
     Manages Jinja templates for the resume tailoring pipeline.
 
     This class provides functionality to load and render templates for the
-    tailoring stages (JD parse, tailor summary/skills/work/projects, match
-    score). Templates are registered in `_load_templates` by Wave 2 (Task B).
+    tailoring stages (JD parse, evidence planning, skills/work/projects, and
+    holistic review).
     """
 
     def __init__(self, template_dir: str = "prompts/templates"):
@@ -27,52 +31,57 @@ class TemplateManager:
         Args:
             template_dir (str): Directory containing Jinja templates
         """
-        self.template_dir = template_dir
+        self.template_dir = Path(template_dir)
         self.env = Environment(
-            loader=FileSystemLoader(template_dir), trim_blocks=True, lstrip_blocks=True
+            loader=FileSystemLoader(str(self.template_dir)),
+            trim_blocks=True,
+            lstrip_blocks=True,
         )
-        self._templates: Dict[str, Template] = {}
+        self._templates: dict[str, Template] = {}
         self._load_templates()
 
-    def _load_templates(self):
+    def _load_templates(self) -> None:
         """Load all available templates.
 
         Each entry maps a logical template name to its ``.jinja`` filename
         under ``self.template_dir``. ``_tailoring_rules.jinja`` is intentionally
         NOT registered here: it is a shared partial (truth floor + ATS-rubric
         pressure) pulled in via ``{% include %}`` by the tailor_* and
-        match_score templates, never rendered standalone.
+        holistic_review template, never rendered standalone.
         """
-        template_files: Dict[str, str] = {
+        template_files: dict[str, str] = {
             "jd_parse": "jd_parse.jinja",
-            "tailor_summary": "tailor_summary.jinja",
+            "plan_evidence": "plan_evidence.jinja",
+            "plan_skill_bridges": "plan_skill_bridges.jinja",
             "tailor_skills": "tailor_skills.jinja",
             "tailor_work": "tailor_work.jinja",
             "tailor_projects": "tailor_projects.jinja",
-            "match_score": "match_score.jinja",
+            "select_work": "select_work.jinja",
+            "select_projects": "select_projects.jinja",
+            "holistic_review": "holistic_review.jinja",
             "system_message": "system_message.jinja",
         }
 
         for section_name, filename in template_files.items():
             try:
-                template_path = os.path.join(self.template_dir, filename)
-                if os.path.exists(template_path):
+                template_path = self.template_dir / filename
+                if template_path.exists():
                     self._templates[section_name] = self.env.get_template(filename)
                 else:
-                    print(f"⚠️ Template file not found: {template_path}")
-            except Exception as e:
-                print(f"❌ Error loading template {filename}: {e}")
+                    logger.warning("Template file not found: %s", template_path)
+            except Exception:
+                logger.exception("Error loading template %s", filename)
 
-    def get_available_sections(self) -> list:
+    def get_available_sections(self) -> list[str]:
         """
         Get list of available section names.
 
         Returns:
-            list: List of available section names
+            list: Available section names.
         """
         return list(self._templates.keys())
 
-    def render_template(self, section_name: str, **kwargs) -> Optional[str]:
+    def render_template(self, section_name: str, **kwargs: object) -> str | None:
         """
         Render a template for a specific section.
 
@@ -81,16 +90,19 @@ class TemplateManager:
             **kwargs: Template variables (e.g., text_content)
 
         Returns:
-            Optional[str]: Rendered template string, or None if template not found
+            str | None: Rendered template string, or None if unavailable.
         """
         if section_name not in self._templates:
-            print(f"❌ Template not found for section: {section_name}")
-            print(f"Available sections: {self.get_available_sections()}")
+            logger.error(
+                "Template not found for section %s; available=%s",
+                section_name,
+                self.get_available_sections(),
+            )
             return None
 
         try:
             template = self._templates[section_name]
             return template.render(**kwargs)
-        except Exception as e:
-            print(f"❌ Error rendering template for {section_name}: {e}")
+        except Exception:
+            logger.exception("Error rendering template for %s", section_name)
             return None

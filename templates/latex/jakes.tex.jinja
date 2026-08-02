@@ -1,48 +1,85 @@
-%% Jake's-Resume-style, single-column, ATS-safe LaTeX template.
+%-------------------------
+% Resume in Latex
+% Author : Jake Gutierrez
+% Jinja-ified for render.py (JSON-Resume dict -> LaTeX) by the ATS pipeline.
+%-------------------------
 %%
 %% Rendered by render.py through a Jinja2 environment configured with
 %% LaTeX-safe delimiters so ordinary TeX braces never collide with Jinja.
 %% The delimiters are: VAR (variable interpolation, already LaTeX-escaped in
 %% Python), BLOCK (control flow: if / for / endif / endfor) and a hash-brace
-%% Jinja comment form. Do not write those delimiter tokens literally in this
+%% Jinja comment form. Do NOT write those delimiter tokens literally in this
 %% file outside of an actual tag -- Jinja parses them wherever they appear,
 %% even inside a LaTeX comment.
 %%
 %% Every interpolated value is escaped in render.py (& % $ # _ { } ~ ^ \) and
-%% passed in as either an escaped string or a null. Optional fields are wrapped
-%% in BLOCK-if guards so a missing value emits *nothing* -- no placeholder text,
-%% no dangling "$|$" separators, no empty itemize environments.
+%% passed in as either an escaped string or a null. The contact line is built
+%% in render.py as ready-made \href markup (raw URL target, escaped display).
+%% Optional fields are wrapped in BLOCK-if guards so a missing value emits
+%% *nothing* -- no placeholder text, no dangling "$|$" separators, no empty
+%% itemize environments.
+
 \documentclass[letterpaper,11pt]{article}
 
-\usepackage[T1]{fontenc}
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
 \usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
 \usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
 
-%% Margins (Jake's tight one-page geometry, no external geometry package).
+
+%----------FONT OPTIONS----------
+% sans-serif
+% \usepackage[sfdefault]{FiraSans}
+% \usepackage[sfdefault]{roboto}
+% \usepackage[sfdefault]{noto-sans}
+% \usepackage[default]{sourcesanspro}
+
+% serif
+% \usepackage{CormorantGaramond}
+% \usepackage{charter}
+
+
+\pagestyle{fancy}
+\fancyhf{} % clear all header and footer fields
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% Adjust margins
 \addtolength{\oddsidemargin}{-0.5in}
 \addtolength{\evensidemargin}{-0.5in}
-\addtolength{\textwidth}{1.0in}
+\addtolength{\textwidth}{1in}
 \addtolength{\topmargin}{-.5in}
 \addtolength{\textheight}{1.0in}
 
-\pagestyle{empty}
+\urlstyle{same}
+
 \raggedbottom
 \raggedright
 \setlength{\tabcolsep}{0in}
 
-%% Section formatting.
+% Sections formatting
 \titleformat{\section}{
   \vspace{-4pt}\scshape\raggedright\large
-}{}{0em}{}[\titlerule \vspace{-5pt}]
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
 
-%% Ensure ATS text extraction picks up real glyphs (pdfTeX only; guarded so
-%% the template also compiles under XeTeX/LuaTeX engines that lack it).
+% Ensure that generate pdf is machine readable/ATS parsable (pdfTeX only;
+% guarded so the template also compiles under tectonic's XeTeX engine, which
+% lacks \pdfgentounicode and would otherwise error on the unguarded form).
 \ifdefined\pdfgentounicode
   \input{glyphtounicode}
   \pdfgentounicode=1
 \fi
 
-%% Custom commands (adapted from Jake Gutierrez's resume, dependency-light).
+%-------------------------
+% Custom commands
 \newcommand{\resumeItem}[1]{
   \item\small{
     {#1 \vspace{-2pt}}
@@ -57,12 +94,29 @@
     \end{tabular*}\vspace{-7pt}
 }
 
-\newcommand{\resumeProjectHeading}[2]{
+\newcommand{\resumeSubSubheading}[2]{
     \item
     \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
-      \small#1 & #2 \\
+      \textit{\small#1} & \textit{\small #2} \\
     \end{tabular*}\vspace{-7pt}
 }
+
+\newcommand{\resumeProjectHeading}[4]{
+    \vspace{-2pt}\item
+    \begin{tabularx}{0.97\textwidth}{@{}>{\raggedright\arraybackslash}Xr@{}}
+      \textbf{\small #1} & \small #2 \\
+      \textit{\footnotesize #3} & \footnotesize #4 \\
+    \end{tabularx}\vspace{-7pt}
+}
+
+\newcommand{\resumeProjectSingleHeading}[2]{
+    \vspace{-2pt}\item
+    \begin{tabularx}{0.97\textwidth}{@{}>{\raggedright\arraybackslash}Xr@{}}
+      \small #1 & \small #2 \\
+    \end{tabularx}\vspace{-7pt}
+}
+
+\newcommand{\resumeSubItem}[1]{\resumeItem{#1}\vspace{-4pt}}
 
 \renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
 
@@ -71,9 +125,13 @@
 \newcommand{\resumeItemListStart}{\begin{itemize}}
 \newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
 
+%-------------------------------------------
+%%%%%%  RESUME STARTS HERE  %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
 \begin{document}
 
-%%---------- HEADING ----------
+%----------HEADING----------
 \begin{center}
     \BLOCK{ if name }
     \textbf{\Huge \scshape \VAR{ name }} \\ \vspace{1pt}
@@ -83,14 +141,8 @@
     \BLOCK{ endif }
 \end{center}
 
-\BLOCK{ if summary }
-\vspace{2pt}
-\small{\VAR{ summary }}
-\vspace{2pt}
-\BLOCK{ endif }
-
 \BLOCK{ if education }
-%%---------- EDUCATION ----------
+%-----------EDUCATION-----------
 \section{Education}
   \resumeSubHeadingListStart
   \BLOCK{ for e in education }
@@ -102,13 +154,13 @@
 \BLOCK{ endif }
 
 \BLOCK{ if work }
-%%---------- EXPERIENCE ----------
+%-----------EXPERIENCE-----------
 \section{Experience}
   \resumeSubHeadingListStart
   \BLOCK{ for w in work }
     \resumeSubheading
-      {\VAR{ w.name or '' }}{\VAR{ w.dates or '' }}
-      {\VAR{ w.position or '' }}{\VAR{ w.location or '' }}
+      {\VAR{ w.position or '' }}{\VAR{ w.dates or '' }}
+      {\VAR{ w.name or '' }}{\VAR{ w.location or '' }}
       \BLOCK{ if w.highlights }
       \resumeItemListStart
         \BLOCK{ for h in w.highlights }
@@ -121,12 +173,21 @@
 \BLOCK{ endif }
 
 \BLOCK{ if projects }
-%%---------- PROJECTS ----------
+%-----------PROJECTS-----------
 \section{Projects}
   \resumeSubHeadingListStart
   \BLOCK{ for p in projects }
+    \BLOCK{ if p.has_primary and p.has_meta }
     \resumeProjectHeading
-      {\VAR{ p.heading or '' }}{\VAR{ p.dates or '' }}
+      {\VAR{ p.name or '' }}{\VAR{ p.dates or '' }}
+      {\VAR{ p.tech_line or '' }}{\VAR{ p.link or '' }}
+    \BLOCK{ elif p.has_primary }
+    \resumeProjectSingleHeading
+      {\textbf{\VAR{ p.name or '' }}}{\VAR{ p.dates or '' }}
+    \BLOCK{ elif p.has_meta }
+    \resumeProjectSingleHeading
+      {\emph{\VAR{ p.tech_line or '' }}}{\VAR{ p.link or '' }}
+    \BLOCK{ endif }
       \BLOCK{ if p.highlights }
       \resumeItemListStart
         \BLOCK{ for h in p.highlights }
@@ -139,7 +200,7 @@
 \BLOCK{ endif }
 
 \BLOCK{ if skills }
-%%---------- TECHNICAL SKILLS ----------
+%-----------PROGRAMMING SKILLS-----------
 \section{Technical Skills}
  \begin{itemize}[leftmargin=0.15in, label={}]
     \small{\item{
@@ -156,4 +217,5 @@
  \end{itemize}
 \BLOCK{ endif }
 
+%-------------------------------------------
 \end{document}

@@ -1,9 +1,4 @@
-"""
-Prompts for Resume Evaluation System
-
-This module contains all the prompts used by the resume evaluation system.
-Centralizing prompts here makes them easier to maintain and update.
-"""
+"""Model configuration for the resume tailoring pipeline."""
 
 import os
 from dotenv import load_dotenv

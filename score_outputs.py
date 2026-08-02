@@ -352,7 +352,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
 
-    output_dir = Path(args.output_dir).expanduser()
+    # _score_all temporarily chdirs into the sibling hiring-agent checkout, so
+    # every discovered resume path must be absolute before entering that context.
+    output_dir = Path(args.output_dir).expanduser().resolve()
     if not output_dir.is_dir():
         print(f"error: output directory not found: {output_dir}", file=sys.stderr)
         return 2
@@ -366,7 +368,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         return 2
 
-    jd_dir = Path(args.jd_dir).expanduser()
+    jd_dir = Path(args.jd_dir).expanduser().resolve()
     if not jd_dir.is_dir():
         print(
             f"[note] JD directory {jd_dir} not found; scoring proceeds without it.",

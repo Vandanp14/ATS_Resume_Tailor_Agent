@@ -3,19 +3,27 @@ group the master's skills so the most job-relevant ones lead, and assign each
 group a JD-driven relevance score.
 
 {% include "_tailoring_rules.jinja" %}
+{% include "_skills_rules.jinja" %}
+{% include "_ats_pressure.jinja" %}
 
---- Target job profile (parsed JD) ---
-
+<<<TARGET_JOB_PROFILE>>>
 {{ jd_profile_json }}
+<<<END_TARGET_JOB_PROFILE>>>
 
---- Master resume skills (the ONLY source of truth) ---
-
+<<<MASTER_SKILLS>>>
 {{ master_skills_json }}
+<<<END_MASTER_SKILLS>>>
+
+<<<VALIDATED_TRANSFERABLE_SKILL_PLAN>>>
+{{ transferable_skill_plan_json }}
+<<<END_VALIDATED_TRANSFERABLE_SKILL_PLAN>>>
 
 {% if feedback %}
 ## Revision feedback (a previous attempt fell short — fix this specifically)
 
+<<<REVISION_FEEDBACK>>>
 {{ feedback }}
+<<<END_REVISION_FEEDBACK>>>
 
 {% endif %}
 Return ONLY a JSON object with this structure:
@@ -31,15 +39,18 @@ Return ONLY a JSON object with this structure:
 }
 
 **RULES:**
-- Include ONLY skills present in the master. You may regroup and reorder them and
-  align a group's name to the job's vocabulary, but never add a skill the master
-  does not list.
+- Include only keywords present byte-for-byte in the master plus the exact
+  keywords in VALIDATED_TRANSFERABLE_SKILL_PLAN.
+- When the transferable plan is non-empty, return exactly one group named
+  `Transferable / Adjacent Tools` whose keywords exactly match the plan order.
+  When the plan is empty, do not return that group.
 - Always set `level` to `null` — resumes rarely state proficiency, so do not
   invent "Beginner"/"Expert".
 - `relevance` is an integer 0-100: 100 = a must-have the job centers on, low
   values for groups the job does not care about. Order groups from most to least
   relevant.
 - `keywords` must never be empty for a group; drop the group instead.
+- Return no more than five groups, ordered from highest to lowest relevance.
 
 ## Worked example
 
@@ -65,5 +76,8 @@ Frontend trails with low relevance; nothing new was added, `level` is always
     {"name": "Frontend", "level": null, "keywords": ["React"], "relevance": 20}
   ]
 }
+
+If the validated transferable plan contains Figma, append a normal scored group:
+{"name": "Transferable / Adjacent Tools", "level": null, "keywords": ["Figma"], "relevance": 78}
 
 **IMPORTANT**: Return ONLY valid JSON. Do not include any explanatory text.

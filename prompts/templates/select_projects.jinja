@@ -1,0 +1,33 @@
+Rank the candidate's projects for the target job before any resume rewriting.
+Treat the master as factual evidence. Select the strongest projects that form
+the best complementary one-page portfolio; reject tutorial-grade, weak, or
+redundant projects when stronger evidence exists.
+
+{% include "_resume_core_rules.jinja" %}
+{% include "_truth_floor.jinja" %}
+{% include "_project_rules.jinja" %}
+
+<<<TARGET_JOB_PROFILE>>>
+{{ jd_profile_json }}
+<<<END_TARGET_JOB_PROFILE>>>
+
+<<<CANDIDATE_PROJECT_EVIDENCE>>>
+{{ candidates_json }}
+<<<END_CANDIDATE_PROJECT_EVIDENCE>>>
+
+Return every source_id exactly once. When at least two candidates are supplied,
+set selected=true for exactly two projects; otherwise select every supplied
+project. Do not rewrite descriptions or bullets.
+
+Return ONLY:
+{
+  "candidates": [
+    {
+      "source_id": "projects[0]",
+      "relevance": 0,
+      "selected": true,
+      "matched_requirements": ["supported JD requirement"],
+      "reason": "short evidence-based reason"
+    }
+  ]
+}

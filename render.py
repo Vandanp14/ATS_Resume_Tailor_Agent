@@ -10,13 +10,12 @@ Responsibilities
    ``None``, no dangling ``$|$`` separators).
 2. :func:`render` writes the ``.tex`` always and, when asked, compiles a PDF with
    ``tectonic`` (raising an actionable error if the binary is missing).
-3. :func:`fit_to_one_page` implements the spec's deterministic one-page fit loop:
+3. :func:`fit_to_one_page` implements the deterministic one-page fit loop:
    render, count pages with ``pypdf``, and while the PDF spans more than one page
-   drop exactly one lowest-relevance item per iteration in a fixed priority order
-   (bullets beyond 2 per position -> projects beyond 2 -> skill groups -> oldest
-   low-relevance position's bullets to 1 -> whole lowest-relevance position),
-   never touching education or the header, tie-broken by recency (older first),
-   with a hard cap of 25 iterations before failing loudly.
+   trim project content above the two-bullet floor, skill groups above three, and
+   projects above two. Required 4/3/3 work bullets, two bullets on each selected
+   project, education, and the header are protected; the fitter fails loudly if
+   those constraints cannot fit.
 """
 
 from __future__ import annotations
@@ -25,8 +24,9 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 from pydantic import BaseModel
 
@@ -47,6 +47,7 @@ from models import (
     ScoredSkill,
     ScoredWork,
     Skill,
+    TRANSFERABLE_SKILL_GROUP,
     Volunteer,
     Work,
     strip_relevance_project,
@@ -71,7 +72,7 @@ class RenderError(RuntimeError):
 # Order is irrelevant because a single regex pass replaces each source character
 # exactly once -- the replacement text (which itself contains ``\``, ``{``, ``}``)
 # is never re-scanned, so ``&`` never becomes ``\textbackslash{}&`` etc.
-_LATEX_ESCAPE_MAP: Dict[str, str] = {
+_LATEX_ESCAPE_MAP: dict[str, str] = {
     "\\": r"\textbackslash{}",
     "&": r"\&",
     "%": r"\%",
@@ -92,22 +93,42 @@ _LATEX_ESCAPE_RE = re.compile("|".join(re.escape(k) for k in _LATEX_ESCAPE_MAP))
 # NBSP are routine. Normalize them to ASCII/TeX equivalents BEFORE the specials
 # pass -- every replacement is an ASCII non-special, so the escape pass below
 # stays correct and engine-independent.
-_UNICODE_NORMALIZE_MAP: Dict[str, str] = {
-    "‘": "'", "’": "'", "‚": ",", "′": "'",  # single quotes / prime
-    "ʼ": "'", "´": "'", "`": "`",
-    "“": '"', "”": '"', "„": ",,", "″": '"',  # double quotes / prime
-    "–": "--", "—": "---",  # en / em dash
-    "‐": "-", "‑": "-", "‒": "-", "―": "---", "−": "-",  # hyphens / minus
-    "•": "-", "·": "-", "‧": "-",  # bullets
+_UNICODE_NORMALIZE_MAP: dict[str, str] = {
+    "‘": "'",
+    "’": "'",
+    "‚": ",",
+    "′": "'",  # single quotes / prime
+    "ʼ": "'",
+    "´": "'",
+    "`": "`",
+    "“": '"',
+    "”": '"',
+    "„": ",,",
+    "″": '"',  # double quotes / prime
+    "–": "--",
+    "—": "---",  # en / em dash
+    "‐": "-",
+    "‑": "-",
+    "‒": "-",
+    "―": "---",
+    "−": "-",  # hyphens / minus
+    "•": "-",
+    "·": "-",
+    "‧": "-",  # bullets
     "…": "...",  # ellipsis
-    " ": " ", " ": " ", " ": " ", " ": " ",  # non-breaking / thin spaces
-    " ": " ", " ": " ", " ": " ",
+    " ": " ",
+    " ": " ",
+    " ": " ",
+    " ": " ",  # non-breaking / thin spaces
+    " ": " ",
+    " ": " ",
+    " ": " ",
     "­": "",  # soft hyphen (invisible) -> drop
 }
 _UNICODE_TRANSLATE = {ord(k): v for k, v in _UNICODE_NORMALIZE_MAP.items()}
 
 
-def latex_escape(text: Optional[str]) -> Optional[str]:
+def latex_escape(text: str | None) -> str | None:
     """Escape the ten LaTeX special characters in ``text``.
 
     First normalizes common Unicode punctuation (curly quotes, en/em dashes,
@@ -124,7 +145,7 @@ def latex_escape(text: Optional[str]) -> Optional[str]:
     return _LATEX_ESCAPE_RE.sub(lambda m: _LATEX_ESCAPE_MAP[m.group()], normalized)
 
 
-def _esc(value: Any) -> Optional[str]:
+def _esc(value: Any) -> str | None:
     """Escape a value, collapsing ``None`` / blank / whitespace-only to ``None``.
 
     Used for optional resume fields so the template's ``\\BLOCK{ if ... }`` guards
@@ -138,14 +159,14 @@ def _esc(value: Any) -> Optional[str]:
     return latex_escape(s)
 
 
-def _esc_list(values: Optional[List[Any]]) -> List[str]:
+def _esc_list(values: list[Any] | None) -> list[str]:
     """Escape a list of strings, dropping blanks. Never returns ``None``."""
     if not values:
         return []
     return [e for e in (_esc(v) for v in values) if e]
 
 
-def _join_escaped(values: Optional[List[Any]], sep: str) -> Optional[str]:
+def _join_escaped(values: list[Any] | None, sep: str) -> str | None:
     """Escape non-blank ``values`` and join with the (literal) LaTeX ``sep``.
 
     ``sep`` is *not* escaped -- it is fixed template markup such as ``, `` or
@@ -191,45 +212,167 @@ _ENV = _build_env()
 # ---------------------------------------------------------------------------
 
 
-def _date_range(start: Optional[str], end: Optional[str]) -> Optional[str]:
-    """Build an escaped ``start -- end`` date string, gracefully partial."""
-    s, e = _esc(start), _esc(end)
+_MONTH_NAMES = {
+    1: "Jan",
+    2: "Feb",
+    3: "Mar",
+    4: "Apr",
+    5: "May",
+    6: "Jun",
+    7: "Jul",
+    8: "Aug",
+    9: "Sep",
+    10: "Oct",
+    11: "Nov",
+    12: "Dec",
+}
+
+
+def _format_date(value: str | None) -> str | None:
+    """Format ISO month dates for people while leaving other source formats intact."""
+    if value is None:
+        return None
+    raw = str(value).strip()
+    match = re.fullmatch(r"(19|20)\d{2}-(0?[1-9]|1[0-2])", raw)
+    if match:
+        return f"{_MONTH_NAMES[int(match.group(2))]} {raw[:4]}"
+    return raw or None
+
+
+def _date_range(start: str | None, end: str | None) -> str | None:
+    """Build an escaped human-readable date range, gracefully partial."""
+    s, e = _esc(_format_date(start)), _esc(_format_date(end))
     if s and e:
         return f"{s} -- {e}"
     return s or e
 
 
-def _contact_line(basics: Optional[Basics]) -> Optional[str]:
-    """Join phone / email / profile URLs / portfolio with ``~$|$~``.
+def _education_end_date(value: str | None, today: date | None = None) -> str | None:
+    """Format an education end date and label a future completion as expected."""
+    formatted = _format_date(value)
+    if formatted is None:
+        return None
+    raw = str(value).strip()
+    match = re.fullmatch(r"((?:19|20)\d{2})(?:-(0?[1-9]|1[0-2]))?", raw)
+    if not match:
+        return formatted
+    year = int(match.group(1))
+    month = int(match.group(2) or 12)
+    current = today or date.today()
+    prefix = "Expected " if (year, month) > (current.year, current.month) else ""
+    return prefix + formatted
 
-    Missing pieces are skipped so the separator never dangles.
+
+def _education_date_range(
+    start: str | None, end: str | None, today: date | None = None
+) -> str | None:
+    start_text = _esc(_format_date(start))
+    end_text = _esc(_education_end_date(end, today))
+    if start_text and end_text:
+        return f"{start_text} -- {end_text}"
+    return start_text or end_text
+
+
+def _raw(value: Any) -> str | None:
+    """Return ``value`` stripped to a non-blank raw string, else ``None``.
+
+    Unlike :func:`_esc` this performs **no** LaTeX escaping -- used for the
+    ``\\href{...}`` target, which must stay raw (escaping ``_`` / ``%`` etc.
+    would corrupt the link).
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s or None
+
+
+def _link_display(raw_url: str) -> str:
+    """Jake-style link display text: drop a leading scheme and ``www.``.
+
+    e.g. ``https://www.linkedin.com/in/jake`` -> ``linkedin.com/in/jake``.
+    """
+    display = re.sub(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", "", raw_url)
+    display = re.sub(r"^www\.", "", display)
+    return display
+
+
+def _href_piece(target: str, display: str) -> str:
+    """Build ``\\href{<raw target>}{\\underline{<escaped display>}}``.
+
+    ``target`` stays raw (a working URL / mailto); only ``display`` is escaped.
+    ``hyperref`` is loaded with ``hidelinks`` so the link is not colored.
+    """
+    return r"\href{" + target + r"}{\underline{" + latex_escape(display) + "}}"
+
+
+def _project_link_label(raw_url: str) -> str:
+    """Return a compact, useful label for a project's visible hyperlink."""
+    display = _link_display(raw_url).casefold()
+    if display == "github.com" or display.startswith("github.com/"):
+        return "GitHub"
+    if re.match(r"^(?:https?://|www\.)", raw_url, re.IGNORECASE):
+        return "Live Demo"
+    return "Project Link"
+
+
+def _contact_line(basics: Basics | None) -> str | None:
+    """Build Jake's contact line: phone plain, email + short clickable labels.
+
+    Phone stays plain (escaped) text. Email becomes a ``mailto:`` link showing
+    the address. Each profile URL becomes a clickable, underlined ``\\href``
+    whose target is the RAW url (escaping it would break the link) and whose
+    display text is the profile's ``network`` label (e.g. "GitHub",
+    "LinkedIn"), falling back to the scheme/``www.``-stripped URL when the
+    network is missing/blank. ``basics.url`` (personal site) displays
+    "Portfolio". Display text is always escaped. Pieces are joined with Jake's
+    ``` $|$ ``` separator and missing pieces are skipped so it never dangles.
     """
     if basics is None:
         return None
-    parts: List[Any] = [basics.phone, basics.email]
-    if basics.profiles:
-        parts.extend(p.url for p in basics.profiles if p is not None)
-    parts.append(basics.url)
-    return _join_escaped(parts, r"~$|$~")
+    pieces: list[str] = []
+
+    phone = _esc(basics.phone)
+    if phone:
+        pieces.append(phone)
+
+    email = _raw(basics.email)
+    if email:
+        pieces.append(_href_piece("mailto:" + email, email))
+
+    for p in basics.profiles or []:
+        if p is None:
+            continue
+        target = _raw(p.url)
+        if target:
+            label = _raw(p.network) or _link_display(target)
+            pieces.append(_href_piece(target, label))
+
+    portfolio = _raw(basics.url)
+    if portfolio:
+        pieces.append(_href_piece(portfolio, "Portfolio"))
+
+    if not pieces:
+        return None
+    return " $|$ ".join(pieces)
 
 
-def _education_ctx(education: Optional[List[Education]]) -> List[Dict[str, Any]]:
-    ctx: List[Dict[str, Any]] = []
+def _education_ctx(education: list[Education] | None) -> list[dict[str, Any]]:
+    ctx: list[dict[str, Any]] = []
     for e in education or []:
         degree = _join_escaped([e.studyType, e.area], ", ")
         ctx.append(
             {
                 "institution": _esc(e.institution),
                 "degree": degree,
-                "dates": _date_range(e.startDate, e.endDate),
+                "dates": _education_date_range(e.startDate, e.endDate),
                 "score": _esc(e.score),
             }
         )
     return ctx
 
 
-def _work_ctx(work: Optional[List[Work]]) -> List[Dict[str, Any]]:
-    ctx: List[Dict[str, Any]] = []
+def _work_ctx(work: list[Work] | None) -> list[dict[str, Any]]:
+    ctx: list[dict[str, Any]] = []
     for w in work or []:
         ctx.append(
             {
@@ -243,39 +386,35 @@ def _work_ctx(work: Optional[List[Work]]) -> List[Dict[str, Any]]:
     return ctx
 
 
-def _project_ctx(projects: Optional[List[Project]]) -> List[Dict[str, Any]]:
-    ctx: List[Dict[str, Any]] = []
+def _project_ctx(projects: list[Project] | None) -> list[dict[str, Any]]:
+    ctx: list[dict[str, Any]] = []
     for p in projects or []:
         tech = p.technologies or p.skills
         name = _esc(p.name)
         tech_line = _join_escaped(tech, ", ")
-        url = _esc(p.url)
-        # Pre-join the heading from only the pieces that are present (same
-        # pattern as _contact_line) so the ``$|$`` separator never dangles when
-        # a project has no name but does carry technologies or a URL.
-        pieces: List[str] = []
-        if name:
-            pieces.append(r"\textbf{" + name + "}")
-        if tech_line:
-            pieces.append(r"\emph{" + tech_line + "}")
-        if url:
-            pieces.append(url)
-        heading = " $|$ ".join(pieces) if pieces else None
+        dates = _date_range(p.startDate, p.endDate)
+        url_target = _raw(p.url)
+        link = (
+            _href_piece(url_target, _project_link_label(url_target))
+            if url_target
+            else None
+        )
         ctx.append(
             {
                 "name": name,
                 "tech_line": tech_line,
-                "url": url,
-                "heading": heading,
-                "dates": _date_range(p.startDate, p.endDate),
+                "link": link,
+                "dates": dates,
+                "has_primary": bool(name or dates),
+                "has_meta": bool(tech_line or link),
                 "highlights": _esc_list(p.highlights),
             }
         )
     return ctx
 
 
-def _skills_ctx(skills: Optional[List[Skill]]) -> List[Dict[str, Any]]:
-    ctx: List[Dict[str, Any]] = []
+def _skills_ctx(skills: list[Skill] | None) -> list[dict[str, Any]]:
+    ctx: list[dict[str, Any]] = []
     for s in skills or []:
         name = _esc(s.name)
         keywords_line = _join_escaped(s.keywords, ", ")
@@ -285,13 +424,12 @@ def _skills_ctx(skills: Optional[List[Skill]]) -> List[Dict[str, Any]]:
     return ctx
 
 
-def build_context(resume: JSONResume) -> Dict[str, Any]:
+def build_context(resume: JSONResume) -> dict[str, Any]:
     """Turn a :class:`JSONResume` into a fully-escaped template context."""
     basics = resume.basics
     return {
         "name": _esc(basics.name) if basics is not None else None,
         "contact_line": _contact_line(basics),
-        "summary": _esc(basics.summary) if basics is not None else None,
         "education": _education_ctx(resume.education),
         "work": _work_ctx(resume.work),
         "projects": _project_ctx(resume.projects),
@@ -315,7 +453,7 @@ class RenderResult:
     """Paths produced by :func:`render`. ``pdf`` is ``None`` when not compiled."""
 
     tex: Path
-    pdf: Optional[Path] = None
+    pdf: Path | None = None
 
 
 def ensure_tectonic() -> str:
@@ -393,38 +531,31 @@ class ScoredResume(BaseModel):
     orchestrator constructs it from the Scored* section-tailor outputs.
     """
 
-    basics: Optional[Basics] = None
-    work: Optional[List[ScoredWork]] = None
-    volunteer: Optional[List[Volunteer]] = None
-    education: Optional[List[Education]] = None
-    awards: Optional[List[Award]] = None
-    certificates: Optional[List[Certificate]] = None
-    publications: Optional[List[Publication]] = None
-    skills: Optional[List[ScoredSkill]] = None
-    languages: Optional[List[Language]] = None
-    interests: Optional[List[Interest]] = None
-    references: Optional[List[Reference]] = None
-    projects: Optional[List[ScoredProject]] = None
+    basics: Basics | None = None
+    work: list[ScoredWork] | None = None
+    volunteer: list[Volunteer] | None = None
+    education: list[Education] | None = None
+    awards: list[Award] | None = None
+    certificates: list[Certificate] | None = None
+    publications: list[Publication] | None = None
+    skills: list[ScoredSkill] | None = None
+    languages: list[Language] | None = None
+    interests: list[Interest] | None = None
+    references: list[Reference] | None = None
+    projects: list[ScoredProject] | None = None
 
 
 def scored_to_plain(sr: ScoredResume) -> JSONResume:
     """Convert a :class:`ScoredResume` to a plain :class:`JSONResume` for rendering."""
-    return JSONResume(
-        basics=sr.basics,
-        work=[strip_relevance_work(w) for w in sr.work] if sr.work else None,
-        volunteer=sr.volunteer,
-        education=sr.education,
-        awards=sr.awards,
-        certificates=sr.certificates,
-        publications=sr.publications,
-        skills=[strip_relevance_skill(s) for s in sr.skills] if sr.skills else None,
-        languages=sr.languages,
-        interests=sr.interests,
-        references=sr.references,
-        projects=(
-            [strip_relevance_project(p) for p in sr.projects] if sr.projects else None
-        ),
+    payload = sr.model_dump(mode="json", exclude_unset=True)
+    payload["work"] = [strip_relevance_work(w) for w in sr.work] if sr.work else None
+    payload["skills"] = (
+        [strip_relevance_skill(s) for s in sr.skills] if sr.skills else None
     )
+    payload["projects"] = (
+        [strip_relevance_project(p) for p in sr.projects] if sr.projects else None
+    )
+    return JSONResume.model_validate(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -432,13 +563,31 @@ def scored_to_plain(sr: ScoredResume) -> JSONResume:
 # ---------------------------------------------------------------------------
 
 _MONTHS = {
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
 }
-_PRESENT_TOKENS = ("present", "current", "ongoing", "now", "today", "to date", "till date")
+_PRESENT_TOKENS = (
+    "present",
+    "current",
+    "ongoing",
+    "now",
+    "today",
+    "to date",
+    "till date",
+)
 
 
-def _date_value(raw: Optional[str]) -> Optional[float]:
+def _date_value(raw: str | None) -> float | None:
     """Parse a date string into a sortable float (larger == more recent).
 
     Handles ``YYYY``, ``YYYY-MM`` / ``YYYY/MM``, ``Mon YYYY`` / ``Month YYYY``,
@@ -472,7 +621,7 @@ def _date_value(raw: Optional[str]) -> Optional[float]:
     return year + month / 12.0
 
 
-def _recency_rank(start: Optional[str], end: Optional[str]) -> float:
+def _recency_rank(start: str | None, end: str | None) -> float:
     """Recency of a dated item; larger == more recent. Unknown dates sort oldest."""
     for candidate in (end, start):
         value = _date_value(candidate)
@@ -481,7 +630,7 @@ def _recency_rank(start: Optional[str], end: Optional[str]) -> float:
     return float("-inf")
 
 
-def _short(text: Optional[str], limit: int = 32) -> str:
+def _short(text: str | None, limit: int = 32) -> str:
     """A compact preview of a bullet/name for trim-log descriptions."""
     if not text:
         return ""
@@ -493,119 +642,75 @@ def _short(text: Optional[str], limit: int = 32) -> str:
 # One-page fit loop
 # ---------------------------------------------------------------------------
 #
-# Trim priority order (spec Sec. One-page auto-fit, item 2). Each call to
-# _next_trim drops exactly ONE item, checking tiers strictly in order and
-# returning on the first tier with a candidate:
-#   (a) work bullets beyond 2 per position
-#   (b) whole projects beyond 2
-#   (c) skill groups (keeping at least one -- skills are the densest keyword
-#       carrier, so the Technical Skills section is never zeroed out here)
-#   (d) oldest low-relevance position's remaining bullets down to 1
-#   (e) whole lowest-relevance position
-# Education and the header/basics are never trimmed. Ties are broken by recency
-# (older goes first); a final list-index term keeps every choice deterministic.
+# Work bullets are never candidates: the 4/3/3 work allocation is a hard output
+# contract. Two bullets on each of the two selected projects are protected too.
+# The fitter may remove only content above those project floors, then skill groups
+# down to three, then whole projects above the two-project floor. If that is not
+# enough, publishing fails instead of silently weakening the evidence portfolio.
 
 
-def _trim_tier_a(work: List[ScoredWork]) -> Optional[str]:
-    """(a) Drop the lowest-relevance bullet among positions with more than 2 bullets."""
-    keyed = []  # (sort_key, position_index, bullet_index)
-    for pi, w in enumerate(work):
-        highlights = w.highlights or []
-        if len(highlights) > 2:
-            rec = _recency_rank(w.startDate, w.endDate)
-            for bi, bullet in enumerate(highlights):
-                keyed.append(((bullet.relevance, rec, pi, bi), pi, bi))
-    if not keyed:
+def _trim_excess_project_bullet(projects: list[ScoredProject]) -> str | None:
+    eligible = [
+        (project.relevance, index)
+        for index, project in enumerate(projects)
+        if len(project.highlights or []) > 2
+    ]
+    if not eligible:
         return None
-    keyed.sort(key=lambda c: c[0])
-    _, pi, bi = keyed[0]
-    dropped = work[pi].highlights.pop(bi)
-    return f"tier-a: pos#{pi} bullet '{_short(dropped.text)}' (rel={dropped.relevance})"
+    _, index = min(eligible)
+    dropped = projects[index].highlights.pop()
+    return (
+        f"tier-a: excess project bullet '{_short(dropped)}' from "
+        f"'{_short(projects[index].name)}'"
+    )
 
 
-def _trim_tier_b(sr: ScoredResume, projects: List[ScoredProject]) -> Optional[str]:
-    """(b) Drop the lowest-relevance project once there are more than 2."""
+def _trim_skill_group(skills: list[ScoredSkill]) -> str | None:
+    if len(skills) <= 3:
+        return None
+    eligible = [
+        index
+        for index, skill in enumerate(skills)
+        if skill.name != TRANSFERABLE_SKILL_GROUP
+    ]
+    if not eligible:
+        return None
+    index = min(eligible, key=lambda i: (skills[i].relevance, i))
+    dropped = skills.pop(index)
+    return f"tier-b: skill group '{_short(dropped.name)}' (rel={dropped.relevance})"
+
+
+def _trim_excess_project(projects: list[ScoredProject]) -> str | None:
     if len(projects) <= 2:
         return None
-    keyed = [
-        ((p.relevance, _recency_rank(p.startDate, p.endDate), pi), pi)
-        for pi, p in enumerate(projects)
-    ]
-    keyed.sort(key=lambda c: c[0])
-    idx = keyed[0][1]
-    dropped = projects.pop(idx)
-    return f"tier-b: project '{_short(dropped.name)}' (rel={dropped.relevance})"
+    index = min(
+        range(len(projects)),
+        key=lambda i: (
+            projects[i].relevance,
+            _recency_rank(projects[i].startDate, projects[i].endDate),
+            i,
+        ),
+    )
+    dropped = projects.pop(index)
+    return f"tier-c: project '{_short(dropped.name)}' (rel={dropped.relevance})"
 
 
-def _trim_tier_c(sr: ScoredResume, skills: List[ScoredSkill]) -> Optional[str]:
-    """(c) Drop the lowest-relevance skill group, keeping at least one.
-
-    Skills are the resume's densest keyword carrier (1 line per group), so we
-    never zero out the whole Technical Skills section here — tiers (d)/(e) absorb
-    any further overflow from work bullets/positions at better keyword economy.
-    """
-    if len(skills) <= 1:
-        return None
-    idx = min(range(len(skills)), key=lambda i: (skills[i].relevance, i))
-    dropped = skills.pop(idx)
-    return f"tier-c: skill group '{_short(dropped.name)}' (rel={dropped.relevance})"
-
-
-def _trim_tier_d(work: List[ScoredWork]) -> Optional[str]:
-    """(d) From the oldest lowest-relevance position with >1 bullet, drop its weakest bullet."""
-    keyed = []
-    for pi, w in enumerate(work):
-        highlights = w.highlights or []
-        if len(highlights) > 1:
-            keyed.append(((w.relevance, _recency_rank(w.startDate, w.endDate), pi), pi))
-    if not keyed:
-        return None
-    keyed.sort(key=lambda c: c[0])
-    pi = keyed[0][1]
-    highlights = work[pi].highlights
-    bi = min(range(len(highlights)), key=lambda i: (highlights[i].relevance, i))
-    dropped = highlights.pop(bi)
-    return f"tier-d: pos#{pi} bullet '{_short(dropped.text)}' (rel={dropped.relevance})"
-
-
-def _trim_tier_e(sr: ScoredResume, work: List[ScoredWork]) -> Optional[str]:
-    """(e) Drop the whole lowest-relevance position."""
-    if not work:
-        return None
-    keyed = [
-        ((w.relevance, _recency_rank(w.startDate, w.endDate), pi), pi)
-        for pi, w in enumerate(work)
-    ]
-    keyed.sort(key=lambda c: c[0])
-    idx = keyed[0][1]
-    dropped = work.pop(idx)
-    return f"tier-e: position '{_short(dropped.name)}' (rel={dropped.relevance})"
-
-
-def _next_trim(sr: ScoredResume) -> Optional[str]:
+def _next_trim(sr: ScoredResume) -> str | None:
     """Mutate ``sr`` in place, dropping exactly one item per the priority order.
 
     Returns a human-readable description of what was dropped, or ``None`` when
     nothing trimmable remains (education/header are off-limits).
     """
-    work = sr.work or []
     projects = sr.projects or []
     skills = sr.skills or []
 
-    # Tiers are checked strictly in order; the first with a candidate fires.
-    action = _trim_tier_a(work)
+    action = _trim_excess_project_bullet(projects)
     if action:
         return action
-    action = _trim_tier_b(sr, projects)
+    action = _trim_skill_group(skills)
     if action:
         return action
-    action = _trim_tier_c(sr, skills)
-    if action:
-        return action
-    action = _trim_tier_d(work)
-    if action:
-        return action
-    action = _trim_tier_e(sr, work)
+    action = _trim_excess_project(projects)
     if action:
         return action
     return None
@@ -624,8 +729,9 @@ def _default_page_counter(out_dir: Path) -> Callable[[JSONResume], int]:
 def fit_to_one_page(
     scored_resume: ScoredResume,
     out_dir: Path,
-    page_counter: Optional[Callable[[JSONResume], int]] = None,
-    max_iterations: int = 25,
+    page_counter: Callable[[JSONResume], int] | None = None,
+    max_iterations: int = 100,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> JSONResume:
     """Trim ``scored_resume`` until it renders to exactly one page.
 
@@ -643,13 +749,19 @@ def fit_to_one_page(
     out_dir = Path(out_dir)
     working = scored_resume.model_copy(deep=True)
     counter = page_counter or _default_page_counter(out_dir)
-    trim_log: List[str] = []
+    trim_log: list[str] = []
 
     for iteration in range(max_iterations + 1):
         plain = scored_to_plain(working)
         pages = counter(plain)
-        if pages <= 1:
+        if progress_callback:
+            progress_callback(
+                f"One-page fit iteration {iteration + 1}: rendered {pages} page(s)"
+            )
+        if pages == 1:
             return plain
+        if pages < 1:
+            raise RenderError(f"PDF page counter returned invalid page count: {pages}")
         if iteration == max_iterations:
             break
         action = _next_trim(working)
@@ -660,6 +772,8 @@ def fit_to_one_page(
                 f"still spans {pages} pages. Trims applied: {trim_log}"
             )
         trim_log.append(action)
+        if progress_callback:
+            progress_callback(f"One-page fit trim: {action}")
 
     raise RenderError(
         f"Exceeded the one-page fit cap of {max_iterations} trim iterations; the "

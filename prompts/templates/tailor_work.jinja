@@ -1,106 +1,83 @@
-Rewrite the candidate's work experience for the target job. For each position,
-reword the bullets into the job's language and mirror its keywords — but keep
-every employer, title, and date exactly as the master states them, and invent
-NOTHING. Score each position and each bullet for job relevance.
+Rewrite the SELECTED work experience for the target job. The supplied entries
+were already ranked against the complete master resume. The master evidence is
+the source of truth; its wording is not. Turn rough notes into strong,
+specific, interview-defensible resume bullets.
 
-{% include "_tailoring_rules.jinja" %}
+{% include "_resume_core_rules.jinja" %}
+{% include "_truth_floor.jinja" %}
+{% include "_bullet_rules.jinja" %}
+{% include "_work_rules.jinja" %}
+{% include "_ats_pressure.jinja" %}
 
---- Target job profile (parsed JD) ---
-
+<<<TARGET_JOB_PROFILE>>>
 {{ jd_profile_json }}
+<<<END_TARGET_JOB_PROFILE>>>
 
---- Master resume work experience (the ONLY source of truth for facts) ---
+<<<SELECTED_WORK_DESTINATIONS>>>
+{{ selected_work_json or master_work_json }}
+<<<END_SELECTED_WORK_DESTINATIONS>>>
 
-{{ master_work_json }}
+<<<EVIDENCE_ASSIGNMENTS>>>
+{{ evidence_assignments_json }}
+<<<END_EVIDENCE_ASSIGNMENTS>>>
+
+<<<TRANSFERABLE_SKILLS_RESERVED_FOR_SKILLS_SECTION>>>
+{{ transferable_skill_keywords_json }}
+<<<END_TRANSFERABLE_SKILLS_RESERVED_FOR_SKILLS_SECTION>>>
 
 {% if feedback %}
-## Revision feedback (a previous attempt fell short — fix this specifically)
-
+Revision feedback:
+<<<REVISION_FEEDBACK>>>
 {{ feedback }}
-
+<<<END_REVISION_FEEDBACK>>>
 {% endif %}
-Return ONLY a JSON object with this structure:
+
+Return one entry for each selected source_id and no other entries:
 {
   "work": [
     {
-      "name": "Employer name — copied VERBATIM from the master",
-      "position": "Job title — copied VERBATIM from the master",
-      "url": "Employer URL from the master, or null",
-      "startDate": "Start date from the master, unchanged",
-      "endDate": "End date from the master, unchanged, or null if current",
-      "summary": "A one-line role summary, or null",
-      "relevance": "integer 0-100, how relevant this whole position is to the target job",
-      "highlights": [
-        {"text": "A reworded bullet mirroring the JD, built only from master facts", "relevance": "integer 0-100"}
+      "source_id": "work[0]",
+      "summary": "Optional grounded role summary",
+      "relevance": 0,
+      "bullets": [
+        {
+          "evidence_assignment_id": "allocation-1",
+          "situation_task": "specific context, need, or constraint",
+          "action": "specific candidate action and implementation",
+          "result": "concrete result or downstream value",
+          "text": "One concise STAR sentence containing the context, action, and result",
+          "relevance": 0,
+          "source_ids": ["projects[0].highlights[0]"],
+          "impact_type": "verified",
+          "impact_claim": "exact verified, inferred, or qualitative result"
+        }
       ]
     }
   ]
 }
 
-**CRITICAL — highlights are OBJECTS, not strings.** Each highlight is
-`{"text": ..., "relevance": ...}`, never a bare string. A bullet with no
-relevance score is invalid output.
-
-**RULES:**
-- `name`, `position`, `startDate`, `endDate`, `url` are copied from the master
-  unchanged. Never alter or invent an employer, title, or date.
-- Reword bullets to match the JD's phrasing and surface its keywords — but only
-  keywords the master already supports for THAT job. If the JD stresses a term the
-  master does not back up for this position, do NOT add it.
-- Never invent a metric or number. If the master bullet has no figure, the
-  reworded bullet has no figure.
-- `relevance` (position and per-bullet) is an integer 0-100. Order bullets within
-  a position from most to least relevant.
-- Set `summary` and `url` to `null` when the master does not provide them — never
-  a placeholder string.
-
-## Worked example
-
-Target job: Backend Engineer; must-haves Python, PostgreSQL, REST APIs, AWS; top
-keywords "distributed systems" (5), "payment processing" (5).
-
-Master work entry (as it arrives at runtime — a JSON dump, not prose):
-"""
-{
-  "name": "Acme Payments",
-  "position": "Software Engineer",
-  "startDate": "2021-03",
-  "highlights": [
-    "Worked on the billing service and helped migrate it to AWS.",
-    "Built internal REST APIs used by other teams.",
-    "Fixed performance problems in our Postgres database."
-  ]
-}
-"""
-
-Correct output. Note carefully:
-- Employer "Acme Payments", title "Software Engineer", and the dates are copied
-  VERBATIM: `startDate` stays "2021-03" byte-for-byte, and because the master
-  has no `endDate` the output keeps it `null`. Dates are never reformatted —
-  copy exactly what the master JSON holds.
-- "migrate it to AWS" is in the master, so AWS stays. No metric was invented
-  (there is no "reduced latency by 30%").
-- "Postgres" is rendered as "PostgreSQL" — the SAME technology in the JD's spelling.
-- The JD's headline keywords "distributed systems" and "payment processing" are
-  NOT inserted anywhere: this master entry never demonstrates them, so mirroring
-  them would be fabrication. Keyword mirroring rephrases truth; it does not add facts.
-{
-  "work": [
-    {
-      "name": "Acme Payments",
-      "position": "Software Engineer",
-      "url": null,
-      "startDate": "2021-03",
-      "endDate": null,
-      "summary": null,
-      "relevance": 90,
-      "highlights": [
-        {"text": "Designed and built internal REST APIs consumed by multiple engineering teams.", "relevance": 88},
-        {"text": "Developed and maintained the billing service, migrating it to AWS cloud infrastructure.", "relevance": 85},
-        {"text": "Optimized PostgreSQL query performance, resolving long-standing database bottlenecks.", "relevance": 82}
-      ]
-    }
-  ]
-}
-
-**IMPORTANT**: Return ONLY valid JSON. Do not include any explanatory text.
+Rules:
+- Produce exactly one bullet for every supplied evidence assignment and use each
+  assignment exactly once. This enforces the destination's required 4/3/3 count.
+- Every STAR field must be non-empty, and `text` must communicate the supplied
+  situation/task, action, and result in one concise sentence.
+- You may synthesize compatible facts only inside that bullet's allocation.
+- Do not merge unrelated accomplishments into one bullet.
+- Work and project facts may appear under a different destination employer when
+  the evidence assignment places them there. Do not change the destination's
+  employer, title, dates, or URL.
+- Use JD terminology only when the selected evidence supports it.
+- Do not use any keyword in
+  TRANSFERABLE_SKILLS_RESERVED_FOR_SKILLS_SECTION in a summary, STAR field, or
+  bullet text. Those keywords are allowed only in the labeled skills group.
+- Make the candidate's contribution, concrete output, implementation detail,
+  constraint, or supported result clear.
+- source_ids must be a non-empty subset of the named assignment's source_fact_ids.
+- Set impact_type to `inferred` and impact_claim to the exact final_claim when the
+  assignment has inferred_impact; include its exact number in text without
+  approximately/about/ranges. Never create another inferred number.
+- Use `verified` only when an allocated source fact contains the number. Use
+  `qualitative` for a concrete nonnumeric downstream result.
+- Do not return employer, title, dates, or URL. Code restores those protected
+  fields from the selected source_id.
+- Return ONLY valid JSON.
