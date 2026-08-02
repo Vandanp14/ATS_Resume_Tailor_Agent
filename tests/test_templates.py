@@ -72,3 +72,58 @@ def test_holistic_prompt_owns_semantic_plausibility_review_without_summary_edits
     assert "evidence_plan" in review
     assert "egregiously inflated" in review
     assert "summary:" not in review
+
+
+def test_action_verb_dictionary_preserves_every_category():
+    verbs = (ROOT / "_action_verbs.jinja").read_text()
+    categories_and_rare_verbs = {
+        "Building and Implementation": "Fabricated",
+        "Design and Architecture": "Conceptualized",
+        "Integration and Systems Work": "Orchestrated",
+        "Improvement and Optimization": "Refactored",
+        "Testing and Quality": "Benchmarked",
+        "Debugging and Problem Resolution": "Remediated",
+        "Data and Analysis": "Tabulated",
+        "Research and Discovery": "Concluded",
+        "Automation and Process Improvement": "Operationalized",
+        "Reliability and Maintenance": "Hardened",
+        "Leadership and Ownership": "Spearheaded",
+        "Collaboration and Cross-Functional Work": "Liaised",
+        "Communication and Documentation": "Translated",
+        "User, Customer, or Stakeholder Impact": "Empowered",
+    }
+    for category, rare_verb in categories_and_rare_verbs.items():
+        assert f"### {category}" in verbs
+        assert f"* {rare_verb}" in verbs
+    assert "## Verb Restrictions" in verbs
+    for restricted, condition in {
+        "Architected": "high-level structural or system-design decisions",
+        "Spearheaded": "initiated and led a significant effort",
+        "Drove": "measurable result",
+        "Deployed": "confirmed target environment",
+    }.items():
+        assert f"**{restricted}**" in verbs
+        assert condition in verbs
+    assert "better reflects the evidence" in verbs
+
+
+def test_bullet_guide_rules_preserve_core_content():
+    rules = (ROOT / "_bullet_guide_rules.jinja").read_text()
+    assert "### Core Rule" in rules
+    assert "### Writing Rules" in rules
+    assert "Do not:" in rules
+    assert "### Ownership Calibration" in rules
+    for level in ("Supported", "Contributed", "Implemented", "Co-developed",
+                  "Developed", "Led", "Owned"):
+        assert f"**{level}**" in rules
+    assert "### Bullet Templates" in rules
+    assert "### Final Bullet Test" in rules
+    assert "every bullet as a concise, evidence-backed accomplishment" in rules
+
+
+def test_bullet_guide_is_included_in_every_bullet_authoring_stage():
+    for name in ("tailor_work.jinja", "tailor_projects.jinja",
+                 "holistic_review.jinja"):
+        prompt = (ROOT / name).read_text()
+        assert '{% include "_bullet_guide_rules.jinja" %}' in prompt
+        assert '{% include "_action_verbs.jinja" %}' in prompt

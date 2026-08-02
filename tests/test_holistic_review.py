@@ -265,6 +265,7 @@ def test_rejected_reviewer_edit_emits_terminal_warning(monkeypatch, tmp_path):
         event
         for event in reporter.events
         if event.kind == ProgressEventKind.STAGE_WARNING
+        and event.message.startswith("Reviewer edit rejected")
     ]
     assert len(warnings) == 1
     assert "Kubernetes" in warnings[0].message

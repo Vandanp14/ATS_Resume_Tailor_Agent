@@ -5,6 +5,8 @@ and inferred metrics, duplication, ATS effectiveness, and readability.
 
 {% include "_truth_floor.jinja" %}
 {% include "_holistic_rules.jinja" %}
+{% include "_bullet_guide_rules.jinja" %}
+{% include "_action_verbs.jinja" %}
 
 <<<TARGET_JOB_PROFILE>>>
 {{ jd_profile_json }}
@@ -77,3 +79,11 @@ protected-field change is a truth violation. Flag an inferred metric only when
 it is egregiously inflated or grounded in no source fact; when in doubt, put it
 in recommendations, not truth_violations. Any unresolved truth violation blocks
 the run.
+
+Audit bullet quality per the bullet guide and verb dictionary, but put style
+findings in recommendations, never truth_violations: bullets opening with
+"responsible for," "worked on," "helped with," or "participated in"; restricted
+verbs (Led, Owned, Architected, Optimized, Scaled, Automated, Streamlined,
+Launched, Deployed, Transformed, Drove, Spearheaded) without supporting
+evidence; ownership verbs stronger than the ownership-calibration ladder
+allows; and three or more bullets in one section opening with the same verb.

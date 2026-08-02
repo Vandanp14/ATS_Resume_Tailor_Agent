@@ -55,6 +55,13 @@ master lacks, with duplicate keywords dropped. Findings corrected by a valid
 reviewer section replacement are retained under `resolved_truth_violations` in
 the match report and do not block publication.
 
+All bullet writing (work, projects, and reviewer section edits) follows the
+bullet guide: a categorized action-verb dictionary, an ownership-calibration
+ladder, and the final bullet test. A warn-only scanner surfaces weak openers
+("responsible for", "worked on", "helped with", "participated in"), opener
+restricted verbs, and three or more bullets opening with the same verb as
+terminal warnings; style findings never block a run.
+
 ## Setup
 
 ```bash

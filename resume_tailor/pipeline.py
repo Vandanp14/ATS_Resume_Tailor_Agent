@@ -31,6 +31,7 @@ from .assembly import (
     cross_entry_attributions,
     inferred_metrics,
     partition_review_truth_violations,
+    scan_bullet_style,
     transferable_skill_injections,
 )
 from .config import DEFAULT_MODEL, MODEL_PARAMETERS
@@ -677,6 +678,8 @@ class TailorPipeline:
                 final_scored = assemble_scored(
                     master, edited_components, jd_keywords=jd_keywords
                 )
+                for style_message in scan_bullet_style(final_scored):
+                    self.tracker.warn(f"Bullet style: {style_message}")
                 report_payload = review.model_dump(mode="json")
                 report_payload["rejected_section_edits"] = rejected_edits
                 report_payload["cross_entry_attributions"] = cross_entry_attributions(

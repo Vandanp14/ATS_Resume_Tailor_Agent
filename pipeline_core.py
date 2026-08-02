@@ -1012,3 +1012,83 @@ def partition_review_truth_violations(
         )
         (unresolved if remains else resolved).append(violation)
     return unresolved, resolved
+
+
+BANNED_OPENER_PHRASES = (
+    "responsible for",
+    "worked on",
+    "helped with",
+    "participated in",
+)
+RESTRICTED_VERBS = (
+    "led",
+    "owned",
+    "architected",
+    "optimized",
+    "scaled",
+    "automated",
+    "streamlined",
+    "launched",
+    "deployed",
+    "transformed",
+    "drove",
+    "spearheaded",
+)
+REPETITION_LIMIT = 3
+
+
+def scan_bullet_style(final_resume: ScoredResume) -> list[str]:
+    """Return warn-only bullet-style findings (never blocks the run).
+
+    Mirrors the bullet guide's writing rules: banned weak openers, restricted
+    ownership/impact verbs, and three or more bullets opening with the same
+    verb. Findings are advisory; the holistic reviewer owns semantic judgment.
+    """
+
+    findings: list[str] = []
+
+    def first_word(text: str) -> str:
+        return text.split(maxsplit=1)[0].rstrip(",:;.?!()").casefold()
+
+    def scan_section(
+        bullets: Iterable[str], section: str, owner: Callable[[int], str]
+    ) -> None:
+        opener_counts: dict[str, int] = {}
+        for index, text in enumerate(bullets):
+            lowered = text.casefold()
+            for phrase in BANNED_OPENER_PHRASES:
+                if re.search(rf"^\s*{re.escape(phrase)}\b", lowered):
+                    findings.append(
+                        f"{owner(index)} opens with {phrase!r}: {text[:90]!r}"
+                    )
+                    break
+            else:
+                word = first_word(text)
+                if not word:
+                    continue
+                opener_counts[word] = opener_counts.get(word, 0) + 1
+                if word in RESTRICTED_VERBS:
+                    findings.append(
+                        f"{owner(index)} opens with restricted verb "
+                        f"{word!r} (needs supporting evidence): {text[:90]!r}"
+                    )
+        for word, count in opener_counts.items():
+            if count >= REPETITION_LIMIT:
+                findings.append(
+                    f"{section} opens {count} bullets with the same verb "
+                    f"{word!r}; vary the openers"
+                )
+
+    for index, item in enumerate(final_resume.work or []):
+        scan_section(
+            (bullet.text for bullet in item.highlights or []),
+            f"Work[{index}]",
+            lambda i, n=index: f"Work[{n}] bullet {i + 1}",
+        )
+    for index, item in enumerate(final_resume.projects or []):
+        scan_section(
+            item.highlights or [],
+            f"Projects[{index}]",
+            lambda i, n=index: f"Projects[{n}] bullet {i + 1}",
+        )
+    return findings

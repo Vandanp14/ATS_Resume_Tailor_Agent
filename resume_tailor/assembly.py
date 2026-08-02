@@ -7,6 +7,7 @@ from pipeline_core import (
     cross_entry_attributions,
     inferred_metrics,
     partition_review_truth_violations,
+    scan_bullet_style,
     transferable_skill_injections,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "cross_entry_attributions",
     "inferred_metrics",
     "partition_review_truth_violations",
+    "scan_bullet_style",
     "transferable_skill_injections",
 ]
