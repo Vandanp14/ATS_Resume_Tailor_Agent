@@ -20,14 +20,18 @@ from models import (
     TRANSFERABLE_SKILL_GROUP,
     WorkRewriteResponse,
 )
+from tests.test_progress import CapturingReporter
 from tests.test_tailor import (
+    components,
     evidence_plan,
     master,
     project_item,
     selected_evidence,
     work_item,
 )
+from pipeline_core import apply_review_edits
 from render import RenderError
+from resume_tailor.progress import ProgressEventKind
 
 
 class Stub:
@@ -207,7 +211,7 @@ def test_opt_in_transferable_skill_stage_is_traced_and_skills_only(
     assert "transferable_skill_plan_json" in review_context
 
 
-def test_invalid_reviewer_edit_blocks_final_artifacts(monkeypatch, tmp_path):
+def test_invalid_reviewer_edit_is_skipped_but_run_completes(monkeypatch, tmp_path):
     review = HolisticReview(
         coverage_pct=95,
         missing_must_haves=[],
@@ -223,12 +227,47 @@ def test_invalid_reviewer_edit_blocks_final_artifacts(monkeypatch, tmp_path):
         ),
     )
     result, _ = run(monkeypatch, tmp_path, review)
-    assert result == 1
+    assert result == 0
     report = json.loads((tmp_path / "match_report.json").read_text())
-    assert report["pipeline_status"] == "blocked_invalid_reviewer_edits"
+    assert report["pipeline_status"] == "completed_with_rejected_edits"
     assert "Kubernetes" in report["rejected_section_edits"][0]
-    assert not (tmp_path / "tailored.json").exists()
-    assert not (tmp_path / ".done").exists()
+    assert (tmp_path / "tailored.json").exists()
+    assert (tmp_path / ".done").exists()
+
+
+def test_rejected_reviewer_edit_emits_terminal_warning(monkeypatch, tmp_path):
+    review = HolisticReview(
+        coverage_pct=95,
+        missing_must_haves=[],
+        weak_sections=[],
+        truth_violations=[],
+        recommendations=[],
+        section_edits=SectionEdits(
+            skills=TailoredSkills(
+                skills=[
+                    ScoredSkill(name="Cloud", keywords=["Kubernetes"], relevance=100)
+                ]
+            )
+        ),
+    )
+    reporter = CapturingReporter()
+    pipeline = tailor.TailorPipeline(
+        model="gemini-3.1-flash-lite",
+        call_interval=0,
+        provider=MagicMock(),
+        reporter=reporter,
+    )
+    monkeypatch.setattr(pipeline, "_call_once", Stub(review))
+    monkeypatch.setattr(pipeline_module, "render", MagicMock())
+    result = pipeline.run(master(), "Hiring Python engineer", tmp_path, no_pdf=True)
+    assert result == 0
+    warnings = [
+        event
+        for event in reporter.events
+        if event.kind == ProgressEventKind.STAGE_WARNING
+    ]
+    assert len(warnings) == 1
+    assert "Kubernetes" in warnings[0].message
 
 
 def test_reviewer_cannot_remove_planned_transferable_group(monkeypatch, tmp_path):
@@ -247,10 +286,44 @@ def test_reviewer_cannot_remove_planned_transferable_group(monkeypatch, tmp_path
         ),
     )
     result, _ = run(monkeypatch, tmp_path, review, bridge=True)
-    assert result == 1
+    assert result == 0
     report = json.loads((tmp_path / "match_report.json").read_text())
     assert "bridge_group_mismatch=True" in report["rejected_section_edits"][0]
-    assert not (tmp_path / "tailored.json").exists()
+    assert report["pipeline_status"] == "completed_with_rejected_edits"
+    assert (tmp_path / "tailored.json").exists()
+
+
+def test_reviewer_skills_edit_accepts_jd_grounded_keywords_and_dedupes():
+    resume = master()
+    parts = components(resume)
+    review = HolisticReview(
+        coverage_pct=95,
+        missing_must_haves=[],
+        weak_sections=[],
+        truth_violations=[],
+        recommendations=[],
+        section_edits=SectionEdits(
+            skills=TailoredSkills(
+                skills=[
+                    ScoredSkill(
+                        name="Programming",
+                        keywords=["Java", "J2EE", "Java"],
+                        relevance=95,
+                    ),
+                    ScoredSkill(
+                        name="Languages",
+                        keywords=["Java", "Python"],
+                        relevance=85,
+                    ),
+                ]
+            )
+        ),
+    )
+    updated, rejected = apply_review_edits(review, resume, parts, jd_keywords=["J2EE"])
+    assert rejected == []
+    groups = {group.name: group.keywords for group in updated.skills.skills}
+    assert groups["Programming"] == ["Java", "J2EE"]
+    assert groups["Languages"] == ["Python"]
 
 
 def test_unresolved_truth_violation_blocks_render_and_done(monkeypatch, tmp_path):

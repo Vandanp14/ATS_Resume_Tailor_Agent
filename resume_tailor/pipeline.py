@@ -666,10 +666,17 @@ class TailorPipeline:
                 )
 
             with self.tracker.stage(Stage.VALIDATE_REVIEW):
+                jd_keywords = [
+                    *jd.must_have_skills,
+                    *jd.nice_to_have_skills,
+                    *(item.term for item in jd.keywords),
+                ]
                 edited_components, rejected_edits = apply_review_edits(
-                    review, master, components
+                    review, master, components, jd_keywords=jd_keywords
                 )
-                final_scored = assemble_scored(master, edited_components)
+                final_scored = assemble_scored(
+                    master, edited_components, jd_keywords=jd_keywords
+                )
                 report_payload = review.model_dump(mode="json")
                 report_payload["rejected_section_edits"] = rejected_edits
                 report_payload["cross_entry_attributions"] = cross_entry_attributions(
@@ -693,10 +700,8 @@ class TailorPipeline:
                 report_payload["pipeline_status"] = "blocked_truth_violations"
                 write_json(out_dir / "match_report.json", report_payload)
                 return 1
-            if rejected_edits:
-                report_payload["pipeline_status"] = "blocked_invalid_reviewer_edits"
-                write_json(out_dir / "match_report.json", report_payload)
-                return 1
+            for message in rejected_edits:
+                self.tracker.warn(f"Reviewer edit rejected: {message}")
 
             with self.tracker.stage(Stage.RENDER):
                 if no_pdf:
@@ -710,7 +715,9 @@ class TailorPipeline:
                     )
             with self.tracker.stage(Stage.WRITE_ARTIFACTS):
                 write_json(out_dir / "tailored.json", final_plain)
-                report_payload["pipeline_status"] = "completed"
+                report_payload["pipeline_status"] = (
+                    "completed_with_rejected_edits" if rejected_edits else "completed"
+                )
                 write_json(out_dir / "match_report.json", report_payload)
                 write_json(out_dir / ".done", {"pdf": not no_pdf})
             return 0

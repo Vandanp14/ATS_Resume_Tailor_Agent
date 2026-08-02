@@ -70,7 +70,7 @@ def run_single(
             ProgressEvent(
                 ProgressEventKind.JOB_FAILED,
                 job=job,
-                message="unresolved truth violation or invalid reviewer edit",
+                        message="unresolved truth violation",
             )
         )
         return result
@@ -144,7 +144,7 @@ def run_batch(
                     ProgressEvent(
                         ProgressEventKind.JOB_FAILED,
                         job=job,
-                        message="unresolved truth violation or invalid reviewer edit",
+                message="unresolved truth violation",
                     )
                 )
             else:

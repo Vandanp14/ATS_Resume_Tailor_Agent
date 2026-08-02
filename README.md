@@ -47,10 +47,13 @@ fact from any work role, project, or skill group to a selected work destination.
 It may also declare a plausible exact point-estimate impact. Cross-entry
 attributions and inferred metrics remain traceable in `match_report.json`. The
 one holistic review owns semantic plausibility, contradiction, duplication,
-coverage, and readability. Any unresolved truth violation—or any invalid
-reviewer edit—blocks output publication. Findings corrected by a valid reviewer
-section replacement are retained under `resolved_truth_violations` in the match
-report and do not block publication.
+coverage, and readability. Only an unresolved truth violation blocks output
+publication; reviewer section edits that fail validation are skipped, logged in
+`rejected_section_edits`, and surfaced as a terminal warning while the run
+completes. Skills edits may include JD must-have and nice-to-have keywords the
+master lacks, with duplicate keywords dropped. Findings corrected by a valid
+reviewer section replacement are retained under `resolved_truth_violations` in
+the match report and do not block publication.
 
 ## Setup
 

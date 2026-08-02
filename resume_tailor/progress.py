@@ -39,6 +39,7 @@ class ProgressEventKind(StrEnum):
     STAGE_STARTED = "stage_started"
     STAGE_RETRY = "stage_retry"
     STAGE_DETAIL = "stage_detail"
+    STAGE_WARNING = "stage_warning"
     STAGE_COMPLETED = "stage_completed"
     JOB_COMPLETED = "job_completed"
     JOB_FAILED = "job_failed"
@@ -153,6 +154,15 @@ class ProgressTracker:
             )
         )
 
+    def warn(self, message: str) -> None:
+        self.reporter.emit(
+            ProgressEvent(
+                ProgressEventKind.STAGE_WARNING,
+                job=self.job,
+                message=message,
+            )
+        )
+
 
 class PlainProgressReporter:
     """Stable line-oriented output for CI and redirected streams."""
@@ -207,6 +217,8 @@ class PlainProgressReporter:
                 self._write(f"{prefix}↻ {event.stage.value} · {attempt}{detail}")
             case ProgressEventKind.STAGE_DETAIL:
                 self._write(f"{prefix}  {event.message}")
+            case ProgressEventKind.STAGE_WARNING:
+                self._write(f"{prefix}⚠ {event.message}")
             case ProgressEventKind.STAGE_COMPLETED:
                 self._write(f"{prefix}✓ {event.stage.value}{duration}")
             case ProgressEventKind.JOB_COMPLETED:
@@ -292,6 +304,8 @@ class RichProgressReporter:
                 )
             case ProgressEventKind.STAGE_DETAIL:
                 self.console.print(f"[dim]{job} · {event.message}[/]")
+            case ProgressEventKind.STAGE_WARNING:
+                self.console.print(f"[yellow]⚠[/] {job} · {event.message}")
             case ProgressEventKind.STAGE_COMPLETED:
                 self._stop_stage()
                 self.console.print(f"[green]✓[/] {job} · {event.stage.value}{duration}")

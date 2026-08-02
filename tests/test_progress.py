@@ -14,6 +14,7 @@ from resume_tailor.progress import (
     PlainProgressReporter,
     ProgressEvent,
     ProgressEventKind,
+    ProgressTracker,
     Stage,
     RichProgressReporter,
     build_progress_reporter,
@@ -79,6 +80,51 @@ def test_quiet_reporter_only_emits_failures_and_final_summary():
     assert "review rejected" in output
     assert "1 failed" in output
     assert "Outputs:" not in output
+
+
+def test_tracker_warn_emits_stage_warning_visible_by_default():
+    reporter = CapturingReporter()
+    tracker = ProgressTracker(reporter, job=JobContext("intuit"))
+    tracker.warn("Reviewer edit rejected: skills edit rejected: x")
+    assert reporter.events[0].kind == ProgressEventKind.STAGE_WARNING
+    assert reporter.events[0].message.startswith("Reviewer edit rejected")
+    assert reporter.events[0].verbose_only is False
+
+
+def test_plain_reporter_renders_warnings_without_verbose():
+    stream = StringIO()
+    reporter = PlainProgressReporter(stream=stream)
+    job = JobContext("intuit", 1, 2)
+    reporter.emit(
+        ProgressEvent(
+            ProgressEventKind.STAGE_WARNING,
+            job=job,
+            message="Reviewer edit rejected: x",
+        )
+    )
+    output = stream.getvalue()
+    assert "[1/2] intuit · ⚠ Reviewer edit rejected: x" in output
+
+
+def test_rich_reporter_renders_warning_lines():
+    class TerminalBuffer(StringIO):
+        def isatty(self):
+            return True
+
+    stream = TerminalBuffer()
+    reporter = RichProgressReporter(stream=stream)
+    job = JobContext("intuit")
+    reporter.emit(
+        ProgressEvent(
+            ProgressEventKind.STAGE_WARNING,
+            job=job,
+            message="Reviewer edit rejected: x",
+        )
+    )
+    reporter.close()
+    output = stream.getvalue()
+    assert "⚠" in output
+    assert "Reviewer edit rejected: x" in output
 
 
 def test_reporter_factory_uses_plain_output_for_redirected_stream():

@@ -640,11 +640,14 @@ def validate_skills(
     skills: TailoredSkills,
     master: JSONResume,
     transferable_plan: TransferableSkillPlan | None = None,
+    jd_keywords: Iterable[str] | None = None,
 ) -> None:
     transferable_plan = transferable_plan or TransferableSkillPlan(skills=[])
     allowed = {
         keyword for group in master.skills or [] for keyword in group.keywords or []
     }
+    if jd_keywords:
+        allowed.update(jd_keywords)
     bridge_keywords = [item.keyword for item in transferable_plan.skills]
     bridge_group = [
         group for group in skills.skills if group.name == TRANSFERABLE_SKILL_GROUP
@@ -693,9 +696,18 @@ def _protected_source_fields(source: dict, generated: set[str]) -> dict:
     }
 
 
-def assemble_scored(master: JSONResume, components: PipelineComponents) -> ScoredResume:
+def assemble_scored(
+    master: JSONResume,
+    components: PipelineComponents,
+    jd_keywords: Iterable[str] | None = None,
+) -> ScoredResume:
     if components.skills:
-        validate_skills(components.skills, master, components.transferable_skill_plan)
+        validate_skills(
+            components.skills,
+            master,
+            components.transferable_skill_plan,
+            jd_keywords=jd_keywords,
+        )
     facts = master_fact_index(master)
     validate_evidence_plan(components.evidence_plan, components.selected.work, facts)
     work_sources = {item["source_id"]: item for item in components.selected.work}
@@ -888,8 +900,25 @@ def transferable_skill_injections(
     ]
 
 
+def _dedupe_skill_keywords(skills: TailoredSkills) -> TailoredSkills:
+    """Drop keywords repeated across groups, keeping the first occurrence."""
+    seen: set[str] = set()
+    groups: list[ScoredSkill] = []
+    for group in skills.skills:
+        kept: list[str] = []
+        for keyword in group.keywords:
+            if keyword not in seen:
+                seen.add(keyword)
+                kept.append(keyword)
+        groups.append(group.model_copy(update={"keywords": kept}))
+    return skills.model_copy(update={"skills": groups})
+
+
 def apply_review_edits(
-    review: HolisticReview, master: JSONResume, components: PipelineComponents
+    review: HolisticReview,
+    master: JSONResume,
+    components: PipelineComponents,
+    jd_keywords: Iterable[str] | None = None,
 ) -> tuple[PipelineComponents, list[str]]:
     """Apply each independently valid named edit; return rejection messages."""
     edits = review.section_edits
@@ -900,8 +929,14 @@ def apply_review_edits(
     facts = master_fact_index(master)
     if edits.skills is not None:
         try:
-            validate_skills(edits.skills, master, updated.transferable_skill_plan)
-            updated = replace(updated, skills=edits.skills)
+            deduped = _dedupe_skill_keywords(edits.skills)
+            validate_skills(
+                deduped,
+                master,
+                updated.transferable_skill_plan,
+                jd_keywords=jd_keywords,
+            )
+            updated = replace(updated, skills=deduped)
         except ContractError as exc:
             rejected.append(f"skills edit rejected: {exc}")
     if edits.work is not None:
