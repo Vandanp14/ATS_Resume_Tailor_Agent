@@ -92,12 +92,16 @@ class GeminiProvider:
         api_key: str,
         timeout_ms: int = 30_000,
         progress_callback: Callable[[str], None] | None = None,
+        attempt_callback: Callable[[], str | None] | None = None,
+        usage_callback: Callable[[str | None, int | None], None] | None = None,
     ) -> None:
         from google import genai
         from google.genai import types
 
         self._types = types
         self._progress_callback = progress_callback
+        self._attempt_callback = attempt_callback
+        self._usage_callback = usage_callback
         self.client = genai.Client(
             api_key=api_key,
             http_options=types.HttpOptions(
@@ -164,9 +168,14 @@ class GeminiProvider:
         )
         for attempt in range(3):
             try:
+                attempt_id = self._attempt_callback() if self._attempt_callback else None
                 response = self.client.models.generate_content(
                     model=model, contents=contents, config=config
                 )
+                usage = getattr(response, "usage_metadata", None)
+                input_tokens = getattr(usage, "prompt_token_count", None)
+                if self._usage_callback:
+                    self._usage_callback(attempt_id, input_tokens)
                 if not response.text:
                     raise ValueError("Gemini returned no text content")
                 return {"message": {"role": "assistant", "content": response.text}}
@@ -190,6 +199,8 @@ class GeminiProvider:
 def initialize_llm_provider(
     model_name: str,
     progress_callback: Callable[[str], None] | None = None,
+    attempt_callback: Callable[[], str | None] | None = None,
+    usage_callback: Callable[[str | None, int | None], None] | None = None,
 ) -> ChatProvider:
     provider = MODEL_PROVIDER_MAPPING.get(model_name)
     if provider is None:
@@ -201,7 +212,12 @@ def initialize_llm_provider(
     if provider == ModelProvider.GEMINI:
         if not GEMINI_API_KEY:
             raise RuntimeError("Gemini selected but GEMINI_API_KEY is not configured.")
-        return GeminiProvider(GEMINI_API_KEY, progress_callback=progress_callback)
+        return GeminiProvider(
+            GEMINI_API_KEY,
+            progress_callback=progress_callback,
+            attempt_callback=attempt_callback,
+            usage_callback=usage_callback,
+        )
     return OllamaProvider()
 
 

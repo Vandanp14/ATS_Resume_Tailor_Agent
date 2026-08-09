@@ -74,3 +74,27 @@ def test_gemini_provider_uses_typed_client_without_exposing_key(monkeypatch):
     http_options = genai.Client.call_args.kwargs["http_options"]
     assert http_options.timeout == 30_000
     assert http_options.retry_options.attempts == 1
+
+
+def test_gemini_provider_reports_every_attempt_and_response_usage(monkeypatch):
+    from google import genai
+
+    response = MagicMock()
+    response.text = '{"value": 1}'
+    response.usage_metadata.prompt_token_count = 4321
+    client = MagicMock()
+    client.models.generate_content.return_value = response
+    monkeypatch.setattr(genai, "Client", MagicMock(return_value=client))
+    attempts = []
+    usage = []
+    provider = llm_utils.GeminiProvider(
+        "secret-value",
+        attempt_callback=lambda: attempts.append("attempt-1") or "attempt-1",
+        usage_callback=lambda attempt_id, tokens: usage.append((attempt_id, tokens)),
+    )
+
+    result = provider.chat("gemini-3.1-flash-lite", [{"role": "user", "content": "x"}])
+
+    assert result["message"]["content"] == '{"value": 1}'
+    assert attempts == ["attempt-1"]
+    assert usage == [("attempt-1", 4321)]
