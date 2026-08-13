@@ -59,6 +59,8 @@ class TemplateManager:
             "select_work": "select_work.jinja",
             "select_projects": "select_projects.jinja",
             "holistic_review": "holistic_review.jinja",
+            "concise_bullet": "concise_bullet.jinja",
+            "audit_concision": "audit_concision.jinja",
             "system_message": "system_message.jinja",
         }
 

@@ -660,7 +660,7 @@ def _trim_excess_project_bullet(projects: list[ScoredProject]) -> str | None:
     _, index = min(eligible)
     dropped = projects[index].highlights.pop()
     return (
-        f"tier-a: excess project bullet '{_short(dropped)}' from "
+        f"tier-a: excess project bullet '{_short(dropped.text)}' from "
         f"'{_short(projects[index].name)}'"
     )
 
@@ -732,6 +732,9 @@ def fit_to_one_page(
     page_counter: Callable[[JSONResume], int] | None = None,
     max_iterations: int = 100,
     progress_callback: Callable[[str], None] | None = None,
+    exhaustion_handler: (
+        Callable[[ScoredResume, int, tuple[str, ...]], str | None] | None
+    ) = None,
 ) -> JSONResume:
     """Trim ``scored_resume`` until it renders to exactly one page.
 
@@ -744,7 +747,10 @@ def fit_to_one_page(
     ``page_counter`` is injectable for tests (default renders + counts with
     ``pypdf`` + ``tectonic``). After ``max_iterations`` trims without reaching
     one page -- or when no trimmable content remains -- a :class:`RenderError`
-    is raised.
+    is raised. ``exhaustion_handler`` is called only after ordinary trimming has
+    no legal action left; it may mutate the working scored resume and return a
+    description of that action. A ``None`` result preserves the historical
+    exhaustion error.
     """
     out_dir = Path(out_dir)
     working = scored_resume.model_copy(deep=True)
@@ -765,6 +771,8 @@ def fit_to_one_page(
         if iteration == max_iterations:
             break
         action = _next_trim(working)
+        if action is None and exhaustion_handler is not None:
+            action = exhaustion_handler(working, pages, tuple(trim_log))
         if action is None:
             raise RenderError(
                 "Cannot fit resume to one page: every trimmable item has been "
@@ -773,7 +781,12 @@ def fit_to_one_page(
             )
         trim_log.append(action)
         if progress_callback:
-            progress_callback(f"One-page fit trim: {action}")
+            prefix = (
+                "One-page fit trim"
+                if action.startswith("tier-")
+                else "One-page fit recovery"
+            )
+            progress_callback(f"{prefix}: {action}")
 
     raise RenderError(
         f"Exceeded the one-page fit cap of {max_iterations} trim iterations; the "

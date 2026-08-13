@@ -18,6 +18,8 @@ def test_pipeline_templates_are_registered_and_summary_is_gone():
         "tailor_work",
         "tailor_projects",
         "holistic_review",
+        "concise_bullet",
+        "audit_concision",
         "system_message",
     }
     assert expected == set(manager.get_available_sections())
@@ -113,8 +115,15 @@ def test_bullet_guide_rules_preserve_core_content():
     assert "### Writing Rules" in rules
     assert "Do not:" in rules
     assert "### Ownership Calibration" in rules
-    for level in ("Supported", "Contributed", "Implemented", "Co-developed",
-                  "Developed", "Led", "Owned"):
+    for level in (
+        "Supported",
+        "Contributed",
+        "Implemented",
+        "Co-developed",
+        "Developed",
+        "Led",
+        "Owned",
+    ):
         assert f"**{level}**" in rules
     assert "### Bullet Templates" in rules
     assert "### Final Bullet Test" in rules
@@ -122,8 +131,7 @@ def test_bullet_guide_rules_preserve_core_content():
 
 
 def test_bullet_guide_is_included_in_every_bullet_authoring_stage():
-    for name in ("tailor_work.jinja", "tailor_projects.jinja",
-                 "holistic_review.jinja"):
+    for name in ("tailor_work.jinja", "tailor_projects.jinja", "holistic_review.jinja"):
         prompt = (ROOT / name).read_text()
         assert '{% include "_bullet_guide_rules.jinja" %}' in prompt
         assert '{% include "_action_verbs.jinja" %}' in prompt

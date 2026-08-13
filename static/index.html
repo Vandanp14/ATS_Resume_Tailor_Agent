@@ -160,6 +160,15 @@
 
         <div class="notice warning" id="detail-export-warning" role="status" hidden></div>
 
+        <section class="fit-recovery-card" id="fit-recovery-card" aria-labelledby="fit-recovery-card-title" hidden>
+          <div class="fit-recovery-card-copy">
+            <p class="eyebrow">One-page fit</p>
+            <h2 id="fit-recovery-card-title">Choose what to remove</h2>
+            <p id="fit-recovery-card-summary">The resume still spans two pages after automatic shortening.</p>
+          </div>
+          <button class="button warning-action" id="review-removals-btn" type="button">Review removal options</button>
+        </section>
+
         <div class="detail-tabs" role="tablist" aria-label="Job details">
           <button type="button" role="tab" id="tab-progress" aria-selected="true" aria-controls="panel-progress" tabindex="0">Progress</button>
           <button type="button" role="tab" id="tab-preview" aria-selected="false" aria-controls="panel-preview" tabindex="-1">Resume preview</button>
@@ -244,6 +253,53 @@
         <footer class="dialog-footer">
           <button class="button secondary" id="cancel-job-dialog" type="button">Cancel</button>
           <button class="button primary" type="submit" id="add-btn">Add to queue</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog class="recovery-dialog" id="fit-recovery-dialog" aria-labelledby="fit-recovery-title" aria-describedby="fit-recovery-description">
+    <div class="recovery-dialog-shell">
+      <header class="dialog-header recovery-dialog-header">
+        <div>
+          <p class="eyebrow">One-page fit</p>
+          <h2 id="fit-recovery-title">Review removal options</h2>
+        </div>
+        <button class="icon-button" id="close-recovery-dialog" type="button" aria-label="Close removal options"><span aria-hidden="true">×</span></button>
+      </header>
+
+      <form id="fit-recovery-form" novalidate>
+        <div class="recovery-dialog-body">
+          <p class="recovery-intro" id="fit-recovery-description">Choose content to remove from this tailored resume. Your master resume will not change.</p>
+
+          <dl class="recovery-summary" aria-label="Current fit status">
+            <div><dt>Current length</dt><dd class="tabnum" id="recovery-page-count">—</dd></div>
+            <div><dt>Automatic shortening</dt><dd class="tabnum" id="recovery-concision-count">—</dd></div>
+          </dl>
+
+          <div class="recovery-loading skeleton-stack" id="recovery-loading" aria-label="Loading removal options" hidden>
+            <span></span><span></span><span></span>
+          </div>
+          <div class="recovery-load-error" id="recovery-load-error" role="alert" hidden>
+            <strong>Removal options could not be loaded</strong>
+            <p id="recovery-load-error-copy"></p>
+            <button class="button secondary compact" id="retry-recovery-btn" type="button">Try again</button>
+          </div>
+
+          <div id="recovery-content" hidden>
+            <div class="recovery-toolbar" aria-label="Selection actions">
+              <button class="text-button" id="select-recommendations-btn" type="button">Select recommendations</button>
+              <button class="text-button" id="clear-recovery-selection-btn" type="button">Clear selection</button>
+            </div>
+            <div class="recovery-options" id="recovery-options" tabindex="-1" aria-describedby="recovery-selection-error"></div>
+            <p class="error-slot recovery-selection-error" id="recovery-selection-error" role="alert"></p>
+          </div>
+
+          <p class="form-status recovery-submit-status" id="recovery-submit-status" role="status" aria-live="polite" aria-atomic="true"></p>
+        </div>
+        <footer class="dialog-footer recovery-dialog-footer">
+          <button class="button secondary" id="cancel-recovery-dialog" type="button">Cancel</button>
+          <button class="button primary" id="apply-removals-btn" type="submit">Remove selected and render</button>
         </footer>
       </form>
     </div>

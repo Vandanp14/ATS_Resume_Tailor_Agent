@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 MAX_JD_LENGTH = 100_000
 MAX_NAME_LENGTH = 80
@@ -25,6 +25,7 @@ ARTIFACT_ALLOWLIST = (
     "match_report.json",
     "diagnostic_report.json",
 )
+FIT_RECOVERY_IDEMPOTENCY_FILE = ".fit_recovery_idempotency.json"
 EVENT_FILE = "web_events.jsonl"
 JOB_FILE = "web_job.json"
 QUEUE_DIR_NAME = "queue"
@@ -32,13 +33,13 @@ QUEUE_STATE_FILE = "queue_state.json"
 CALLS_FILE = "gemini_calls.jsonl"
 FIFO_WINDOW_SECONDS = 60
 INTERRUPTED_MESSAGE = "Interrupted by server restart; the run did not finish."
-PDF_EXPORT_WARNING = (
-    "The PDF library copy could not be created; the original PDF remains available from this job."
-)
+PDF_EXPORT_WARNING = "The PDF library copy could not be created; the original PDF remains available from this job."
 
 
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
 
 
 def iso_now() -> float:
@@ -48,6 +49,7 @@ def iso_now() -> float:
 class JobState(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
+    ACTION_REQUIRED = "action_required"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -81,7 +83,9 @@ class CreateJobRequest(BaseModel):
     def _jd_not_blank(cls, value: str) -> str:
         trimmed = value.strip()
         if not trimmed:
-            raise ValueError("Paste the job description you want to tailor this resume for.")
+            raise ValueError(
+                "Paste the job description you want to tailor this resume for."
+            )
         return trimmed
 
 
@@ -125,6 +129,108 @@ class QueuePayload(BaseModel):
     created_at: str = Field(default_factory=utc_now_iso)
     idempotency_key: str | None = None
     request_fingerprint: str | None = None
+
+
+class RecoveryQueuePayload(BaseModel):
+    """Private queued request for one user-approved fit recovery pass."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    operation: Literal["fit_recovery"] = "fit_recovery"
+    revision: int = Field(ge=1)
+    candidate_ids: list[str] = Field(min_length=1, max_length=100)
+    created_at: str = Field(default_factory=utc_now_iso)
+    idempotency_key: str
+    request_fingerprint: str
+
+    @field_validator("candidate_ids")
+    @classmethod
+    def _candidate_ids_are_unique(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("Candidate IDs must be unique.")
+        return values
+
+
+class FitRecoveryRequest(BaseModel):
+    """Validated user choice for ``POST .../fit-recovery``."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    revision: int = Field(ge=1)
+    candidate_ids: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("candidate_ids")
+    @classmethod
+    def _candidate_ids_are_unique_and_bounded(cls, values: list[str]) -> list[str]:
+        if any(not value or len(value) > 200 for value in values):
+            raise ValueError(
+                "Candidate IDs must be non-empty and no longer than 200 characters."
+            )
+        if len(values) != len(set(values)):
+            raise ValueError("Candidate IDs must be unique.")
+        return values
+
+
+class FitRecoveryCandidate(BaseModel):
+    """Safe removal candidate returned to the browser; no private locator data."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    candidate_id: str
+    kind: str
+    group: str
+    label: str
+    text: str
+    relevance: int | float | None = None
+    estimated_lines: int = Field(ge=1)
+    recommendation: Literal["recommended", "consider", "keep_if_possible"]
+    reason: str
+
+
+class FitRecoveryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    revision: int = Field(ge=1)
+    page_count: int = Field(ge=2)
+    concision_attempts: int = Field(ge=0)
+    candidates: list[FitRecoveryCandidate] = Field(min_length=1)
+    recommended_candidate_ids: list[str]
+
+    @model_validator(mode="after")
+    def _recommendations_are_issued(self) -> "FitRecoveryResponse":
+        issued = {candidate.candidate_id for candidate in self.candidates}
+        if len(issued) != len(self.candidates):
+            raise ValueError("Recovery candidates must have unique IDs.")
+        if not set(self.recommended_candidate_ids).issubset(issued):
+            raise ValueError("Recommended candidate IDs must be issued candidates.")
+        return self
+
+
+class RecoverySubmissionResponse(BaseModel):
+    job_id: str
+    state: str = JobState.QUEUED.value
+    queue_position: int
+    status_url: str
+    events_url: str = "/api/events"
+
+
+class RecoveryIdempotencyRecord(BaseModel):
+    """Private persisted result for one recovery POST idempotency key."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    key: str
+    request_fingerprint: str
+    status: Literal["in_progress", "completed"] = "in_progress"
+    response_status: int = 202
+    response_body: dict[str, object] | None = None
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class RecoveryIdempotencyStore(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    records: list[RecoveryIdempotencyRecord] = Field(default_factory=list)
 
 
 class WebEvent(BaseModel):
@@ -277,7 +383,19 @@ def new_job_id() -> str:
 
 def job_fingerprint(request: CreateJobRequest, options: JobOptions) -> str:
     """Stable identity for idempotent replay of an identical creation request."""
-    seed = (request.company, request.role, request.jd_text, options.bridge_skills, options.no_pdf)
+    seed = (
+        request.company,
+        request.role,
+        request.jd_text,
+        options.bridge_skills,
+        options.no_pdf,
+    )
+    return uuid.uuid5(uuid.NAMESPACE_URL, repr(seed)).hex
+
+
+def job_fingerprint_for_recovery(request: FitRecoveryRequest) -> str:
+    """Stable identity for an idempotent recovery selection (order-insensitive)."""
+    seed = (request.revision, tuple(sorted(request.candidate_ids)))
     return uuid.uuid5(uuid.NAMESPACE_URL, repr(seed)).hex
 
 

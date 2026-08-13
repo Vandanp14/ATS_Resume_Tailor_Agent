@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 TRANSFERABLE_SKILL_GROUP = "Transferable / Adjacent Tools"
@@ -292,6 +292,22 @@ class HolisticReview(StrictModel):
 MatchReport = HolisticReview
 
 
+class BulletConcision(StrictModel):
+    """One schema-constrained emergency rewrite returned by the model."""
+
+    text: str = Field(min_length=1)
+
+
+class ConcisionAuditItem(StrictModel):
+    candidate_id: str = Field(min_length=1)
+    supported: bool
+    reason: str = Field(min_length=1)
+
+
+class ConcisionAudit(StrictModel):
+    items: list[ConcisionAuditItem] = Field(min_length=1)
+
+
 # Renderer-only scored forms --------------------------------------------------
 
 
@@ -314,9 +330,27 @@ class ScoredWork(Work):
 
 
 class ScoredProject(Project):
+    highlights: list[ScoredBullet] | None = None
     relevance: int = Field(ge=0, le=100)
     source_id: str | None = None
     source_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_highlights(cls, value: object) -> object:
+        """Accept historical string fixtures while storing one scored shape."""
+        if not isinstance(value, dict):
+            return value
+        highlights = value.get("highlights")
+        if not isinstance(highlights, list):
+            return value
+        relevance = value.get("relevance", 0)
+        payload = dict(value)
+        payload["highlights"] = [
+            {"text": item, "relevance": relevance} if isinstance(item, str) else item
+            for item in highlights
+        ]
+        return payload
 
 
 def strip_relevance_skill(scored: ScoredSkill) -> Skill:
@@ -336,4 +370,5 @@ def strip_relevance_project(scored: ScoredProject) -> Project:
     payload.pop("relevance", None)
     payload.pop("source_id", None)
     payload.pop("source_ids", None)
+    payload["highlights"] = [bullet.text for bullet in scored.highlights or []]
     return Project.model_validate(payload)

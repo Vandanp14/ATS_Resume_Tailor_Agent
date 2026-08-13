@@ -40,10 +40,13 @@ class FakePipe(TailorPipeline):
         (out_dir / "resume.pdf").write_bytes(b"%PDF-1.4 fake")
         (out_dir / ".done").write_text(json.dumps({"no_pdf": no_pdf}), encoding="utf-8")
         if self.write_tex:
-            (out_dir / "resume.tex").write_text("\\documentclass{article}", encoding="utf-8")
+            (out_dir / "resume.tex").write_text(
+                "\\documentclass{article}", encoding="utf-8"
+            )
         if self.write_diagnostic:
             (out_dir / "diagnostic_report.json").write_text(
-                json.dumps({"stage": "rejected", "reason": "needs truth fix"}), encoding="utf-8"
+                json.dumps({"stage": "rejected", "reason": "needs truth fix"}),
+                encoding="utf-8",
             )
         return self.exit_code
 
@@ -72,8 +75,10 @@ def make_app(tmp_path, monkeypatch):
         pdf_available: bool = True,
         call_interval: float = 0.01,
         score_timeout: float = 5.0,
+        recovery_handler=None,
     ):
         if not pdf_available:
+
             def which(name: str):
                 return None if name == "tectonic" else "/usr/bin/which"
 
@@ -89,6 +94,7 @@ def make_app(tmp_path, monkeypatch):
             score_timeout=score_timeout,
             pipeline_factory=pipeline_factory or FakePipe,
             static_dir=static,
+            recovery_handler=recovery_handler,
         )
         return app, output_dir
 
@@ -114,12 +120,15 @@ def create_job(client, key: str, jd_text: str = "We need a Python engineer.", **
         "jd_text": jd_text,
         **extra,
     }
-    return client.post(
-        "/api/jobs", json=payload, headers={"Idempotency-Key": key}
-    )
+    return client.post("/api/jobs", json=payload, headers={"Idempotency-Key": key})
 
 
-def wait_for(client, job_id: str, states: tuple[str, ...] = ("completed", "failed"), timeout: float = 10.0):
+def wait_for(
+    client,
+    job_id: str,
+    states: tuple[str, ...] = ("completed", "failed"),
+    timeout: float = 10.0,
+):
     import time as _time
 
     deadline = _time.monotonic() + timeout

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,9 @@ from typing import Any
 from pydantic import BaseModel
 
 from models import (
+    BulletConcision,
     CandidateSelection,
+    ConcisionAudit,
     EvidencePlan,
     HolisticReview,
     JDProfile,
@@ -43,6 +46,7 @@ from .evidence import (
     master_fact_index,
     project_evidence,
     validate_evidence_plan,
+    validate_concise_bullet,
     validate_project_item,
     validate_skills,
     validate_transferable_skill_plan,
@@ -57,6 +61,10 @@ from .llm import (
     initialize_llm_provider,
 )
 from .progress import JobContext, ProgressReporter, ProgressTracker, Stage
+from .fit_recovery import (
+    FitRecoveryRequired,
+    persist_fit_recovery,
+)
 from .rendering import (
     RenderError,
     ensure_tectonic,
@@ -90,7 +98,163 @@ _TEMPLATE_STAGES = {
     "tailor_work": Stage.REWRITE_WORK,
     "tailor_projects": Stage.REWRITE_PROJECTS,
     "holistic_review": Stage.HOLISTIC_REVIEW,
+    "concise_bullet": Stage.EMERGENCY_CONCISION,
+    "audit_concision": Stage.CONCISION_AUDIT,
 }
+
+
+class _ConcisionController:
+    """One-bullet-at-a-time recovery invoked only at renderer exhaustion."""
+
+    def __init__(
+        self,
+        pipeline: "TailorPipeline",
+        fact_index: dict[str, dict],
+        evidence_plan: EvidencePlan,
+    ) -> None:
+        self.pipeline = pipeline
+        self.fact_index = fact_index
+        self.assignments = {
+            item.assignment_id: item for item in evidence_plan.assignments
+        }
+        self.attempted: set[str] = set()
+        self.log: list[dict[str, object]] = []
+        self._audited = False
+
+    @staticmethod
+    def _candidate_id(section: str, item_index: int, bullet_index: int) -> str:
+        return f"{section}:{item_index}:{bullet_index}"
+
+    def _next_candidate(self, resume: object):
+        candidates = []
+        for section_index, (section, entries) in enumerate(
+            (("work", resume.work or []), ("projects", resume.projects or []))
+        ):
+            for item_index, item in enumerate(entries):
+                for bullet_index, bullet in enumerate(item.highlights or []):
+                    candidate_id = self._candidate_id(section, item_index, bullet_index)
+                    word_count = len(bullet.text.split())
+                    if candidate_id in self.attempted or word_count <= 10:
+                        continue
+                    candidates.append(
+                        (
+                            bullet.relevance,
+                            -word_count,
+                            section_index,
+                            item_index,
+                            bullet_index,
+                            candidate_id,
+                            bullet,
+                        )
+                    )
+        return min(candidates) if candidates else None
+
+    def audit(self) -> None:
+        if self._audited or not self.log:
+            return
+        expected = [str(item["candidate_id"]) for item in self.log]
+
+        def validate(result: ConcisionAudit) -> None:
+            actual = [item.candidate_id for item in result.items]
+            if actual != expected:
+                raise ContractError(
+                    f"concision audit IDs changed: expected={expected}, actual={actual}"
+                )
+            unsupported = [
+                f"{item.candidate_id}: {item.reason}"
+                for item in result.items
+                if not item.supported
+            ]
+            if unsupported:
+                raise ContractError(
+                    "concision audit rejected rewrite(s): " + "; ".join(unsupported)
+                )
+
+        source_ids = {
+            source_id for item in self.log for source_id in item.get("source_ids", [])
+        }
+        self.pipeline._simple_stage(
+            "audit_concision",
+            ConcisionAudit,
+            selected_ids=expected,
+            validator=validate,
+            changes_json=json.dumps(self.log, indent=2),
+            source_facts_json=json.dumps(
+                [self.fact_index[source_id] for source_id in sorted(source_ids)],
+                indent=2,
+            ),
+        )
+        self._audited = True
+
+    def __call__(self, resume, pages: int, trim_log: tuple[str, ...]) -> str | None:
+        candidate = self._next_candidate(resume)
+        if candidate is None:
+            self.audit()
+            if self.pipeline.allow_fit_recovery:
+                raise FitRecoveryRequired(resume, pages, trim_log, self.log)
+            return None
+
+        (
+            relevance,
+            negative_words,
+            _section_index,
+            item_index,
+            bullet_index,
+            candidate_id,
+            bullet,
+        ) = candidate
+        del negative_words
+        self.attempted.add(candidate_id)
+        original_text = bullet.text
+        original_words = len(original_text.split())
+        target_words = min(24, max(10, int(original_words * 0.75)))
+        source_facts = [self.fact_index[item] for item in bullet.source_ids]
+        assignment = self.assignments.get(bullet.evidence_assignment_id or "")
+        section = candidate_id.replace(":", "[", 1).replace(":", "] bullet ", 1)
+
+        def validate(result: BulletConcision) -> None:
+            result.text = " ".join(result.text.split())
+            validate_concise_bullet(
+                bullet,
+                result.text,
+                max_words=target_words,
+                fact_index=self.fact_index,
+                assignment=assignment,
+                section=section,
+            )
+
+        self.pipeline.tracker.detail(
+            "One-page fit exhausted protected trims; invoking emergency concision"
+        )
+        result = self.pipeline._simple_stage(
+            "concise_bullet",
+            BulletConcision,
+            selected_ids=[candidate_id],
+            validator=validate,
+            target_words=target_words,
+            original_bullet_json=json.dumps(bullet.model_dump(mode="json"), indent=2),
+            source_facts_json=json.dumps(source_facts, indent=2),
+        )
+        bullet.text = result.text
+        final_words = len(result.text.split())
+        self.log.append(
+            {
+                "candidate_id": candidate_id,
+                "section": candidate_id.split(":", 1)[0],
+                "item_index": item_index,
+                "bullet_index": bullet_index,
+                "relevance": relevance,
+                "original_text": original_text,
+                "final_text": result.text,
+                "original_words": original_words,
+                "final_words": final_words,
+                "source_ids": list(bullet.source_ids),
+            }
+        )
+        return (
+            f"emergency concision {candidate_id} (rel={relevance}, "
+            f"{original_words} -> {final_words} words)"
+        )
 
 
 class TailorPipeline:
@@ -103,9 +267,11 @@ class TailorPipeline:
         provider: ChatProvider | None = None,
         reporter: ProgressReporter | None = None,
         bridge_skills: bool = False,
+        allow_fit_recovery: bool = False,
     ) -> None:
         self.model = model
         self.bridge_skills = bridge_skills
+        self.allow_fit_recovery = allow_fit_recovery
         self.tracker = ProgressTracker(reporter)
         self.stage_executor = StageExecutor(self.tracker)
         raw_provider = provider or initialize_llm_provider(
@@ -149,6 +315,7 @@ class TailorPipeline:
             "plan_skill_bridges",
             "tailor_skills",
             "holistic_review",
+            "audit_concision",
         }:
             options.update({"temperature": 0.0, "top_p": 1.0})
         return call_llm_with_retry(
@@ -711,11 +878,41 @@ class TailorPipeline:
                     final_plain = scored_to_plain(final_scored)
                     render(final_plain, out_dir, False)
                 else:
-                    final_plain = fit_to_one_page(
-                        final_scored,
-                        out_dir,
-                        progress_callback=lambda message: self.tracker.detail(message),
-                    )
+                    concision = _ConcisionController(self, facts, evidence_plan)
+                    try:
+                        fit_kwargs: dict[str, object] = {
+                            "progress_callback": lambda message: self.tracker.detail(
+                                message
+                            )
+                        }
+                        if (
+                            "exhaustion_handler"
+                            in inspect.signature(fit_to_one_page).parameters
+                        ):
+                            fit_kwargs["exhaustion_handler"] = concision
+                        final_plain = fit_to_one_page(
+                            final_scored, out_dir, **fit_kwargs
+                        )
+                        concision.audit()
+                    except FitRecoveryRequired as recovery:
+                        report_payload["automatic_concisions"] = recovery.concision_log
+                        report_payload["pipeline_status"] = "action_required"
+                        persist_fit_recovery(
+                            out_dir,
+                            recovery.scored_resume,
+                            page_count=recovery.page_count,
+                            pending_report=report_payload,
+                            trim_log=recovery.trim_log,
+                            concision_log=recovery.concision_log,
+                        )
+                        for name in ("resume.tex", "resume.pdf"):
+                            (out_dir / name).unlink(missing_ok=True)
+                        return 2
+                    except StageFailure:
+                        for name in ("resume.tex", "resume.pdf"):
+                            (out_dir / name).unlink(missing_ok=True)
+                        raise
+                    report_payload["automatic_concisions"] = concision.log
             with self.tracker.stage(Stage.WRITE_ARTIFACTS):
                 write_json(out_dir / "tailored.json", final_plain)
                 report_payload["pipeline_status"] = (

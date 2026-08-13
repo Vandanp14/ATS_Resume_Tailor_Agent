@@ -26,12 +26,15 @@ from .io import atomic_write_text, private_directory
 from .models import (
     ARTIFACT_ALLOWLIST,
     EVENT_FILE,
+    FIT_RECOVERY_IDEMPOTENCY_FILE,
     INTERRUPTED_MESSAGE,
     JOB_FILE,
     PDF_EXPORT_WARNING,
     QUEUE_DIR_NAME,
     QUEUE_STATE_FILE,
     CreateJobRequest,
+    FitRecoveryRequest,
+    FitRecoveryResponse,
     JobEntry,
     JobOptions,
     JobSource,
@@ -40,9 +43,14 @@ from .models import (
     QueuePayload,
     QueueSnapshot,
     QueuedEntry,
+    RecoveryIdempotencyRecord,
+    RecoveryIdempotencyStore,
+    RecoveryQueuePayload,
+    RecoverySubmissionResponse,
     StreamEvent,
     TrackerSnapshot,
     job_fingerprint,
+    job_fingerprint_for_recovery,
     new_job_id,
     pdf_library_name,
     utc_now_iso,
@@ -61,7 +69,40 @@ class Job:
     directory: Path
     journal: EventJournal
     reporter: WebProgressReporter
-    payload: QueuePayload | None = None
+    payload: QueuePayload | RecoveryQueuePayload | None = None
+
+
+class RecoveryRequestError(ValueError):
+    """A safe, expected fit-recovery request conflict."""
+
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+
+
+def load_recovery_response(directory: Path) -> FitRecoveryResponse:
+    """Load the core's private recovery bundle and expose only browser-safe fields."""
+    from ..fit_recovery import FIT_RECOVERY_FILENAME, load_fit_recovery
+
+    if (directory / FIT_RECOVERY_FILENAME).is_symlink():
+        raise ValueError("Recovery bundle must not be a symbolic link.")
+    bundle = load_fit_recovery(directory)
+    raw = bundle.model_dump(mode="python")
+    public = {
+        "revision": raw["revision"],
+        "page_count": raw["page_count"],
+        "concision_attempts": raw["concision_attempts"],
+        "candidates": raw["candidates"],
+        "recommended_candidate_ids": raw["recommended_candidate_ids"],
+    }
+    response = FitRecoveryResponse.model_validate(public)
+    issued = {candidate.candidate_id for candidate in response.candidates}
+    if len(issued) != len(response.candidates):
+        raise ValueError("Recovery bundle contains duplicate candidate IDs.")
+    if not set(response.recommended_candidate_ids).issubset(issued):
+        raise ValueError("Recovery bundle recommends an unknown candidate ID.")
+    return response
 
 
 def _say(exc: BaseException) -> str:
@@ -86,7 +127,11 @@ def _elapsed(started: str | None, finished: str | None) -> float | None:
         return None
     try:
         start = datetime.fromisoformat(started.replace("Z", "+00:00"))
-        end = datetime.fromisoformat((finished or "").replace("Z", "+00:00")) if finished else datetime.now(timezone.utc)
+        end = (
+            datetime.fromisoformat((finished or "").replace("Z", "+00:00"))
+            if finished
+            else datetime.now(timezone.utc)
+        )
         return max(0.0, (end - start).total_seconds())
     except ValueError:
         return None
@@ -111,6 +156,7 @@ class QueueRegistry:
         hub: EventHub,
         provider: ScheduledProvider | None = None,
         scheduler: GeminiScheduler | None = None,
+        recovery_handler: Callable[[Path, list[str]], int] | None = None,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.pdf_dir = Path(pdf_dir)
@@ -126,6 +172,7 @@ class QueueRegistry:
         self.hub = hub
         self.provider = provider
         self.scheduler = scheduler
+        self.recovery_handler = recovery_handler or self._default_recovery_handler
         self._mutex = threading.Lock()
         self._cond = threading.Condition(self._mutex)
         self._stopping = False
@@ -147,7 +194,9 @@ class QueueRegistry:
         if self._worker is not None and self._worker.is_alive():
             return
         self._stopping = False
-        self._worker = threading.Thread(target=self._worker_loop, name="resume-tailor-queue", daemon=True)
+        self._worker = threading.Thread(
+            target=self._worker_loop, name="resume-tailor-queue", daemon=True
+        )
         self._worker.start()
 
     def stop(self) -> None:
@@ -189,6 +238,32 @@ class QueueRegistry:
             job.persisted.model_dump_json(indent=2, exclude_none=True),
         )
 
+    def _recovery_idempotency_path(self, job: Job) -> Path:
+        return job.directory / FIT_RECOVERY_IDEMPOTENCY_FILE
+
+    def _load_recovery_idempotency(self, job: Job) -> RecoveryIdempotencyStore:
+        path = self._recovery_idempotency_path(job)
+        if not path.is_file() or path.is_symlink():
+            return RecoveryIdempotencyStore()
+        try:
+            return RecoveryIdempotencyStore.model_validate_json(
+                path.read_text(encoding="utf-8")
+            )
+        except Exception as exc:
+            raise RecoveryRequestError(
+                409,
+                "Recovery request history is unavailable; reload the job before retrying.",
+            ) from exc
+
+    def _persist_recovery_idempotency(
+        self, job: Job, store: RecoveryIdempotencyStore
+    ) -> None:
+        atomic_write_text(
+            self._recovery_idempotency_path(job),
+            store.model_dump_json(indent=2),
+            mode=0o600,
+        )
+
     # -- hydration -------------------------------------------------------------
 
     def _hydrate(self) -> None:
@@ -200,14 +275,45 @@ class QueueRegistry:
             if not job_file.is_file():
                 continue
             try:
-                persisted = PersistedJob.model_validate_json(job_file.read_text(encoding="utf-8"))
+                persisted = PersistedJob.model_validate_json(
+                    job_file.read_text(encoding="utf-8")
+                )
             except Exception:
                 continue
             if persisted.job_id != directory.name:
                 continue
             if persisted.state in {JobState.QUEUED, JobState.RUNNING}:
+                recovery_payload: RecoveryQueuePayload | None = None
+                payload_path = self._queue_payload_path(directory.name)
+                if payload_path.is_file() and not payload_path.is_symlink():
+                    try:
+                        recovery_payload = RecoveryQueuePayload.model_validate_json(
+                            payload_path.read_text(encoding="utf-8")
+                        )
+                    except Exception:
+                        recovery_payload = None
+                if recovery_payload is not None:
+                    persisted = persisted.model_copy(
+                        update={
+                            "state": JobState.QUEUED,
+                            "finished_at": None,
+                            "message": None,
+                            "current_stage": None,
+                        }
+                    )
+                    known.add(directory.name)
+                    job = self._add(directory, persisted)
+                    job.payload = recovery_payload
+                    self._persist_job(job)
+                    self._waiting.append(job)
+                    continue
                 persisted = persisted.model_copy(
-                    update={"state": JobState.FAILED, "finished_at": utc_now_iso(), "message": INTERRUPTED_MESSAGE, "current_stage": None}
+                    update={
+                        "state": JobState.FAILED,
+                        "finished_at": utc_now_iso(),
+                        "message": INTERRUPTED_MESSAGE,
+                        "current_stage": None,
+                    }
                 )
                 try:
                     self._queue_payload_path(directory.name).unlink()
@@ -224,9 +330,13 @@ class QueueRegistry:
             if path.stem in known:
                 continue
             try:
-                payload = QueuePayload.model_validate_json(path.read_text(encoding="utf-8"))
+                payload = QueuePayload.model_validate_json(
+                    path.read_text(encoding="utf-8")
+                )
             except Exception as exc:
-                LOGGER.warning("Rejected queue file %s (schema: %s)", path.name, _say(exc))
+                LOGGER.warning(
+                    "Rejected queue file %s (schema: %s)", path.name, _say(exc)
+                )
                 continue
             revived.append(
                 (
@@ -236,7 +346,9 @@ class QueueRegistry:
                         state=JobState.QUEUED,
                         company=payload.company,
                         role=payload.role,
-                        options=JobOptions(bridge_skills=payload.bridge_skills, no_pdf=payload.no_pdf),
+                        options=JobOptions(
+                            bridge_skills=payload.bridge_skills, no_pdf=payload.no_pdf
+                        ),
                         created_at=payload.created_at,
                         idempotency_key=payload.idempotency_key,
                         request_fingerprint=payload.request_fingerprint,
@@ -278,7 +390,9 @@ class QueueRegistry:
             persisted=persisted,
             directory=directory,
             journal=journal,
-            reporter=WebProgressReporter(journal, self.hub, persisted.job_id, on_stage=self._note_stage),
+            reporter=WebProgressReporter(
+                journal, self.hub, persisted.job_id, on_stage=self._note_stage
+            ),
         )
         self._jobs[persisted.job_id] = job
         return job
@@ -298,7 +412,11 @@ class QueueRegistry:
 
     def items(self) -> list[Job]:
         with self._mutex:
-            return sorted(self._jobs.values(), key=lambda job: job.persisted.created_at, reverse=True)
+            return sorted(
+                self._jobs.values(),
+                key=lambda job: job.persisted.created_at,
+                reverse=True,
+            )
 
     def artifacts(self, job: Job) -> list[str]:
         return sorted(_artifacts(job.directory))
@@ -317,7 +435,14 @@ class QueueRegistry:
 
     def find_idempotent(self, key: str) -> Job | None:
         with self._mutex:
-            return next((job for job in self._jobs.values() if job.persisted.idempotency_key == key), None)
+            return next(
+                (
+                    job
+                    for job in self._jobs.values()
+                    if job.persisted.idempotency_key == key
+                ),
+                None,
+            )
 
     def matches_fingerprint(self, job: Job, fingerprint: str) -> bool:
         return job.persisted.request_fingerprint == fingerprint
@@ -328,6 +453,26 @@ class QueueRegistry:
                 return self._waiting.index(job) + 1
             except ValueError:
                 return None
+
+    def recovery(self, job: Job) -> FitRecoveryResponse:
+        if job.persisted.state != JobState.ACTION_REQUIRED:
+            raise RecoveryRequestError(
+                409, "This job is not waiting for a fit-recovery choice."
+            )
+        try:
+            return load_recovery_response(job.directory)
+        except RecoveryRequestError:
+            raise
+        except Exception as exc:
+            LOGGER.warning(
+                "Could not load fit recovery for job %s: %s",
+                job.persisted.job_id,
+                _say(exc),
+            )
+            raise RecoveryRequestError(
+                409,
+                "Fit-recovery options are unavailable; reload the job before retrying.",
+            ) from exc
 
     # -- queue mutations -------------------------------------------------------
 
@@ -358,7 +503,9 @@ class QueueRegistry:
             persisted=persisted,
             directory=directory,
             journal=journal,
-            reporter=WebProgressReporter(journal, self.hub, persisted.job_id, on_stage=self._note_stage),
+            reporter=WebProgressReporter(
+                journal, self.hub, persisted.job_id, on_stage=self._note_stage
+            ),
             payload=payload,
         )
         with self._cond:
@@ -369,6 +516,93 @@ class QueueRegistry:
             self._cond.notify_all()
         self._publish_queue_changed()
         return job
+
+    def enqueue_recovery(
+        self,
+        job: Job,
+        request: FitRecoveryRequest,
+        idempotency_key: str,
+    ) -> tuple[RecoverySubmissionResponse, bool]:
+        """Validate and queue one recovery pass; returns ``(response, replayed)``."""
+        fingerprint = job_fingerprint_for_recovery(request)
+        with self._cond:
+            store = self._load_recovery_idempotency(job)
+            existing = next(
+                (record for record in store.records if record.key == idempotency_key),
+                None,
+            )
+            if existing is not None:
+                if existing.request_fingerprint != fingerprint:
+                    raise RecoveryRequestError(
+                        422,
+                        "Idempotency-Key was used with a different recovery request.",
+                    )
+                if existing.status == "in_progress":
+                    raise RecoveryRequestError(
+                        409, "An identical recovery request is already in progress."
+                    )
+                if existing.response_body is None:
+                    raise RecoveryRequestError(
+                        409, "The saved recovery response is unavailable."
+                    )
+                return (
+                    RecoverySubmissionResponse.model_validate(existing.response_body),
+                    True,
+                )
+            if job.persisted.state != JobState.ACTION_REQUIRED:
+                raise RecoveryRequestError(
+                    409, "This job is not waiting for a fit-recovery choice."
+                )
+            recovery = load_recovery_response(job.directory)
+            if request.revision != recovery.revision:
+                raise RecoveryRequestError(
+                    409,
+                    "These fit-recovery options are stale; reload and review the latest revision.",
+                )
+            issued = {candidate.candidate_id for candidate in recovery.candidates}
+            unknown = sorted(set(request.candidate_ids) - issued)
+            if unknown:
+                raise RecoveryRequestError(
+                    422,
+                    "One or more candidate IDs were not issued for this recovery revision.",
+                )
+            payload = RecoveryQueuePayload(
+                revision=request.revision,
+                candidate_ids=request.candidate_ids,
+                idempotency_key=idempotency_key,
+                request_fingerprint=fingerprint,
+            )
+            job.payload = payload
+            job.persisted = job.persisted.model_copy(
+                update={
+                    "state": JobState.QUEUED,
+                    "finished_at": None,
+                    "current_stage": None,
+                    "message": None,
+                }
+            )
+            self._persist_payload(job)
+            self._persist_job(job)
+            self._waiting.append(job)
+            response = RecoverySubmissionResponse(
+                job_id=job.persisted.job_id,
+                queue_position=len(self._waiting),
+                status_url=f"/api/jobs/{job.persisted.job_id}",
+            )
+            store.records.append(
+                RecoveryIdempotencyRecord(
+                    key=idempotency_key,
+                    request_fingerprint=fingerprint,
+                    response_body=response.model_dump(mode="json"),
+                )
+            )
+            self._persist_recovery_idempotency(job, store)
+            job.reporter.write_job_boundary(
+                "job_recovery_queued", message="User-approved removals queued."
+            )
+            self._cond.notify_all()
+        self._publish_queue_changed()
+        return response, False
 
     def pause(self) -> None:
         with self._cond:
@@ -478,13 +712,17 @@ class QueueRegistry:
     def _claim(self, job: Job) -> None:
         """Transition to running and drop the private queued request."""
         job.persisted = job.persisted.model_copy(
-            update={"state": JobState.RUNNING, "started_at": job.persisted.started_at or utc_now_iso()}
+            update={
+                "state": JobState.RUNNING,
+                "started_at": job.persisted.started_at or utc_now_iso(),
+            }
         )
         self._persist_job(job)
-        try:
-            self._queue_payload_path(job.persisted.job_id).unlink()
-        except (FileNotFoundError, OSError):
-            pass
+        if not isinstance(job.payload, RecoveryQueuePayload):
+            try:
+                self._queue_payload_path(job.persisted.job_id).unlink()
+            except (FileNotFoundError, OSError):
+                pass
 
     def _run_job(self, job: Job) -> None:
         context = JobContext(name=job.persisted.job_id, output_dir=job.directory)
@@ -492,6 +730,9 @@ class QueueRegistry:
         job.reporter.write_job_boundary("job_started")
         payload = job.payload
         assert payload is not None
+        if isinstance(payload, RecoveryQueuePayload):
+            self._run_recovery(job, payload, started)
+            return
         try:
             master = load_master(self.master_path)
             pipeline = self.pipeline_factory(
@@ -500,6 +741,7 @@ class QueueRegistry:
                 provider=self.provider,
                 reporter=job.reporter,
                 bridge_skills=payload.bridge_skills,
+                allow_fit_recovery=True,
             )
             exit_code = pipeline.run(
                 master,
@@ -509,6 +751,8 @@ class QueueRegistry:
                 job=context,
             )
         except Exception as exc:
+            if self._transition_to_action_required(job, started):
+                return
             if is_quota_error(exc):
                 self._finish(job, JobState.FAILED, _QUOTA_MESSAGE, started)
                 self.pause()
@@ -516,20 +760,107 @@ class QueueRegistry:
             self._finish(job, JobState.FAILED, _say(exc), started)
             return
         if exit_code != 0:
-            self._finish(job, JobState.FAILED, "Tailoring finished with unresolved findings.", started)
+            if self._transition_to_action_required(job, started):
+                return
+            self._finish(
+                job,
+                JobState.FAILED,
+                "Tailoring finished with unresolved findings.",
+                started,
+            )
             return
         if not payload.no_pdf:
             self._copy_to_pdf_library(job)
         self._finish(job, JobState.COMPLETED, None, started)
 
+    @staticmethod
+    def _default_recovery_handler(directory: Path, candidate_ids: list[str]) -> int:
+        from ..fit_recovery import apply_fit_recovery
+
+        return apply_fit_recovery(directory, candidate_ids)
+
+    def _run_recovery(
+        self, job: Job, payload: RecoveryQueuePayload, started: float
+    ) -> None:
+        job.reporter.write_job_boundary(
+            "job_recovery_started", message="Applying user-approved removals."
+        )
+        try:
+            exit_code = self.recovery_handler(job.directory, payload.candidate_ids)
+            if exit_code == 0:
+                if not job.persisted.options.no_pdf:
+                    self._copy_to_pdf_library(job)
+                self._finish(job, JobState.COMPLETED, None, started)
+            elif exit_code == 2 and self._transition_to_action_required(job, started):
+                pass
+            else:
+                self._finish(
+                    job,
+                    JobState.FAILED,
+                    "Fit recovery did not produce a valid result.",
+                    started,
+                )
+        except Exception as exc:
+            self._finish(job, JobState.FAILED, _say(exc), started)
+        finally:
+            self._complete_recovery_idempotency(job, payload.idempotency_key)
+            try:
+                self._queue_payload_path(job.persisted.job_id).unlink()
+            except (FileNotFoundError, OSError):
+                pass
+
+    def _transition_to_action_required(self, job: Job, started: float) -> bool:
+        try:
+            load_recovery_response(job.directory)
+        except Exception:
+            return False
+        elapsed = round(time.monotonic() - started, 2)
+        message = "The resume still spans two pages. Review suggested content removals."
+        job.reporter.write_job_boundary(
+            "job_action_required", message=message, elapsed=elapsed
+        )
+        job.persisted = job.persisted.model_copy(
+            update={
+                "state": JobState.ACTION_REQUIRED,
+                "finished_at": utc_now_iso(),
+                "message": message,
+                "current_stage": None,
+            }
+        )
+        self._persist_job(job)
+        return True
+
+    def _complete_recovery_idempotency(self, job: Job, key: str) -> None:
+        with self._mutex:
+            try:
+                store = self._load_recovery_idempotency(job)
+            except RecoveryRequestError:
+                return
+            records = [
+                (
+                    record.model_copy(update={"status": "completed"})
+                    if record.key == key
+                    else record
+                )
+                for record in store.records
+            ]
+            self._persist_recovery_idempotency(
+                job, store.model_copy(update={"records": records})
+            )
+
     def _copy_to_pdf_library(self, job: Job) -> None:
         """Copy, never move, the original PDF. Failures are warnings, not failures."""
         source = job.directory / "resume.pdf"
         if not source.is_file():
-            job.persisted = job.persisted.model_copy(update={"export_warning": PDF_EXPORT_WARNING})
+            job.persisted = job.persisted.model_copy(
+                update={"export_warning": PDF_EXPORT_WARNING}
+            )
             return
         target = self.pdf_dir / pdf_library_name(
-            job.persisted.company, job.persisted.role, job.persisted.job_id, job.persisted.created_at
+            job.persisted.company,
+            job.persisted.role,
+            job.persisted.job_id,
+            job.persisted.created_at,
         )
         if target.exists():
             return
@@ -537,11 +868,17 @@ class QueueRegistry:
             self.pdf_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
         except OSError:
-            job.persisted = job.persisted.model_copy(update={"export_warning": PDF_EXPORT_WARNING})
+            job.persisted = job.persisted.model_copy(
+                update={"export_warning": PDF_EXPORT_WARNING}
+            )
             return
-        job.persisted = job.persisted.model_copy(update={"pdf_library_name": target.name})
+        job.persisted = job.persisted.model_copy(
+            update={"pdf_library_name": target.name}
+        )
 
-    def _finish(self, job: Job, state: JobState, message: str | None, started: float) -> None:
+    def _finish(
+        self, job: Job, state: JobState, message: str | None, started: float
+    ) -> None:
         elapsed = round(time.monotonic() - started, 2)
         job.reporter.write_job_boundary(
             "job_completed" if state == JobState.COMPLETED else "job_failed",

@@ -40,6 +40,18 @@ const state = {
   listFilter: "queue",
   activeTab: "progress",
   submitting: false,
+  recoveryCache: new Map(),
+  recoveryLoads: new Map(),
+  recovery: {
+    jobId: null,
+    data: null,
+    loading: false,
+    error: "",
+    submitting: false,
+    awaitingResult: false,
+    requestSignature: "",
+    idempotencyKey: "",
+  },
 };
 
 /* DOM helpers: untrusted provider, JD, and job values never become HTML. */
@@ -90,6 +102,11 @@ function compactNumber(value) {
 
 function jobLabel(job) {
   return [job.company, job.role].filter(Boolean).join(" · ") || job.job_id;
+}
+
+function stateLabel(value) {
+  if (value === "action_required") return "Action needed";
+  return String(value || "").replaceAll("_", " ");
 }
 
 function stageStatus(stageName, job) {
@@ -228,7 +245,7 @@ async function fetchJobs() {
 
   if (!state.selectedId) {
     const active = jobs.find((job) => job.active);
-    const newest = jobs.find((job) => job.state === "completed" || job.state === "failed");
+    const newest = jobs.find((job) => ["completed", "failed", "action_required"].includes(job.state));
     const initial = active || newest;
     if (initial) selectJob(initial.job_id, { reveal: false });
   }
@@ -255,6 +272,7 @@ function jobRow(job, position = null) {
   let aside = "";
   if (job.state === "queued" && position) aside = `#${position}`;
   else if (job.state === "running") aside = "Live";
+  else if (job.state === "action_required") aside = "Action needed";
   else aside = formatWhen(job.finished_at || job.created_at);
   select.appendChild(el("span", "job-aside", aside));
   select.addEventListener("click", () => selectJob(job.job_id, { reveal: true }));
@@ -333,7 +351,7 @@ function renderJobLists() {
   }
 
   const recent = [...state.jobs.values()]
-    .filter((job) => job.state === "completed" || job.state === "failed")
+    .filter((job) => ["completed", "failed", "action_required"].includes(job.state))
     .sort((a, b) => String(b.finished_at || b.created_at).localeCompare(String(a.finished_at || a.created_at)));
   for (const job of recent.slice(0, 30)) recentList.appendChild(jobRow(job));
 
@@ -403,7 +421,7 @@ function selectJob(jobId, { reveal = true } = {}) {
   const changed = state.selectedId !== jobId;
   state.selectedId = jobId;
   const job = state.jobs.get(jobId);
-  if (changed) state.activeTab = job && job.state === "completed" && job.artifacts.includes("resume.pdf") ? "preview" : "progress";
+  if (changed) state.activeTab = job && job.state === "completed" && (job.artifacts || []).includes("resume.pdf") ? "preview" : "progress";
   renderJobLists();
   if (reveal) showMobileView("detail");
   fetchDetail(jobId);
@@ -417,9 +435,9 @@ function renderDetail(job) {
   $("detail-role").textContent = job.role || "Role not provided";
   const badge = $("detail-state");
   badge.className = `status-pill ${job.state}`;
-  badge.textContent = job.state;
+  badge.textContent = stateLabel(job.state);
 
-  const stage = job.current_stage || (job.state === "queued" ? "Waiting to start" : job.state === "completed" ? "Tailoring complete" : job.state === "failed" ? "Run stopped" : "Preparing");
+  const stage = job.current_stage || (job.state === "queued" ? "Waiting to start" : job.state === "completed" ? "Tailoring complete" : job.state === "failed" ? "Run stopped" : job.state === "action_required" ? "Action needed: one-page fit" : "Preparing");
   $("detail-stage").textContent = stage;
   $("detail-elapsed").textContent = job.started_at ? formatElapsed(job.started_at, job.finished_at) : "—";
   $("detail-position").textContent = job.queue_position ? `#${job.queue_position}` : job.active ? "Active" : "—";
@@ -428,11 +446,286 @@ function renderDetail(job) {
   $("detail-message").textContent = job.message || "";
   $("detail-export-warning").hidden = !job.export_warning;
   $("detail-export-warning").textContent = job.export_warning || "";
+  renderRecoveryCard(job);
   renderStages(job);
   renderVerbose(job);
   renderPreview(job);
   renderFiles(job);
   activateTab(state.activeTab, false);
+}
+
+function recoveryPageLabel(value) {
+  const count = Number(value);
+  if (!Number.isFinite(count) || count < 1) return "—";
+  return `${count} ${count === 1 ? "page" : "pages"}`;
+}
+
+function recoveryAttemptLabel(value) {
+  const count = Number(value);
+  if (!Number.isFinite(count) || count < 0) return "—";
+  return `${count} ${count === 1 ? "attempt" : "attempts"}`;
+}
+
+function recoveryPayload(body) {
+  return body && body.recovery ? body.recovery : body;
+}
+
+function renderRecoveryCard(job) {
+  const card = $("fit-recovery-card");
+  const visible = job.state === "action_required";
+  card.hidden = !visible;
+  if (!visible) return;
+
+  const data = state.recoveryCache.get(job.job_id);
+  if (data) {
+    $("fit-recovery-card-summary").textContent = `This version spans ${recoveryPageLabel(data.page_count)} after ${recoveryAttemptLabel(data.concision_attempts)} of shortening.`;
+  } else {
+    $("fit-recovery-card-summary").textContent = "The resume still spans two pages after automatic shortening.";
+    ensureRecoverySummary(job.job_id).catch(() => {});
+  }
+}
+
+async function ensureRecoverySummary(jobId, { force = false } = {}) {
+  if (!force && state.recoveryCache.has(jobId)) return state.recoveryCache.get(jobId);
+  if (!force && state.recoveryLoads.has(jobId)) return state.recoveryLoads.get(jobId);
+
+  const request = fetchJson(`/api/jobs/${jobId}/fit-recovery`)
+    .then((body) => {
+      const data = recoveryPayload(body);
+      state.recoveryCache.set(jobId, data);
+      if (state.currentDetail && state.currentDetail.job_id === jobId) renderRecoveryCard(state.currentDetail);
+      return data;
+    })
+    .finally(() => state.recoveryLoads.delete(jobId));
+  state.recoveryLoads.set(jobId, request);
+  return request;
+}
+
+function recoveryBucket(kind) {
+  if (kind === "work_bullet" || String(kind).startsWith("work")) return "Work";
+  if (kind === "project_bullet" || String(kind).startsWith("project")) return "Projects";
+  return "Skills";
+}
+
+function recommendationLabel(value) {
+  if (value === "recommended") return "Suggested removal";
+  if (value === "keep_if_possible") return "Keep if possible";
+  return "Consider removing";
+}
+
+function candidateRow(candidate, index) {
+  const row = el("label", "recovery-candidate");
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.name = "candidate_ids";
+  input.value = String(candidate.candidate_id || "");
+  input.id = `recovery-candidate-${index}`;
+  input.dataset.recommended = String(candidate.recommendation === "recommended");
+  row.appendChild(input);
+
+  const body = el("span", "recovery-candidate-body");
+  const heading = el("span", "recovery-candidate-heading");
+  heading.appendChild(el("strong", null, candidate.label || "Resume content"));
+  const badge = el("span", `recommendation-badge ${candidate.recommendation || "consider"}`, recommendationLabel(candidate.recommendation));
+  heading.appendChild(badge);
+  body.appendChild(heading);
+  body.appendChild(el("span", "recovery-candidate-text", candidate.text || candidate.label || "Untitled content"));
+
+  const relevance = Number(candidate.relevance);
+  const estimatedLines = Number(candidate.estimated_lines);
+  const meta = el("span", "recovery-candidate-meta");
+  meta.appendChild(el("span", "tabnum", Number.isFinite(relevance) ? `Relevance ${relevance}` : "Relevance unavailable"));
+  meta.appendChild(el("span", "tabnum", Number.isFinite(estimatedLines) ? `Est. ${estimatedLines} ${estimatedLines === 1 ? "line" : "lines"} saved` : "Space estimate unavailable"));
+  body.appendChild(meta);
+  if (candidate.reason) body.appendChild(el("span", "recovery-candidate-reason", candidate.reason));
+  row.appendChild(body);
+  return row;
+}
+
+function renderRecoveryOptions(data) {
+  const host = $("recovery-options");
+  clear(host);
+  const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+  let rowIndex = 0;
+
+  for (const bucket of ["Work", "Projects", "Skills"]) {
+    const bucketCandidates = candidates.filter((candidate) => recoveryBucket(candidate.kind) === bucket);
+    if (!bucketCandidates.length) continue;
+
+    const fieldset = el("fieldset", "recovery-fieldset");
+    fieldset.appendChild(el("legend", null, bucket));
+    let previousGroup = null;
+    for (const candidate of bucketCandidates) {
+      const group = candidate.group || "";
+      if (group && group !== previousGroup) {
+        fieldset.appendChild(el("h3", "recovery-group-label", group));
+        previousGroup = group;
+      }
+      fieldset.appendChild(candidateRow(candidate, rowIndex));
+      rowIndex += 1;
+    }
+    host.appendChild(fieldset);
+  }
+
+  if (!candidates.length) {
+    const empty = el("div", "recovery-empty");
+    empty.appendChild(el("strong", null, "No removable content is available"));
+    empty.appendChild(el("span", null, "This resume cannot be shortened further without changing protected content."));
+    host.appendChild(empty);
+  }
+}
+
+function setRecoveryControlsDisabled(disabled) {
+  $("select-recommendations-btn").disabled = disabled;
+  $("clear-recovery-selection-btn").disabled = disabled;
+  $("apply-removals-btn").disabled = disabled;
+  for (const input of document.querySelectorAll('#recovery-options input[type="checkbox"]')) input.disabled = disabled;
+}
+
+function renderRecoveryDialogData(data, { resetSelection = true } = {}) {
+  state.recovery.data = data;
+  $("recovery-page-count").textContent = recoveryPageLabel(data.page_count);
+  $("recovery-concision-count").textContent = recoveryAttemptLabel(data.concision_attempts);
+  renderRecoveryOptions(data);
+  if (resetSelection) clearRecoverySelection();
+  $("recovery-loading").hidden = true;
+  $("recovery-load-error").hidden = true;
+  $("recovery-content").hidden = false;
+  setRecoveryControlsDisabled(state.recovery.awaitingResult);
+}
+
+function renderRecoveryLoading() {
+  $("recovery-loading").hidden = false;
+  $("recovery-load-error").hidden = true;
+  $("recovery-content").hidden = true;
+  $("recovery-page-count").textContent = "—";
+  $("recovery-concision-count").textContent = "—";
+  $("apply-removals-btn").disabled = true;
+}
+
+function renderRecoveryLoadError(error) {
+  $("recovery-loading").hidden = true;
+  $("recovery-content").hidden = true;
+  $("recovery-load-error").hidden = false;
+  $("recovery-load-error-copy").textContent = `Check your connection and try again. ${String(error.message || error)}`;
+  $("apply-removals-btn").disabled = true;
+}
+
+async function loadRecoveryDialog({ resetSelection = true } = {}) {
+  const jobId = state.recovery.jobId;
+  if (!jobId) return;
+  state.recovery.loading = true;
+  state.recovery.error = "";
+  renderRecoveryLoading();
+  try {
+    const data = await ensureRecoverySummary(jobId, { force: true });
+    if (state.recovery.jobId !== jobId) return;
+    state.recovery.loading = false;
+    renderRecoveryDialogData(data, { resetSelection });
+  } catch (error) {
+    if (state.recovery.jobId !== jobId) return;
+    state.recovery.loading = false;
+    state.recovery.error = String(error.message || error);
+    renderRecoveryLoadError(error);
+  }
+}
+
+function openRecoveryDialog() {
+  const job = state.currentDetail;
+  if (!job || job.state !== "action_required") return;
+  state.recovery.jobId = job.job_id;
+  state.recovery.data = null;
+  state.recovery.error = "";
+  state.recovery.submitting = false;
+  state.recovery.awaitingResult = false;
+  state.recovery.requestSignature = "";
+  state.recovery.idempotencyKey = "";
+  $("recovery-selection-error").textContent = "";
+  $("recovery-submit-status").textContent = "";
+  $("recovery-submit-status").classList.remove("error");
+  const dialog = $("fit-recovery-dialog");
+  if (!dialog.open) dialog.showModal();
+  loadRecoveryDialog();
+}
+
+function closeRecoveryDialog() {
+  const dialog = $("fit-recovery-dialog");
+  if (dialog.open) dialog.close();
+}
+
+function clearRecoveryError() {
+  $("recovery-selection-error").textContent = "";
+  $("recovery-options").setAttribute("aria-invalid", "false");
+}
+
+function clearRecoverySelection() {
+  for (const input of document.querySelectorAll('#recovery-options input[type="checkbox"]')) input.checked = false;
+  clearRecoveryError();
+  state.recovery.requestSignature = "";
+  state.recovery.idempotencyKey = "";
+}
+
+function selectRecommendedCandidates() {
+  const recommendedIds = new Set((state.recovery.data && state.recovery.data.recommended_candidate_ids || []).map(String));
+  for (const input of document.querySelectorAll('#recovery-options input[type="checkbox"]')) {
+    input.checked = recommendedIds.size ? recommendedIds.has(input.value) : input.dataset.recommended === "true";
+  }
+  clearRecoveryError();
+  state.recovery.requestSignature = "";
+  state.recovery.idempotencyKey = "";
+}
+
+function selectedRecoveryIds() {
+  return [...document.querySelectorAll('#recovery-options input[type="checkbox"]:checked')].map((input) => input.value);
+}
+
+async function submitRecovery(event) {
+  event.preventDefault();
+  if (state.recovery.submitting || state.recovery.awaitingResult || !state.recovery.data) return;
+  const candidateIds = selectedRecoveryIds();
+  if (!candidateIds.length) {
+    $("recovery-selection-error").textContent = "Select at least one item to remove, or cancel to keep this version unchanged.";
+    $("recovery-options").setAttribute("aria-invalid", "true");
+    $("recovery-options").focus();
+    return;
+  }
+
+  clearRecoveryError();
+  const revision = state.recovery.data.revision;
+  const signature = JSON.stringify([revision, [...candidateIds].sort()]);
+  if (state.recovery.requestSignature !== signature) {
+    state.recovery.requestSignature = signature;
+    state.recovery.idempotencyKey = crypto.randomUUID();
+  }
+
+  state.recovery.submitting = true;
+  const status = $("recovery-submit-status");
+  status.classList.remove("error");
+  status.textContent = "Removing the selected content and rendering a new PDF…";
+  $("apply-removals-btn").textContent = "Removing and rendering…";
+  setRecoveryControlsDisabled(true);
+  try {
+    await fetchJson(`/api/jobs/${state.recovery.jobId}/fit-recovery`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": state.recovery.idempotencyKey,
+      },
+      body: JSON.stringify({ revision, candidate_ids: candidateIds }),
+    });
+    state.recovery.awaitingResult = true;
+    status.textContent = "Selections saved. Rendering the updated resume…";
+    state.recoveryCache.delete(state.recovery.jobId);
+    loadJobData().catch(() => {});
+    if (state.selectedId === state.recovery.jobId) fetchDetail(state.recovery.jobId);
+  } catch (error) {
+    status.classList.add("error");
+    status.textContent = `The updated resume was not queued. Check your connection and try again. ${String(error.message || error)}`;
+    setRecoveryControlsDisabled(false);
+  } finally {
+    state.recovery.submitting = false;
+    $("apply-removals-btn").textContent = "Remove selected and render";
+  }
 }
 
 function renderStages(job) {
@@ -709,9 +1002,33 @@ function applyEvent(event) {
     renderTracker();
     return;
   }
-  if (kind === "job_started" || kind === "job_completed" || kind === "job_failed") {
+  if (kind === "job_action_required") {
+    state.recoveryCache.delete(event.job_id);
     loadJobData().catch(() => {});
     if (event.job_id === state.selectedId) fetchDetail(event.job_id);
+    const dialog = $("fit-recovery-dialog");
+    if (dialog.open && state.recovery.jobId === event.job_id) {
+      state.recovery.awaitingResult = false;
+      $("recovery-submit-status").classList.remove("error");
+      $("recovery-submit-status").textContent = "More space is still needed. Review the remaining options.";
+      loadRecoveryDialog();
+    }
+    return;
+  }
+  if (kind === "job_started" || kind === "job_completed" || kind === "job_failed") {
+    const recoveryJob = state.recovery.jobId === event.job_id;
+    if ((kind === "job_completed" || kind === "job_failed") && recoveryJob) {
+      state.recovery.awaitingResult = false;
+      closeRecoveryDialog();
+    }
+    loadJobData().catch(() => {});
+    if (event.job_id === state.selectedId) {
+      fetchDetail(event.job_id).then(() => {
+        if (kind === "job_completed" && state.currentDetail && state.currentDetail.job_id === event.job_id && (state.currentDetail.artifacts || []).includes("resume.pdf")) {
+          activateTab("preview", false);
+        }
+      });
+    }
     return;
   }
   if (!kind.startsWith("stage_") || !event.job_id) return;
@@ -732,7 +1049,7 @@ function openStream() {
   const source = new EventSource("/api/events");
   source.onopen = () => loadAll();
   source.onerror = () => { /* EventSource reconnects and loadAll runs on the next open. */ };
-  const kinds = ["queue_changed", "job_started", "stage_started", "stage_completed", "stage_retry", "stage_detail", "stage_warning", "job_completed", "job_failed", "tracker_changed"];
+  const kinds = ["queue_changed", "job_started", "stage_started", "stage_completed", "stage_retry", "stage_detail", "stage_warning", "job_action_required", "job_completed", "job_failed", "tracker_changed"];
   for (const kind of kinds) {
     source.addEventListener(kind, (message) => {
       try { applyEvent(JSON.parse(message.data)); } catch { /* Ignore malformed event frames. */ }
@@ -759,6 +1076,18 @@ function bindEvents() {
   $("close-job-dialog").addEventListener("click", closeJobDialog);
   $("cancel-job-dialog").addEventListener("click", closeJobDialog);
   $("job-form").addEventListener("submit", submitJob);
+  $("review-removals-btn").addEventListener("click", openRecoveryDialog);
+  $("close-recovery-dialog").addEventListener("click", closeRecoveryDialog);
+  $("cancel-recovery-dialog").addEventListener("click", closeRecoveryDialog);
+  $("fit-recovery-form").addEventListener("submit", submitRecovery);
+  $("retry-recovery-btn").addEventListener("click", () => loadRecoveryDialog());
+  $("select-recommendations-btn").addEventListener("click", selectRecommendedCandidates);
+  $("clear-recovery-selection-btn").addEventListener("click", clearRecoverySelection);
+  $("recovery-options").addEventListener("change", () => {
+    clearRecoveryError();
+    state.recovery.requestSignature = "";
+    state.recovery.idempotencyKey = "";
+  });
   $("show-jobs-btn").addEventListener("click", () => showMobileView("jobs"));
   $("hide-jobs-btn").addEventListener("click", () => showMobileView("detail"));
   $("detail-back-btn").addEventListener("click", () => showMobileView("jobs"));

@@ -580,6 +580,33 @@ def test_fit_raises_when_content_exhausted(tmp_path):
     assert "every trimmable item has been removed" in str(exc.value)
 
 
+def test_fit_calls_exhaustion_handler_only_after_ordinary_trims(tmp_path):
+    sr = _oversized_scored_resume()
+    calls = []
+
+    def counter(plain):
+        return 1 if plain.work[0].highlights[0] == "short" else 2
+
+    def recover(working, pages, trim_log):
+        calls.append((pages, trim_log))
+        working.work[0].highlights[0].text = "short"
+        return "emergency concision work:0:0"
+
+    result = fit_to_one_page(
+        sr, tmp_path, page_counter=counter, exhaustion_handler=recover
+    )
+
+    assert result.work[0].highlights[0] == "short"
+    assert len(calls) == 1
+    assert calls[0][0] == 2
+    assert calls[0][1] == (
+        "tier-a: excess project bullet 'p2x' from 'P2'",
+        "tier-a: excess project bullet 'p1x' from 'P1'",
+        "tier-b: skill group 'Sk5' (rel=10)",
+        "tier-b: skill group 'Sk2' (rel=20)",
+    )
+
+
 def test_fit_raises_on_iteration_cap(tmp_path):
     sr = ScoredResume(
         basics=Basics(name="Cap"),

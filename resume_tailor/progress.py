@@ -29,6 +29,8 @@ class Stage(StrEnum):
     HOLISTIC_REVIEW = "Holistic review"
     VALIDATE_REVIEW = "Validate review edits"
     RENDER = "Render and fit one page"
+    EMERGENCY_CONCISION = "Emergency bullet concision"
+    CONCISION_AUDIT = "Audit emergency concision"
     WRITE_ARTIFACTS = "Write artifacts"
 
 

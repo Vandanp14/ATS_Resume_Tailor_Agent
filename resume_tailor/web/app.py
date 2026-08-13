@@ -20,7 +20,7 @@ from ..config import DEFAULT_MODEL
 from ..pipeline import TailorPipeline
 from ..runtime import DEFAULT_CALL_INTERVAL, load_master
 from models import JSONResume
-from .jobs import Job, JobState, QueueRegistry
+from .jobs import Job, JobState, QueueRegistry, RecoveryRequestError
 from .models import (
     ARTIFACT_ALLOWLIST,
     CALLS_FILE,
@@ -29,6 +29,8 @@ from .models import (
     DEFAULT_MAX_REQUESTS_PER_DAY,
     CreateJobRequest,
     CreateJobResponse,
+    FitRecoveryRequest,
+    FitRecoveryResponse,
     JobDetail,
     JobEntry,
     JobOptions,
@@ -36,6 +38,7 @@ from .models import (
     MetaResponse,
     ProblemDetails,
     QueueSnapshot,
+    RecoverySubmissionResponse,
     TrackerSnapshot,
     job_fingerprint,
 )
@@ -72,6 +75,9 @@ _EVENT_KINDS = {
     "stage_warning",
     "job_completed",
     "job_failed",
+    "job_action_required",
+    "job_recovery_queued",
+    "job_recovery_started",
     "tracker_changed",
 }
 
@@ -90,10 +96,18 @@ class WebSettings:
     static_dir: Path
 
 
-def _problem(status: int, title: str, detail: str, instance: str | None = None, errors: list[dict[str, object]] | None = None) -> JSONResponse:
+def _problem(
+    status: int,
+    title: str,
+    detail: str,
+    instance: str | None = None,
+    errors: list[dict[str, object]] | None = None,
+) -> JSONResponse:
     return JSONResponse(
         status_code=status,
-        content=ProblemDetails(title=title, status=status, detail=detail, instance=instance, errors=errors).as_json(),
+        content=ProblemDetails(
+            title=title, status=status, detail=detail, instance=instance, errors=errors
+        ).as_json(),
         headers={"Cache-Control": "no-store"},
         media_type="application/problem+json",
     )
@@ -112,18 +126,33 @@ def _origin_allowed(origin: str | None) -> bool:
         parsed = urlparse(origin)
     except ValueError:
         return False
-    return parsed.scheme == "http" and parsed.netloc.split(":", 1)[0].strip().lower() in _ALLOWED_HOSTS
+    return (
+        parsed.scheme == "http"
+        and parsed.netloc.split(":", 1)[0].strip().lower() in _ALLOWED_HOSTS
+    )
 
 
 def _is_gemini(model: str) -> bool:
     return str(model).startswith("gemini")
 
 
-def create_app(settings: WebSettings, registry: QueueRegistry, master: JSONResume, hub: EventHub, scheduler: GeminiScheduler | None) -> FastAPI:
-    app = FastAPI(title="ATS Resume Tailor Agent", docs_url=None, redoc_url=None, openapi_url=None)
+def create_app(
+    settings: WebSettings,
+    registry: QueueRegistry,
+    master: JSONResume,
+    hub: EventHub,
+    scheduler: GeminiScheduler | None,
+) -> FastAPI:
+    app = FastAPI(
+        title="ATS Resume Tailor Agent", docs_url=None, redoc_url=None, openapi_url=None
+    )
     pdf_available = registry.pdf_available
     basics = master.basics
-    tracker = lambda: scheduler.snapshot() if scheduler is not None else inactive_tracker(settings.model)
+    tracker = lambda: (
+        scheduler.snapshot()
+        if scheduler is not None
+        else inactive_tracker(settings.model)
+    )
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -138,29 +167,60 @@ def create_app(settings: WebSettings, registry: QueueRegistry, master: JSONResum
     async def host_origin_guard(request: Request, call_next):
         if request.url.path.startswith("/api"):
             if not _host_allowed(request.headers.get("host", "")):
-                return _problem(400, "Bad Request", "Unrecognized host.", instance=request.url.path)
+                return _problem(
+                    400, "Bad Request", "Unrecognized host.", instance=request.url.path
+                )
             if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
                 origin = request.headers.get("origin")
                 if origin is not None and not _origin_allowed(origin):
                     return _problem(403, "Forbidden", "Cross-origin request rejected.")
                 content_type = request.headers.get("content-type", "")
                 if content_type and "application/json" not in content_type:
-                    return _problem(415, "Unsupported Media Type", "API writes require application/json.")
+                    return _problem(
+                        415,
+                        "Unsupported Media Type",
+                        "API writes require application/json.",
+                    )
         return await call_next(request)
 
     @app.exception_handler(RequestValidationError)
-    async def validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
-        errors = [{"loc": ".".join(str(p) for p in error["loc"]), "message": str(error["msg"])} for error in exc.errors()]
-        return _problem(422, "Unprocessable Entity", "Request validation failed.", instance=str(_request.url.path), errors=errors)
+    async def validation_error(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        errors = [
+            {
+                "loc": ".".join(str(p) for p in error["loc"]),
+                "message": str(error["msg"]),
+            }
+            for error in exc.errors()
+        ]
+        return _problem(
+            422,
+            "Unprocessable Entity",
+            "Request validation failed.",
+            instance=str(_request.url.path),
+            errors=errors,
+        )
 
     @app.exception_handler(StarletteHTTPException)
-    async def http_error(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
-        return _problem(exc.status_code, "Error", exc.detail if isinstance(exc.detail, str) else str(exc.detail))
+    async def http_error(
+        _request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        return _problem(
+            exc.status_code,
+            "Error",
+            exc.detail if isinstance(exc.detail, str) else str(exc.detail),
+        )
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception) -> JSONResponse:
         LOGGER.exception("Unhandled web error for %s", request.url.path)
-        return _problem(500, "Internal Server Error", "An internal error occurred.", instance=str(request.url.path))
+        return _problem(
+            500,
+            "Internal Server Error",
+            "An internal error occurred.",
+            instance=str(request.url.path),
+        )
 
     def job_or_404(job_id: str) -> Job:
         try:
@@ -199,20 +259,33 @@ def create_app(settings: WebSettings, registry: QueueRegistry, master: JSONResum
     # -- jobs ------------------------------------------------------------------
 
     @app.post("/api/jobs", status_code=202)
-    async def create_job(body: CreateJobRequest, idempotency_key: str = Header(default="", alias="Idempotency-Key")) -> JSONResponse:
+    async def create_job(
+        body: CreateJobRequest,
+        idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    ) -> JSONResponse:
         try:
             key = str(uuid.UUID(idempotency_key))
         except ValueError:
             raise HTTPException(422, "Idempotency-Key must be a UUID.")
         if not pdf_available and not body.no_pdf:
-            raise HTTPException(422, "Tectonic is not installed; set no_pdf=true to run without PDF output.")
-        fingerprint = job_fingerprint(body, JobOptions(bridge_skills=body.bridge_skills, no_pdf=body.no_pdf))
+            raise HTTPException(
+                422,
+                "Tectonic is not installed; set no_pdf=true to run without PDF output.",
+            )
+        fingerprint = job_fingerprint(
+            body, JobOptions(bridge_skills=body.bridge_skills, no_pdf=body.no_pdf)
+        )
         existing = registry.find_idempotent(key)
         if existing is not None:
             if not registry.matches_fingerprint(existing, fingerprint):
-                raise HTTPException(422, "Idempotency-Key was used with a different request.")
+                raise HTTPException(
+                    422, "Idempotency-Key was used with a different request."
+                )
             if existing.persisted.state in {JobState.QUEUED, JobState.RUNNING}:
-                raise HTTPException(409, f"An identical request is already in progress (job {existing.persisted.job_id}).")
+                raise HTTPException(
+                    409,
+                    f"An identical request is already in progress (job {existing.persisted.job_id}).",
+                )
             return created(existing.persisted.job_id)
         job = registry.enqueue(body, idempotency_key=key)
         return created(job.persisted.job_id, position=registry.queue_position(job) or 0)
@@ -224,6 +297,37 @@ def create_app(settings: WebSettings, registry: QueueRegistry, master: JSONResum
     @app.get("/api/jobs/{job_id}", response_model=JobDetail)
     async def job_detail(job: Job = Depends(job_or_404)) -> JobDetail:
         return JobDetail(job=registry.entry(job), events=job.journal.replay())
+
+    @app.get("/api/jobs/{job_id}/fit-recovery", response_model=FitRecoveryResponse)
+    async def get_fit_recovery(job: Job = Depends(job_or_404)) -> FitRecoveryResponse:
+        try:
+            return registry.recovery(job)
+        except RecoveryRequestError as exc:
+            raise HTTPException(exc.status, exc.detail) from exc
+
+    @app.post(
+        "/api/jobs/{job_id}/fit-recovery",
+        status_code=202,
+        response_model=RecoverySubmissionResponse,
+    )
+    async def submit_fit_recovery(
+        body: FitRecoveryRequest,
+        job: Job = Depends(job_or_404),
+        idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        try:
+            key = str(uuid.UUID(idempotency_key))
+        except ValueError:
+            raise HTTPException(422, "Idempotency-Key must be a UUID.")
+        try:
+            response, _replayed = registry.enqueue_recovery(job, body, key)
+        except RecoveryRequestError as exc:
+            raise HTTPException(exc.status, exc.detail) from exc
+        return JSONResponse(
+            status_code=202,
+            content=response.model_dump(mode="json"),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.delete("/api/jobs/{job_id}", status_code=204)
     async def delete_job(job: Job = Depends(job_or_404)) -> Response:
@@ -256,7 +360,9 @@ def create_app(settings: WebSettings, registry: QueueRegistry, master: JSONResum
         try:
             while True:
                 try:
-                    event = await asyncio.wait_for(asyncio.to_thread(subscriber.queue.get, True, 1.0), 1.0)
+                    event = await asyncio.wait_for(
+                        asyncio.to_thread(subscriber.queue.get, True, 1.0), 1.0
+                    )
                 except asyncio.TimeoutError:
                     continue
                 yield ServerSentEvent(
@@ -270,7 +376,9 @@ def create_app(settings: WebSettings, registry: QueueRegistry, master: JSONResum
     # -- artifacts -------------------------------------------------------------
 
     @app.get("/api/jobs/{job_id}/files/{artifact}")
-    async def artifact(job: Job = Depends(job_or_404), artifact: str = "", download: int = 1) -> Response:
+    async def artifact(
+        job: Job = Depends(job_or_404), artifact: str = "", download: int = 1
+    ) -> Response:
         if artifact not in ARTIFACT_ALLOWLIST:
             raise HTTPException(404, f"Unknown artifact: {artifact}")
         path = job.directory / artifact
@@ -280,11 +388,15 @@ def create_app(settings: WebSettings, registry: QueueRegistry, master: JSONResum
             path,
             media_type=_MEDIA.get(artifact, "application/octet-stream"),
             filename=artifact,
-            content_disposition_type="inline" if artifact == "resume.pdf" and download == 0 else "attachment",
+            content_disposition_type=(
+                "inline" if artifact == "resume.pdf" and download == 0 else "attachment"
+            ),
             headers={"Cache-Control": "no-store"},
         )
 
-    app.mount("/", StaticFiles(directory=str(settings.static_dir), html=True), name="static")
+    app.mount(
+        "/", StaticFiles(directory=str(settings.static_dir), html=True), name="static"
+    )
     return app
 
 
@@ -314,6 +426,7 @@ def webapp_factory(
     max_requests_per_day: int = DEFAULT_MAX_REQUESTS_PER_DAY,
     static_dir: Path | None = None,
     pipeline_factory: Callable[..., TailorPipeline] = TailorPipeline,
+    recovery_handler: Callable[[Path, list[str]], int] | None = None,
     score_timeout: float | None = None,
 ) -> FastAPI:
     """Assemble settings + shared scheduler + registry + app for entrypoint and tests."""
@@ -326,8 +439,14 @@ def webapp_factory(
     try:
         master = load_master(master_path)
     except Exception as exc:
-        raise RuntimeError(f"Could not load master resume at {master_path}: {exc}") from exc
-    static = Path(static_dir) if static_dir is not None else Path(__file__).resolve().parent.parent.parent / "static"
+        raise RuntimeError(
+            f"Could not load master resume at {master_path}: {exc}"
+        ) from exc
+    static = (
+        Path(static_dir)
+        if static_dir is not None
+        else Path(__file__).resolve().parent.parent.parent / "static"
+    )
     settings = WebSettings(
         master_path=master_path,
         output_dir=Path(output_dir),
@@ -378,5 +497,6 @@ def webapp_factory(
         hub=hub,
         provider=provider,
         scheduler=scheduler,
+        recovery_handler=recovery_handler,
     )
     return create_app(settings, registry, master, hub, scheduler)

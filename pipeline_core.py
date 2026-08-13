@@ -377,6 +377,43 @@ def _number_tokens(text: str) -> set[str]:
     return {match.group(0).lower() for match in _NUMBER_RE.finditer(text)}
 
 
+def validate_concise_bullet(
+    original: ScoredBullet,
+    replacement_text: str,
+    *,
+    max_words: int,
+    fact_index: Mapping[str, dict],
+    assignment: EvidenceAssignment | None,
+    section: str,
+) -> None:
+    """Validate an emergency text-only rewrite against immutable evidence."""
+    original_words = original.text.split()
+    replacement_words = replacement_text.split()
+    if len(replacement_words) >= len(original_words):
+        raise ContractError(f"{section} concision is not strictly shorter")
+    if len(replacement_words) > max_words:
+        raise ContractError(f"{section} concision exceeds the {max_words}-word target")
+    original_numbers = _number_tokens(original.text)
+    replacement_numbers = _number_tokens(replacement_text)
+    if replacement_numbers != original_numbers:
+        raise ContractError(
+            f"{section} concision changed numeric evidence: "
+            f"expected={sorted(original_numbers)}, actual={sorted(replacement_numbers)}"
+        )
+    bullet = STARBullet(
+        evidence_assignment_id=original.evidence_assignment_id,
+        situation_task=original.situation_task or "Preserved from validated bullet.",
+        action=original.action or "Preserved from validated bullet.",
+        result=original.result or "Preserved from validated bullet.",
+        text=replacement_text,
+        relevance=original.relevance,
+        source_ids=original.source_ids,
+        impact_type=original.impact_type or "qualitative",
+        impact_claim=original.impact_claim or "Preserved qualitative impact.",
+    )
+    _validate_star_bullet(bullet, fact_index, assignment, section)
+
+
 def _validate_star_bullet(
     bullet: object,
     fact_index: Mapping[str, dict],
@@ -764,7 +801,20 @@ def assemble_scored(
                     **_protected_source_fields(source, {"description", "highlights"}),
                     "source_id": rewrite.source_id,
                     "description": rewrite.description,
-                    "highlights": [bullet.text for bullet in rewrite.bullets],
+                    "highlights": [
+                        ScoredBullet(
+                            text=bullet.text,
+                            relevance=bullet.relevance,
+                            source_ids=bullet.source_ids,
+                            evidence_assignment_id=bullet.evidence_assignment_id,
+                            situation_task=bullet.situation_task,
+                            action=bullet.action,
+                            result=bullet.result,
+                            impact_type=bullet.impact_type,
+                            impact_claim=bullet.impact_claim,
+                        )
+                        for bullet in rewrite.bullets
+                    ],
                     "relevance": rewrite.relevance,
                     "source_ids": [
                         source_id
@@ -1087,7 +1137,7 @@ def scan_bullet_style(final_resume: ScoredResume) -> list[str]:
         )
     for index, item in enumerate(final_resume.projects or []):
         scan_section(
-            item.highlights or [],
+            (bullet.text for bullet in item.highlights or []),
             f"Projects[{index}]",
             lambda i, n=index: f"Projects[{n}] bullet {i + 1}",
         )
