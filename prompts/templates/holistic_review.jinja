@@ -1,0 +1,89 @@
+Review the assembled tailored resume as a whole. This is the one and only
+semantic quality pass. Assess factual meaning, job coverage, attribution,
+unsupported technologies, STAR completeness, cross-entry assignments, verified
+and inferred metrics, duplication, ATS effectiveness, and readability.
+
+{% include "_truth_floor.jinja" %}
+{% include "_holistic_rules.jinja" %}
+{% include "_bullet_guide_rules.jinja" %}
+{% include "_action_verbs.jinja" %}
+
+<<<TARGET_JOB_PROFILE>>>
+{{ jd_profile_json }}
+<<<END_TARGET_JOB_PROFILE>>>
+
+<<<MASTER_RESUME>>>
+{{ master_json }}
+<<<END_MASTER_RESUME>>>
+
+<<<TAILORED_DRAFT>>>
+{{ tailored_resume_json }}
+<<<END_TAILORED_DRAFT>>>
+
+<<<EVIDENCE_PLAN>>>
+{{ evidence_plan_json }}
+<<<END_EVIDENCE_PLAN>>>
+
+<<<TRANSFERABLE_SKILL_PLAN>>>
+{{ transferable_skill_plan_json }}
+<<<END_TRANSFERABLE_SKILL_PLAN>>>
+
+<<<GENERATED_COMPONENTS_WITH_STAR_METADATA>>>
+{{ generated_components_json }}
+<<<END_GENERATED_COMPONENTS_WITH_STAR_METADATA>>>
+
+<<<SELECTION_METADATA>>>
+{{ selection_metadata_json }}
+<<<END_SELECTION_METADATA>>>
+
+Return coverage, unresolved truth violations, recommendations, and optional
+complete replacements for named sections. Evaluate the resume as if every
+proposed edit were applied. If an edit would still leave an unsupported claim,
+include that claim in truth_violations.
+
+`truth_violations` is the post-edit blocking list, not an audit history. When a
+valid section edit removes or corrects a claim, do not also return that old claim
+as a truth violation. Put the correction rationale in recommendations instead.
+Every truth-violation `claim` must quote text that exists verbatim in the
+post-edit resume; never reconstruct, combine, or paraphrase a claim from STAR
+metadata.
+
+Section edit contracts:
+- skills: the same compact skills response used by the skills stage; you may
+  include JD must-have and nice-to-have keywords the master lacks, but never
+  repeat a keyword across groups
+- work: the same complete source_id/summary/relevance/STAR-bullets response used
+  by the work stage; preserve each evidence_assignment_id, its allocated global
+  source_ids, inferred impact claim, and the 4/3/3 counts; never return employer,
+  title, dates, or URL
+- projects: the same compact source_id/description/relevance/bullets response
+  used by the project stage; preserve two STAR bullets per project with local
+  provenance; never return name, dates, URL, or technologies
+
+Return ONLY:
+{
+  "coverage_pct": 0,
+  "missing_must_haves": [],
+  "weak_sections": [],
+  "truth_violations": [
+    {"section": "work", "claim": "exact unsupported claim", "reason": "why unsupported"}
+  ],
+  "recommendations": [],
+  "notes": null,
+  "section_edits": null
+}
+
+Audit every planned and edited claim. A contradictory attribution, missing STAR
+element, duplicated accomplishment, unallocated provenance, changed count, or
+protected-field change is a truth violation. Flag an inferred metric only when
+it is egregiously inflated or grounded in no source fact; when in doubt, put it
+in recommendations, not truth_violations. Any unresolved truth violation blocks
+the run.
+
+Audit bullet quality per the bullet guide and verb dictionary, but put style
+findings in recommendations, never truth_violations: bullets opening with
+"responsible for," "worked on," "helped with," or "participated in"; restricted
+verbs (Led, Owned, Architected, Optimized, Scaled, Automated, Streamlined,
+Launched, Deployed, Transformed, Drove, Spearheaded) without supporting
+evidence; ownership verbs stronger than the ownership-calibration ladder
+allows; and three or more bullets in one section opening with the same verb.

@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ATS Resume Tailor</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body data-mobile-view="jobs">
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <header class="app-header">
+    <div class="header-leading">
+      <button class="icon-button mobile-only" id="show-jobs-btn" type="button" aria-label="Show jobs">
+        <span aria-hidden="true">☰</span>
+      </button>
+      <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="brand-copy">
+        <strong>ATS Resume Tailor</strong>
+        <span id="server-status">Connecting…</span>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <div class="model-summary desktop-meta">
+        <span id="model-provider">Model unavailable</span>
+        <span id="master-identity">Master unavailable</span>
+      </div>
+      <button class="usage-trigger" id="tracker" type="button" popovertarget="tracker-detail">
+        <span class="status-dot" id="tracker-dot" aria-hidden="true"></span>
+        <span class="desktop-label">Gemini usage</span>
+        <strong class="tabnum" id="tracker-copy">—</strong>
+      </button>
+      <button class="button primary header-new" id="header-new-job" type="button">New tailoring</button>
+    </div>
+  </header>
+
+  <div class="usage-popover" id="tracker-detail" popover aria-labelledby="usage-title">
+    <div class="popover-heading">
+      <div>
+        <p class="eyebrow">Project quota</p>
+        <h2 id="usage-title">Gemini usage</h2>
+      </div>
+      <span class="status-pill neutral" id="tracker-state">Loading</span>
+    </div>
+    <div class="usage-list">
+      <div class="usage-row">
+        <div class="usage-copy"><span id="rpm-label">Requests this minute</span><strong class="tabnum" id="rpm-copy">0 / 15</strong></div>
+        <progress id="rpm-progress" aria-labelledby="rpm-label rpm-copy" value="0" max="15"></progress>
+      </div>
+      <div class="usage-row">
+        <div class="usage-copy"><span id="tpm-label">Input tokens this minute</span><strong class="tabnum" id="tpm-copy">0 / 250k</strong></div>
+        <progress id="tpm-progress" aria-labelledby="tpm-label tpm-copy" value="0" max="250000"></progress>
+      </div>
+      <div class="usage-row">
+        <div class="usage-copy"><span id="rpd-label">Requests today</span><strong class="tabnum" id="rpd-copy">0 / 500</strong></div>
+        <progress id="rpd-progress" aria-labelledby="rpd-label rpd-copy" value="0" max="500"></progress>
+      </div>
+    </div>
+    <p class="usage-note" id="tracker-note">Usage recorded by this web app. Daily quota resets at midnight Pacific.</p>
+  </div>
+
+  <div class="app-shell">
+    <aside class="job-rail" id="job-rail" aria-label="Tailoring jobs">
+      <div class="rail-top">
+        <div class="rail-heading">
+          <div>
+            <p class="eyebrow">Workspace</p>
+            <h2>Tailoring jobs</h2>
+          </div>
+          <button class="icon-button rail-close mobile-only" id="hide-jobs-btn" type="button" aria-label="Close jobs">
+            <span aria-hidden="true">×</span>
+          </button>
+        </div>
+        <button class="button rail-new" id="rail-new-job" type="button">New tailoring</button>
+
+        <section class="queue-banner" id="queue-banner" aria-live="polite">
+          <div class="queue-banner-copy">
+            <span class="status-dot" id="queue-status-dot" aria-hidden="true"></span>
+            <div><strong id="queue-status-title">Queue loading</strong><span id="queue-status-copy">Checking worker status…</span></div>
+          </div>
+          <button class="rail-action" id="pause-btn" type="button" hidden>Pause</button>
+        </section>
+
+        <div class="rail-segment" aria-label="Job list filter">
+          <button type="button" id="filter-queue" aria-pressed="true">Queue <span class="tabnum" id="queue-count">0</span></button>
+          <button type="button" id="filter-recent" aria-pressed="false">Recent</button>
+        </div>
+      </div>
+
+      <div class="rail-list-area">
+        <div class="list-state skeleton-stack" id="queue-loading" aria-label="Loading jobs" hidden>
+          <span></span><span></span><span></span>
+        </div>
+        <div class="list-state error-state" id="queue-error" role="alert" hidden>
+          <strong>Jobs could not be loaded</strong>
+          <span id="queue-error-copy"></span>
+          <button class="rail-action" id="retry-jobs-btn" type="button">Try again</button>
+        </div>
+        <div class="list-state empty-state" id="queue-empty" hidden>
+          <strong>No queued jobs</strong>
+          <span>Paste a job description to start tailoring.</span>
+          <button class="rail-action" id="add-jd-action" type="button">New tailoring</button>
+        </div>
+        <ul class="job-list" id="queue-list" aria-label="Queued and running jobs"></ul>
+
+        <div class="list-state empty-state" id="recent-empty" hidden>
+          <strong>No recent runs</strong>
+          <span>Completed and failed jobs will appear here.</span>
+        </div>
+        <ul class="job-list" id="recent-list" aria-label="Recent jobs" hidden></ul>
+      </div>
+    </aside>
+
+    <main class="main-workspace" id="main" tabindex="-1">
+      <section class="workspace-state detail-empty" id="detail-empty">
+        <p class="eyebrow">Resume workspace</p>
+        <h1>Tailor your next resume</h1>
+        <p>Add a job description, then follow its progress and review the generated resume here.</p>
+        <button class="button primary" id="empty-new-job" type="button">New tailoring</button>
+      </section>
+
+      <section class="workspace-state detail-loading" id="detail-loading" aria-label="Loading selected job" hidden>
+        <div class="skeleton heading-skeleton"></div>
+        <div class="skeleton subheading-skeleton"></div>
+        <div class="skeleton overview-skeleton"></div>
+        <div class="skeleton content-skeleton"></div>
+      </section>
+
+      <section class="workspace-state detail-error" id="detail-error" role="alert" hidden>
+        <p class="eyebrow">Selected job</p>
+        <h1>Job could not be loaded</h1>
+        <p id="detail-error-copy"></p>
+        <button class="button secondary" id="retry-detail-btn" type="button">Try again</button>
+      </section>
+
+      <article class="job-detail" id="detail-body" hidden>
+        <header class="detail-header">
+          <button class="back-button mobile-only" id="detail-back-btn" type="button">Jobs</button>
+          <div class="detail-title">
+            <p class="eyebrow">Selected job</p>
+            <h1 id="detail-company">—</h1>
+            <p id="detail-role">—</p>
+          </div>
+          <span class="status-pill" id="detail-state">Queued</span>
+        </header>
+
+        <section class="job-overview" aria-label="Job status overview">
+          <div class="overview-primary">
+            <span class="overview-label">Current status</span>
+            <strong id="detail-stage">Waiting to start</strong>
+            <span id="detail-message" hidden></span>
+          </div>
+          <dl class="overview-metrics">
+            <div><dt>Elapsed</dt><dd class="tabnum" id="detail-elapsed">—</dd></div>
+            <div><dt>Queue</dt><dd class="tabnum" id="detail-position">—</dd></div>
+            <div><dt>Output</dt><dd id="detail-output">Pending</dd></div>
+          </dl>
+        </section>
+
+        <div class="notice warning" id="detail-export-warning" role="status" hidden></div>
+
+        <section class="fit-recovery-card" id="fit-recovery-card" aria-labelledby="fit-recovery-card-title" hidden>
+          <div class="fit-recovery-card-copy">
+            <p class="eyebrow">One-page fit</p>
+            <h2 id="fit-recovery-card-title">Choose what to remove</h2>
+            <p id="fit-recovery-card-summary">The resume still spans two pages after automatic shortening.</p>
+          </div>
+          <button class="button warning-action" id="review-removals-btn" type="button">Review removal options</button>
+        </section>
+
+        <div class="detail-tabs" role="tablist" aria-label="Job details">
+          <button type="button" role="tab" id="tab-progress" aria-selected="true" aria-controls="panel-progress" tabindex="0">Progress</button>
+          <button type="button" role="tab" id="tab-preview" aria-selected="false" aria-controls="panel-preview" tabindex="-1">Resume preview</button>
+          <button type="button" role="tab" id="tab-files" aria-selected="false" aria-controls="panel-files" tabindex="-1">Files</button>
+        </div>
+
+        <section class="tab-panel progress-panel" id="panel-progress" role="tabpanel" aria-labelledby="tab-progress" tabindex="0">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Pipeline</p><h2>Tailoring progress</h2></div>
+            <span class="progress-summary" id="progress-summary">0 of 14 complete</span>
+          </div>
+          <ol class="stage-list" id="stage-list"></ol>
+          <div id="verbose-detail"></div>
+        </section>
+
+        <section class="tab-panel preview-panel" id="panel-preview" role="tabpanel" aria-labelledby="tab-preview" tabindex="0" hidden>
+          <div class="panel-heading">
+            <div><p class="eyebrow">Generated output</p><h2>Resume preview</h2></div>
+            <a class="button secondary compact" id="dl-pdf-top" hidden>Open PDF</a>
+          </div>
+          <div class="preview-state" id="preview-pending">
+            <strong>Resume preview is not ready</strong>
+            <span>It will appear automatically after the tailoring run completes.</span>
+          </div>
+          <iframe id="preview" title="Generated resume PDF preview" hidden></iframe>
+          <div class="preview-json" id="preview-json" hidden></div>
+        </section>
+
+        <section class="tab-panel files-panel" id="panel-files" role="tabpanel" aria-labelledby="tab-files" tabindex="0" hidden>
+          <div class="panel-heading">
+            <div><p class="eyebrow">Artifacts</p><h2>Generated files</h2></div>
+          </div>
+          <p class="file-location" id="pdf-library-location" hidden></p>
+          <div class="file-list" id="downloads">
+            <a id="dl-pdf" hidden><span><strong>Resume PDF</strong><small>Application-ready document</small></span><b>Download</b></a>
+            <a id="dl-tex" hidden><span><strong>TeX source</strong><small>Rendered resume source</small></span><b>Download</b></a>
+            <a id="dl-json" hidden><span><strong>Tailored JSON</strong><small>Structured resume data</small></span><b>Download</b></a>
+            <a id="dl-match" hidden><span><strong>Match report</strong><small>Tailoring analysis</small></span><b>Download</b></a>
+            <a id="dl-diagnostic" hidden><span><strong>Diagnostics</strong><small>Failure details</small></span><b>Download</b></a>
+          </div>
+          <div class="preview-state" id="files-empty">
+            <strong>No files available yet</strong>
+            <span>Generated files will appear here when the run finishes.</span>
+          </div>
+        </section>
+      </article>
+    </main>
+  </div>
+
+  <dialog class="new-job-dialog" id="new-job-dialog" aria-labelledby="new-job-title">
+    <div class="dialog-shell">
+      <header class="dialog-header">
+        <div><p class="eyebrow">Queue a resume</p><h2 id="new-job-title">New tailoring</h2></div>
+        <button class="icon-button" id="close-job-dialog" type="button" aria-label="Close new tailoring form"><span aria-hidden="true">×</span></button>
+      </header>
+
+      <form id="job-form" novalidate>
+        <div class="dialog-body">
+          <div class="field">
+            <label for="company">Company</label>
+            <input id="company" name="company" type="text" maxlength="80" autocomplete="organization" aria-describedby="company-error" required>
+            <p class="error-slot" id="company-error" role="alert"></p>
+          </div>
+          <div class="field">
+            <label for="role">Role</label>
+            <input id="role" name="role" type="text" maxlength="80" autocomplete="organization-title" aria-describedby="role-error" required>
+            <p class="error-slot" id="role-error" role="alert"></p>
+          </div>
+          <div class="field">
+            <label for="jd-text">Job description</label>
+            <p class="help" id="jd-help">Paste the full job description you want to tailor this resume for.</p>
+            <textarea id="jd-text" name="jd_text" rows="12" maxlength="100000" aria-describedby="jd-help jd-error" required></textarea>
+            <p class="error-slot" id="jd-error" role="alert"></p>
+          </div>
+          <details class="advanced">
+            <summary>Advanced options</summary>
+            <label class="check"><input type="checkbox" id="bridge-skills"> <span><strong>Bridge skills</strong><small>Include transferable-skill planning.</small></span></label>
+            <label class="check"><input type="checkbox" id="research-company"> <span><strong>Research company</strong><small>When the JD is vague, look up the company's stack and hiring signals to guide selection (Gemini only).</small></span></label>
+            <label class="check"><input type="checkbox" id="no-pdf"> <span><strong>Skip PDF</strong><small>Generate structured files without rendering a PDF.</small></span></label>
+          </details>
+          <p class="form-status" id="enqueue-status" aria-live="polite"></p>
+        </div>
+        <footer class="dialog-footer">
+          <button class="button secondary" id="cancel-job-dialog" type="button">Cancel</button>
+          <button class="button primary" type="submit" id="add-btn">Add to queue</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog class="recovery-dialog" id="fit-recovery-dialog" aria-labelledby="fit-recovery-title" aria-describedby="fit-recovery-description">
+    <div class="recovery-dialog-shell">
+      <header class="dialog-header recovery-dialog-header">
+        <div>
+          <p class="eyebrow">One-page fit</p>
+          <h2 id="fit-recovery-title">Review removal options</h2>
+        </div>
+        <button class="icon-button" id="close-recovery-dialog" type="button" aria-label="Close removal options"><span aria-hidden="true">×</span></button>
+      </header>
+
+      <form id="fit-recovery-form" novalidate>
+        <div class="recovery-dialog-body">
+          <p class="recovery-intro" id="fit-recovery-description">Choose content to remove from this tailored resume. Your master resume will not change.</p>
+
+          <dl class="recovery-summary" aria-label="Current fit status">
+            <div><dt>Current length</dt><dd class="tabnum" id="recovery-page-count">—</dd></div>
+            <div><dt>Automatic shortening</dt><dd class="tabnum" id="recovery-concision-count">—</dd></div>
+          </dl>
+
+          <div class="recovery-loading skeleton-stack" id="recovery-loading" aria-label="Loading removal options" hidden>
+            <span></span><span></span><span></span>
+          </div>
+          <div class="recovery-load-error" id="recovery-load-error" role="alert" hidden>
+            <strong>Removal options could not be loaded</strong>
+            <p id="recovery-load-error-copy"></p>
+            <button class="button secondary compact" id="retry-recovery-btn" type="button">Try again</button>
+          </div>
+
+          <div id="recovery-content" hidden>
+            <div class="recovery-toolbar" aria-label="Selection actions">
+              <button class="text-button" id="select-recommendations-btn" type="button">Select recommendations</button>
+              <button class="text-button" id="clear-recovery-selection-btn" type="button">Clear selection</button>
+            </div>
+            <div class="recovery-options" id="recovery-options" tabindex="-1" aria-describedby="recovery-selection-error"></div>
+            <p class="error-slot recovery-selection-error" id="recovery-selection-error" role="alert"></p>
+          </div>
+
+          <p class="form-status recovery-submit-status" id="recovery-submit-status" role="status" aria-live="polite" aria-atomic="true"></p>
+        </div>
+        <footer class="dialog-footer recovery-dialog-footer">
+          <button class="button secondary" id="cancel-recovery-dialog" type="button">Cancel</button>
+          <button class="button primary" id="apply-removals-btn" type="submit">Remove selected and render</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

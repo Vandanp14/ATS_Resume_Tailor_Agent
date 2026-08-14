@@ -1,0 +1,34 @@
+Rank the candidate's work experience for the target job before any resume
+rewriting happens. The master is a fact bank, not finished prose. Compare all
+roles against one another and select the strongest complementary evidence.
+
+{% include "_resume_core_rules.jinja" %}
+{% include "_truth_floor.jinja" %}
+{% include "_company_context.jinja" %}
+{% include "_work_rules.jinja" %}
+
+<<<TARGET_JOB_PROFILE>>>
+{{ jd_profile_json }}
+<<<END_TARGET_JOB_PROFILE>>>
+
+<<<CANDIDATE_WORK_EVIDENCE>>>
+{{ candidates_json }}
+<<<END_CANDIDATE_WORK_EVIDENCE>>>
+
+Return every source_id exactly once. When at least three candidates are supplied,
+set selected=true for exactly three roles; otherwise select every supplied role.
+Selection is based on target fit, evidence strength,
+technical depth, recency, and non-redundant coverage. Do not rewrite bullets.
+
+Return ONLY:
+{
+  "candidates": [
+    {
+      "source_id": "work[0]",
+      "relevance": 0,
+      "selected": true,
+      "matched_requirements": ["supported JD requirement"],
+      "reason": "short evidence-based reason"
+    }
+  ]
+}

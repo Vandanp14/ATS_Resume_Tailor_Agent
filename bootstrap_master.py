@@ -12,7 +12,7 @@ Usage:
 
 IMPORTANT — which Python to run this with:
     The hiring-agent's own dependencies (pymupdf, pymupdf4llm,
-    google-generativeai, ...) must be importable by the interpreter running
+    google-genai, ...) must be importable by the interpreter running
     this script. The simplest reliable path is to run it with the
     hiring-agent's venv python:
 
@@ -123,7 +123,7 @@ def main(argv=None) -> int:
             f"error: could not import the hiring-agent's PDF pipeline: {exc}\n\n"
             "This almost always means the current Python interpreter does not "
             "have the hiring-agent's dependencies installed (pymupdf, "
-            "pymupdf4llm, google-generativeai, ...). Two fixes:\n"
+            "pymupdf4llm, google-genai, ...). Two fixes:\n"
             "  1. (simplest) Run this script with the hiring-agent's own venv:\n"
             f"       {hiring_agent_dir}/.venv/bin/python "
             "bootstrap_master.py " + str(pdf_path) + "\n"

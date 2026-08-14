@@ -40,6 +40,7 @@ from models import (
     ScoredSkill,
     ScoredWork,
     Skill,
+    TRANSFERABLE_SKILL_GROUP,
     Work,
 )
 
@@ -79,8 +80,18 @@ def test_latex_escape_all_specials_together():
     raw = r"& % $ # _ { } ~ ^ \ "
     out = latex_escape(raw)
     # No unescaped special survives except inside the replacement macros.
-    for macro in (r"\&", r"\%", r"\$", r"\#", r"\_", r"\{", r"\}",
-                  r"\textasciitilde{}", r"\textasciicircum{}", r"\textbackslash{}"):
+    for macro in (
+        r"\&",
+        r"\%",
+        r"\$",
+        r"\#",
+        r"\_",
+        r"\{",
+        r"\}",
+        r"\textasciitilde{}",
+        r"\textasciicircum{}",
+        r"\textbackslash{}",
+    ):
         assert macro in out
 
 
@@ -178,34 +189,65 @@ def test_render_tex_full_resume_content():
     # Header + escaped inline content.
     assert r"\scshape Ada Lovelace" in body
     assert "ada@example.com" in body
-    assert r"C\_sharp" in body  # underscore escaped in summary
-    assert r"100\% uptime" in body  # percent escaped in summary
+    assert r"C\_sharp" not in body  # master summary is intentionally omitted
+    assert r"100\% uptime" not in body
 
-    # Contact line joins present pieces with a $|$ separator (no trailing one).
-    assert "+1 555 0100~$|$~ada@example.com" in body
-    assert "github.com/ada" in body
+    # Contact line: phone plain, email as a mailto \href, joined with Jake's
+    # " $|$ " separator (spaces, no trailing one).
+    assert (
+        r"+1 555 0100 $|$ \href{mailto:ada@example.com}{\underline{ada@example.com}}"
+        in body
+    )
+    # Profile links show the network label; the raw URL stays in the target.
+    assert r"\href{github.com/ada}{\underline{GitHub}}" in body
+    assert r"\href{linkedin.com/in/ada}{\underline{LinkedIn}}" in body
+    # Personal site (basics.url) shows the "Portfolio" label.
+    assert r"\href{https://ada.dev}{\underline{Portfolio}}" in body
 
     # Sections present.
-    for section in (r"\section{Education}", r"\section{Experience}",
-                    r"\section{Projects}", r"\section{Technical Skills}"):
+    for section in (
+        r"\section{Education}",
+        r"\section{Experience}",
+        r"\section{Projects}",
+        r"\section{Technical Skills}",
+    ):
         assert section in body
 
     # Education degree combines studyType + area; dates form a range.
     assert "{B.Sc., Computer Science}" in body
     assert "2016 -- 2020" in body
-    assert "2021-01 -- Present" in body
+    assert "Jan 2021 -- Present" in body
 
     # Work bullets, escaped.
     assert r"Built payments serving 1M+ users (50\% faster)" in body
     assert r"Cut infra costs by \$2M" in body
 
-    # Project heading: name (escaped) + tech + link.
-    assert r"\textbf{opensrc\_cli}" in body
-    assert r"\emph{Python, Click}" in body
-    assert "github.com/ada/cli" in body
+    # Project heading: identity/date and metadata/link render on separate rows.
+    assert r"\resumeProjectHeading" in body
+    assert "{opensrc\\_cli}{}\n      {Python, Click}" in body
+    assert r"\href{github.com/ada/cli}{\underline{GitHub}}" in body
+    project_section = body.split(r"\section{Projects}", 1)[1].split(
+        r"\section{Technical Skills}", 1
+    )[0]
+    assert "$|$" not in project_section
 
     # Skills line.
     assert r"\textbf{Languages}{: Python, C++, Go}" in body
+
+
+def test_future_education_end_date_is_expected_but_completed_date_is_not():
+    future = JSONResume(
+        basics=Basics(name="Future Student"),
+        education=[Education(institution="State U", endDate="2026-12")],
+    )
+    completed = JSONResume(
+        basics=Basics(name="Graduate"),
+        education=[Education(institution="State U", endDate="2020-05")],
+    )
+    assert "Expected Dec 2026" in _document_body(render_tex(future))
+    completed_body = _document_body(render_tex(completed))
+    assert "May 2020" in completed_body
+    assert "Expected May 2020" not in completed_body
 
 
 def test_context_omits_missing_contact_pieces():
@@ -214,7 +256,40 @@ def test_context_omits_missing_contact_pieces():
     r.basics.profiles = None
     ctx = build_context(r)
     # Only email + portfolio url remain, joined once, no dangling separator.
-    assert ctx["contact_line"] == r"ada@example.com~$|$~https://ada.dev"
+    # Email shows the address (mailto link); basics.url shows the "Portfolio"
+    # label with the raw URL as the target, joined with Jake's " $|$ ".
+    assert ctx["contact_line"] == (
+        r"\href{mailto:ada@example.com}{\underline{ada@example.com}}"
+        r" $|$ "
+        r"\href{https://ada.dev}{\underline{Portfolio}}"
+    )
+
+
+def test_contact_line_href_raw_target_escaped_display():
+    # Pins Jake's clickable-link contract: the \href *target* is the RAW url /
+    # mailto (specials like '_' survive so the link works), while the *display*
+    # text is a short escaped label -- the profile's network name, falling back
+    # to the scheme/www-stripped URL when network is missing/blank.
+    r = _full_resume()
+    r.basics.phone = None
+    r.basics.email = "a_b@x.com"
+    r.basics.url = None
+    r.basics.profiles = [
+        Profile(network="Git_Hub", url="https://www.git.io/ada_x"),
+        Profile(network=None, url="https://www.git.io/no_net"),
+    ]
+    ctx = build_context(r)
+    line = ctx["contact_line"]
+    # Email: mailto target keeps the raw underscore; display escapes it.
+    assert r"\href{mailto:a_b@x.com}{\underline{a\_b@x.com}}" in line
+    # Profile with a network: target keeps scheme + www + raw underscore; the
+    # display is the network label, latex-escaped.
+    assert r"\href{https://www.git.io/ada_x}{\underline{Git\_Hub}}" in line
+    # Profile without a network: display falls back to the URL, scheme and
+    # www. stripped, then escaped -- target still raw.
+    assert r"\href{https://www.git.io/no_net}{\underline{git.io/no\_net}}" in line
+    # Three pieces, two separators, no dangling one.
+    assert line.count("$|$") == 2
 
 
 # ---------------------------------------------------------------------------
@@ -244,17 +319,36 @@ def test_null_heavy_resume_omits_everything_cleanly():
 
 
 def test_project_heading_no_dangling_separator_when_name_missing():
-    # A project with no name but with tech/url must not emit a leading "$|$"
-    # (the renderer's no-dangling-separator contract).
+    # A metadata-only project uses the compact single-row fallback.
     r = JSONResume(
         projects=[Project(name=None, technologies=["Python"], url="https://g.h/x")]
     )
     body = _document_body(render_tex(r))
-    # The two present pieces are still separated ...
-    assert r"\emph{Python} $|$ https://g.h/x" in body
-    # ... but there is no empty \textbf{} and no leading separator.
+    assert r"\resumeProjectSingleHeading" in body
+    assert r"\emph{Python}" in body
+    assert r"\href{https://g.h/x}{\underline{Live Demo}}" in body
     assert r"\textbf{}" not in body
-    assert "{ $|$" not in body
+    assert "$|$" not in body
+
+
+def test_project_links_use_compact_deterministic_labels_and_raw_targets():
+    r = JSONResume(
+        projects=[
+            Project(name="Repo", url="https://github.com/a/repo"),
+            Project(name="Site", url="https://example.com/demo"),
+            Project(name="Custom", url="project://artifact/42"),
+        ]
+    )
+    projects = build_context(r)["projects"]
+    assert projects[0]["link"] == (
+        r"\href{https://github.com/a/repo}{\underline{GitHub}}"
+    )
+    assert projects[1]["link"] == (
+        r"\href{https://example.com/demo}{\underline{Live Demo}}"
+    )
+    assert projects[2]["link"] == (
+        r"\href{project://artifact/42}{\underline{Project Link}}"
+    )
 
 
 def test_no_education_section_when_absent():
@@ -306,26 +400,33 @@ def _oversized_scored_resume():
             ScoredWork(
                 name="A",
                 position="Eng",
-                startDate="2021",
-                endDate="2023",
-                relevance=90,  # more recent, higher relevance
+                relevance=90,
                 highlights=[bl("a95", 95), bl("a80", 80), bl("a30", 30), bl("a20", 20)],
             ),
             ScoredWork(
                 name="B",
                 position="Eng",
-                startDate="2018",
-                endDate="2020",
-                relevance=40,  # older, lower relevance
+                relevance=70,
                 highlights=[bl("b70", 70), bl("b50", 50), bl("b10", 10)],
+            ),
+            ScoredWork(
+                name="C",
+                position="Eng",
+                relevance=60,
+                highlights=[bl("c70", 70), bl("c50", 50), bl("c10", 10)],
             ),
         ],
         projects=[
-            ScoredProject(name="P1", relevance=90),
-            ScoredProject(name="P2", relevance=55),
-            ScoredProject(name="P3", relevance=25),
+            ScoredProject(name="P1", relevance=90, highlights=["p1a", "p1b", "p1x"]),
+            ScoredProject(name="P2", relevance=55, highlights=["p2a", "p2b", "p2x"]),
         ],
-        skills=[ScoredSkill(name="Sk1", relevance=80), ScoredSkill(name="Sk2", relevance=20)],
+        skills=[
+            ScoredSkill(name="Sk1", keywords=["One"], relevance=80),
+            ScoredSkill(name="Sk2", keywords=["Two"], relevance=20),
+            ScoredSkill(name="Sk3", keywords=["Three"], relevance=60),
+            ScoredSkill(name="Sk4", keywords=["Four"], relevance=40),
+            ScoredSkill(name="Sk5", keywords=["Five"], relevance=10),
+        ],
     )
 
 
@@ -338,37 +439,47 @@ def test_trim_order_exact_sequence():
         if action is None:
             break
 
-    # Exact, fully-deterministic drop order across all five tiers.
+    # Excess project content goes first, then skills only down to three.
     assert steps == [
-        "tier-a: pos#1 bullet 'b10' (rel=10)",  # lowest bullet, from any >2-bullet position
-        "tier-a: pos#0 bullet 'a20' (rel=20)",  # B now has 2 bullets; only A eligible
-        "tier-a: pos#0 bullet 'a30' (rel=30)",  # A down to 2 bullets -> tier-a exhausted
-        "tier-b: project 'P3' (rel=25)",        # projects >2 -> drop lowest
-        "tier-c: skill group 'Sk2' (rel=20)",   # projects now 2 -> drop weakest skill group
-        # tier-c floors at ONE group: Sk1 (rel=80) is kept, so the Technical
-        # Skills section is never zeroed out -> the loop moves on to tier-d.
-        "tier-d: pos#1 bullet 'b50' (rel=50)",  # oldest low-rel position (B) -> bullets to 1
-        "tier-d: pos#0 bullet 'a80' (rel=80)",  # then A -> bullets to 1
-        "tier-e: position 'B' (rel=40)",        # whole lowest-relevance position first
-        "tier-e: position 'A' (rel=90)",        # then the last position
-        None,                                    # education/header/last skill group never trimmed
+        "tier-a: excess project bullet 'p2x' from 'P2'",
+        "tier-a: excess project bullet 'p1x' from 'P1'",
+        "tier-b: skill group 'Sk5' (rel=10)",
+        "tier-b: skill group 'Sk2' (rel=20)",
+        None,
     ]
+    assert [len(item.highlights) for item in sr.work] == [4, 3, 3]
+    assert [len(item.highlights) for item in sr.projects] == [2, 2]
 
 
-def test_trim_tier_c_keeps_last_skill_group():
-    # A resume whose only trimmable content is skill groups keeps the last group:
-    # skills are the densest keyword carrier, never zeroed out by tier (c).
+def test_trim_keeps_three_skill_groups():
     sr = ScoredResume(
         basics=Basics(name="Keep"),
         skills=[
-            ScoredSkill(name="Hi", relevance=90),
-            ScoredSkill(name="Lo", relevance=10),
+            ScoredSkill(name="Hi", keywords=["High"], relevance=90),
+            ScoredSkill(name="Mid", keywords=["Mid"], relevance=50),
+            ScoredSkill(name="Lo", keywords=["Low"], relevance=10),
         ],
     )
-    assert _next_trim(sr) == "tier-c: skill group 'Lo' (rel=10)"
-    # One group left -> tier (c) refuses to drain it; nothing else applies.
     assert _next_trim(sr) is None
-    assert [s.name for s in sr.skills] == ["Hi"]
+    assert [s.name for s in sr.skills] == ["Hi", "Mid", "Lo"]
+
+
+def test_trim_protects_transferable_skill_group_even_at_low_relevance():
+    sr = ScoredResume(
+        skills=[
+            ScoredSkill(name="A", keywords=["A"], relevance=90),
+            ScoredSkill(name="B", keywords=["B"], relevance=80),
+            ScoredSkill(name="C", keywords=["C"], relevance=70),
+            ScoredSkill(
+                name=TRANSFERABLE_SKILL_GROUP,
+                keywords=["Figma"],
+                relevance=1,
+            ),
+        ]
+    )
+    action = _next_trim(sr)
+    assert action == "tier-b: skill group 'C' (rel=70)"
+    assert TRANSFERABLE_SKILL_GROUP in [skill.name for skill in sr.skills]
 
 
 def test_trim_never_touches_education_or_header():
@@ -378,22 +489,6 @@ def test_trim_never_touches_education_or_header():
     assert sr.education is not None and len(sr.education) == 1
     assert sr.education[0].institution == "Never Trimmed U"
     assert sr.basics is not None and sr.basics.name == "Trimmy"
-
-
-def test_trim_recency_tiebreak_older_position_first():
-    # Two positions, equal relevance, single bullet each -> only tier-e applies.
-    # The OLDER position must be dropped first.
-    sr = ScoredResume(
-        work=[
-            ScoredWork(name="Newer", startDate="2022", endDate="2024", relevance=50,
-                       highlights=[ScoredBullet(text="x", relevance=10)]),
-            ScoredWork(name="Older", startDate="2016", endDate="2018", relevance=50,
-                       highlights=[ScoredBullet(text="y", relevance=10)]),
-        ]
-    )
-    first = _next_trim(sr)
-    assert "position 'Older'" in first
-    assert [w.name for w in sr.work] == ["Newer"]
 
 
 def test_trim_project_floor_keeps_two():
@@ -408,21 +503,12 @@ def test_trim_project_floor_keeps_two():
     assert len(sr.projects) == 2
 
 
-def test_trim_bullets_floor_keeps_two_per_position_in_tier_a():
-    sr = ScoredResume(
-        work=[
-            ScoredWork(name="A", relevance=50, highlights=[
-                ScoredBullet(text="hi", relevance=90),
-                ScoredBullet(text="lo", relevance=10),
-            ])
-        ]
-    )
-    # A position with exactly 2 bullets is not eligible for tier-a; tier-d would
-    # reduce it to 1 only after (b)/(c) are exhausted -- which they are here.
-    action = _next_trim(sr)
-    assert action.startswith("tier-d")
-    assert len(sr.work[0].highlights) == 1
-    assert sr.work[0].highlights[0].text == "hi"  # weaker bullet dropped
+def test_trim_never_touches_required_work_or_project_bullets():
+    sr = _oversized_scored_resume()
+    while _next_trim(sr) is not None:
+        pass
+    assert [len(item.highlights) for item in sr.work] == [4, 3, 3]
+    assert [len(item.highlights) for item in sr.projects] == [2, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -441,34 +527,46 @@ def test_fit_returns_immediately_when_already_one_page(tmp_path):
     result = fit_to_one_page(sr, tmp_path, page_counter=counter)
     assert isinstance(result, JSONResume)
     assert calls["n"] == 1  # counted once, no trims
-    # Nothing was dropped: both positions and all bullets survive.
-    assert [w.name for w in result.work] == ["A", "B"]
-    assert len(result.work[0].highlights) == 4
-    assert len(result.projects) == 3
-    assert len(result.skills) == 2
-
-
-def _total_bullets(plain: JSONResume) -> int:
-    return sum(len(w.highlights or []) for w in (plain.work or []))
+    assert [w.name for w in result.work] == ["A", "B", "C"]
+    assert [len(w.highlights) for w in result.work] == [4, 3, 3]
+    assert len(result.projects) == 2
+    assert len(result.skills) == 5
 
 
 def test_fit_drops_exactly_until_one_page(tmp_path):
-    sr = _oversized_scored_resume()  # starts with 7 work bullets total
+    sr = _oversized_scored_resume()
 
-    # Overflow while >5 bullets remain; two tier-a drops bring 7 -> 5.
     def counter(plain):
-        return 2 if _total_bullets(plain) > 5 else 1
+        project_bullets = sum(
+            len(item.highlights or []) for item in plain.projects or []
+        )
+        return 2 if project_bullets > 4 or len(plain.skills or []) > 3 else 1
 
     result = fit_to_one_page(sr, tmp_path, page_counter=counter)
-    assert _total_bullets(result) == 5
-    # The two weakest bullets (b10, a20) are gone; everything else untouched.
-    a_bullets = result.work[0].highlights
-    b_bullets = result.work[1].highlights
-    assert "a20" not in a_bullets and "a30" in a_bullets
-    assert "b10" not in b_bullets and "b50" in b_bullets
-    # We stopped inside tier-a, so projects and skills are still intact.
-    assert len(result.projects) == 3
-    assert len(result.skills) == 2
+    assert [len(item.highlights) for item in result.work] == [4, 3, 3]
+    assert [len(item.highlights) for item in result.projects] == [2, 2]
+    assert len(result.skills) == 3
+
+
+def test_fit_reports_iterations_and_trim_decisions(tmp_path):
+    sr = _oversized_scored_resume()
+    messages = []
+
+    def counter(plain):
+        project_bullets = sum(
+            len(item.highlights or []) for item in plain.projects or []
+        )
+        return 2 if project_bullets > 4 else 1
+
+    fit_to_one_page(
+        sr,
+        tmp_path,
+        page_counter=counter,
+        progress_callback=messages.append,
+    )
+    assert messages[0] == "One-page fit iteration 1: rendered 2 page(s)"
+    assert any(message.startswith("One-page fit trim: tier-a") for message in messages)
+    assert messages[-1].endswith("rendered 1 page(s)")
 
 
 def test_fit_raises_when_content_exhausted(tmp_path):
@@ -482,12 +580,43 @@ def test_fit_raises_when_content_exhausted(tmp_path):
     assert "every trimmable item has been removed" in str(exc.value)
 
 
+def test_fit_calls_exhaustion_handler_only_after_ordinary_trims(tmp_path):
+    sr = _oversized_scored_resume()
+    calls = []
+
+    def counter(plain):
+        return 1 if plain.work[0].highlights[0] == "short" else 2
+
+    def recover(working, pages, trim_log):
+        calls.append((pages, trim_log))
+        working.work[0].highlights[0].text = "short"
+        return "emergency concision work:0:0"
+
+    result = fit_to_one_page(
+        sr, tmp_path, page_counter=counter, exhaustion_handler=recover
+    )
+
+    assert result.work[0].highlights[0] == "short"
+    assert len(calls) == 1
+    assert calls[0][0] == 2
+    assert calls[0][1] == (
+        "tier-a: excess project bullet 'p2x' from 'P2'",
+        "tier-a: excess project bullet 'p1x' from 'P1'",
+        "tier-b: skill group 'Sk5' (rel=10)",
+        "tier-b: skill group 'Sk2' (rel=20)",
+    )
+
+
 def test_fit_raises_on_iteration_cap(tmp_path):
-    # 30 skill groups + always-overflow counter: hits the 25-iteration hard cap
-    # before content is exhausted.
     sr = ScoredResume(
         basics=Basics(name="Cap"),
-        skills=[ScoredSkill(name=f"S{i}", relevance=i) for i in range(30)],
+        projects=[
+            ScoredProject(
+                name="Long",
+                relevance=50,
+                highlights=[f"bullet-{i}" for i in range(30)],
+            )
+        ],
     )
 
     def counter(_plain):

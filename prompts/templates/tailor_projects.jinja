@@ -1,103 +1,75 @@
-Select, order, and score the candidate's projects for the target job. Lead with
-the projects that best match the job and that the automated evaluator rewards,
-reword their descriptions into the job's language, and keep every link — but
-invent nothing.
+Rewrite the SELECTED projects for the target job. The supplied projects were
+already ranked against the complete master portfolio. Treat the master as a
+fact bank, not finished prose, and produce concise, strong project entries.
 
-{% include "_tailoring_rules.jinja" %}
+{% include "_resume_core_rules.jinja" %}
+{% include "_truth_floor.jinja" %}
+{% include "_company_context.jinja" %}
+{% include "_bullet_rules.jinja" %}
+{% include "_bullet_guide_rules.jinja" %}
+{% include "_action_verbs.jinja" %}
+{% include "_project_rules.jinja" %}
+{% include "_ats_pressure.jinja" %}
 
---- Target job profile (parsed JD) ---
-
+<<<TARGET_JOB_PROFILE>>>
 {{ jd_profile_json }}
+<<<END_TARGET_JOB_PROFILE>>>
 
---- Master resume projects (the ONLY source of truth for facts) ---
+<<<SELECTED_PROJECT_EVIDENCE>>>
+{{ selected_projects_json or master_projects_json }}
+<<<END_SELECTED_PROJECT_EVIDENCE>>>
 
-{{ master_projects_json }}
+<<<TRANSFERABLE_SKILLS_RESERVED_FOR_SKILLS_SECTION>>>
+{{ transferable_skill_keywords_json }}
+<<<END_TRANSFERABLE_SKILLS_RESERVED_FOR_SKILLS_SECTION>>>
 
 {% if feedback %}
-## Revision feedback (a previous attempt fell short — fix this specifically)
-
+Revision feedback:
+<<<REVISION_FEEDBACK>>>
 {{ feedback }}
-
+<<<END_REVISION_FEEDBACK>>>
 {% endif %}
-Return ONLY a JSON object with this structure:
+
+Return one entry for each selected source_id and no other entries:
 {
   "projects": [
     {
-      "name": "Project name from the master",
-      "startDate": "From the master, or null",
-      "endDate": "From the master, or null",
-      "description": "Reworded to mirror the JD, built only from master facts",
-      "highlights": ["Plain-string bullet", "..."],
-      "url": "The project's GitHub/live link from the master, or null",
-      "technologies": ["Tech from the master", "..."],
-      "skills": "The master project's skills/stack list if it uses `skills` instead of `technologies`, else null",
-      "relevance": "integer 0-100, how relevant this project is to the target job"
+      "source_id": "projects[0]",
+      "description": "Concise grounded description",
+      "relevance": 0,
+      "bullets": [
+        {
+          "evidence_assignment_id": null,
+          "situation_task": "specific project context, need, or constraint",
+          "action": "specific candidate action and implementation",
+          "result": "concrete result or downstream value",
+          "text": "One concise STAR sentence containing context, action, and result",
+          "relevance": 0,
+          "source_ids": ["projects[0].highlights[0]"],
+          "impact_type": "qualitative",
+          "impact_claim": "specific verified or qualitative result"
+        }
+      ]
     }
   ]
 }
 
-**NOTE — project highlights are PLAIN STRINGS** here (unlike work highlights).
-
-**RULES:**
-- Include only projects present in the master. Reword descriptions/highlights into
-  the JD's vocabulary, but do not add technologies, links, or metrics the master
-  does not state.
-- `url` is copied from the master exactly, or `null`. NEVER invent a link to make
-  a project look stronger, and never drop a real link that the master provides.
-- `technologies` and `skills` both come from the master. Keep whichever the master
-  used to list the project's stack — if the master states a project's stack under
-  `skills`, copy it to `skills` (do not null it out just because the examples
-  below have no skills). Only set `skills` to `null` when the master project has no
-  skills field.
-- Order projects by `relevance` (integer 0-100), highest first. Rank genuine
-  open-source contributions to other people's projects and complex/impactful work
-  above tutorial-grade projects.
-- Set any field the master does not provide to `null` — never a placeholder.
-
-## Worked example
-
-Target job: Backend Engineer; keywords "distributed systems", "message processing".
-
-Master projects:
-"""
-1. kafka-python — contributed batching + retry improvements to the kafka-python
-   client library, 6 PRs merged upstream; added integration tests.
-   https://github.com/dpkp/kafka-python/pulls?q=author:jdoe  (Python, Kafka)
-2. Todo App — a simple task tracker built while learning React. No link.
-"""
-
-Correct output. Note: the upstream open-source contribution leads with high
-relevance and keeps its link; the tutorial-grade "Todo App" is ranked last with
-low relevance and its `url` stays `null` (we do NOT fabricate a link); the "6 PRs"
-figure is in the master, so it survives — no new metric was invented:
-{
-  "projects": [
-    {
-      "name": "kafka-python (open-source contributor)",
-      "startDate": null,
-      "endDate": null,
-      "description": "Contributed batching and retry improvements to the kafka-python client library, merged upstream, strengthening reliability of distributed message processing.",
-      "highlights": [
-        "Merged 6 pull requests improving retry logic upstream.",
-        "Added integration tests covering the batching path."
-      ],
-      "url": "https://github.com/dpkp/kafka-python/pulls?q=author:jdoe",
-      "technologies": ["Python", "Kafka"],
-      "skills": null,
-      "relevance": 88
-    },
-    {
-      "name": "Todo App",
-      "startDate": null,
-      "endDate": null,
-      "description": "A simple task tracker built while learning React.",
-      "highlights": ["Task tracker built while learning React."],
-      "url": null,
-      "technologies": ["React"],
-      "skills": null,
-      "relevance": 15
-    }
-  ]
-}
-
-**IMPORTANT**: Return ONLY valid JSON. Do not include any explanatory text.
+Rules:
+- Return exactly two complementary bullets for every selected project.
+- Every STAR field must be non-empty, and `text` must communicate the supplied
+  situation/task, action, and result in one concise sentence.
+- You may synthesize compatible facts, but do not merge unrelated work.
+- Do not return project name, dates, URL, technologies, or skill lists. Code
+  restores those protected fields from the selected source_id.
+- Never infer a project metric. Use impact_type `verified` only when a local
+  source fact contains the number; otherwise use `qualitative`.
+- Use JD language only where the source evidence supports the mapping.
+- Do not use any keyword in
+  TRANSFERABLE_SKILLS_RESERVED_FOR_SKILLS_SECTION in the description, STAR
+  fields, or bullet text. Those keywords are allowed only in the labeled skills
+  group.
+- Each bullet's source_ids must point to facts in that project (for example
+  `projects[0].description` or `projects[0].highlights[0]`). They track
+  provenance and do not require copying the source wording.
+- Always set evidence_assignment_id to null for project bullets.
+- Return ONLY valid JSON.

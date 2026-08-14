@@ -1,0 +1,1060 @@
+"""High-level tailoring pipeline with observable stage boundaries."""
+
+from __future__ import annotations
+
+import json
+import inspect
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel
+
+from models import (
+    BulletConcision,
+    CandidateSelection,
+    CompanyHiringSignals,
+    CompanyStackResearch,
+    ConcisionAudit,
+    EvidencePlan,
+    HolisticReview,
+    JDProfile,
+    JSONResume,
+    ProjectRewriteItem,
+    ProjectRewriteResponse,
+    TailoredSkills,
+    TransferableSkillPlan,
+    WorkRewriteItem,
+    WorkRewriteResponse,
+)
+from prompts.template_manager import TemplateManager
+
+from .assembly import (
+    PipelineComponents,
+    apply_review_edits,
+    assemble_scored,
+    cross_entry_attributions,
+    inferred_metrics,
+    partition_review_truth_violations,
+    scan_bullet_style,
+    transferable_skill_injections,
+)
+from .config import DEFAULT_MODEL, MODEL_PARAMETERS
+from .evidence import (
+    RESEARCH_THIN_JD_SIGNAL_THRESHOLD,
+    ContractError,
+    SelectedEvidence,
+    choose_selected,
+    global_evidence_payload,
+    jd_signal_is_thin,
+    jd_signal_strength,
+    master_fact_index,
+    project_evidence,
+    validate_evidence_plan,
+    validate_concise_bullet,
+    validate_project_item,
+    validate_skills,
+    validate_transferable_skill_plan,
+    validate_work_item,
+    work_bullet_targets,
+    work_evidence,
+)
+from .llm import (
+    ChatProvider,
+    LLMExtractionError,
+    call_llm_with_retry,
+    initialize_llm_provider,
+)
+from .progress import JobContext, ProgressReporter, ProgressTracker, Stage
+from .fit_recovery import (
+    FitRecoveryRequired,
+    persist_fit_recovery,
+)
+from .rendering import (
+    RenderError,
+    ensure_tectonic,
+    fit_to_one_page,
+    render,
+    scored_to_plain,
+)
+from .runtime import (
+    DEFAULT_CALL_INTERVAL,
+    MAX_SELECTED_PROJECTS,
+    MAX_SELECTED_WORK,
+    PROJECT_REWRITE_BATCH_SIZE,
+    PacedProvider,
+    RatePacer,
+    StageFailure,
+    clear_artifacts,
+    write_json,
+)
+from .stages import StageExecutor
+
+
+_ROOT = Path(__file__).resolve().parent.parent
+_TEMPLATE_DIR = _ROOT / "prompts" / "templates"
+_TEMPLATE_STAGES = {
+    "jd_parse": Stage.PARSE_JD,
+    "research_company_stack": Stage.RESEARCH_COMPANY_STACK,
+    "research_company_signals": Stage.RESEARCH_COMPANY_SIGNALS,
+    "select_work": Stage.SELECT_WORK,
+    "select_projects": Stage.SELECT_PROJECTS,
+    "plan_evidence": Stage.PLAN_EVIDENCE,
+    "plan_skill_bridges": Stage.PLAN_TRANSFERABLE_SKILLS,
+    "tailor_skills": Stage.TAILOR_SKILLS,
+    "tailor_work": Stage.REWRITE_WORK,
+    "tailor_projects": Stage.REWRITE_PROJECTS,
+    "holistic_review": Stage.HOLISTIC_REVIEW,
+    "concise_bullet": Stage.EMERGENCY_CONCISION,
+    "audit_concision": Stage.CONCISION_AUDIT,
+}
+
+
+def _provider_supports_grounding(model: str) -> bool:
+    """Gemini's web-search grounding tool has no Ollama equivalent."""
+    return model.startswith("gemini")
+
+
+class _ConcisionController:
+    """One-bullet-at-a-time recovery invoked only at renderer exhaustion."""
+
+    def __init__(
+        self,
+        pipeline: "TailorPipeline",
+        fact_index: dict[str, dict],
+        evidence_plan: EvidencePlan,
+    ) -> None:
+        self.pipeline = pipeline
+        self.fact_index = fact_index
+        self.assignments = {
+            item.assignment_id: item for item in evidence_plan.assignments
+        }
+        self.attempted: set[str] = set()
+        self.log: list[dict[str, object]] = []
+        self._audited = False
+
+    @staticmethod
+    def _candidate_id(section: str, item_index: int, bullet_index: int) -> str:
+        return f"{section}:{item_index}:{bullet_index}"
+
+    def _next_candidate(self, resume: object):
+        candidates = []
+        for section_index, (section, entries) in enumerate(
+            (("work", resume.work or []), ("projects", resume.projects or []))
+        ):
+            for item_index, item in enumerate(entries):
+                for bullet_index, bullet in enumerate(item.highlights or []):
+                    candidate_id = self._candidate_id(section, item_index, bullet_index)
+                    word_count = len(bullet.text.split())
+                    if candidate_id in self.attempted or word_count <= 10:
+                        continue
+                    candidates.append(
+                        (
+                            bullet.relevance,
+                            -word_count,
+                            section_index,
+                            item_index,
+                            bullet_index,
+                            candidate_id,
+                            bullet,
+                        )
+                    )
+        return min(candidates) if candidates else None
+
+    def audit(self) -> None:
+        if self._audited or not self.log:
+            return
+        expected = [str(item["candidate_id"]) for item in self.log]
+
+        def validate(result: ConcisionAudit) -> None:
+            actual = [item.candidate_id for item in result.items]
+            if actual != expected:
+                raise ContractError(
+                    f"concision audit IDs changed: expected={expected}, actual={actual}"
+                )
+            unsupported = [
+                f"{item.candidate_id}: {item.reason}"
+                for item in result.items
+                if not item.supported
+            ]
+            if unsupported:
+                raise ContractError(
+                    "concision audit rejected rewrite(s): " + "; ".join(unsupported)
+                )
+
+        source_ids = {
+            source_id for item in self.log for source_id in item.get("source_ids", [])
+        }
+        self.pipeline._simple_stage(
+            "audit_concision",
+            ConcisionAudit,
+            selected_ids=expected,
+            validator=validate,
+            changes_json=json.dumps(self.log, indent=2),
+            source_facts_json=json.dumps(
+                [self.fact_index[source_id] for source_id in sorted(source_ids)],
+                indent=2,
+            ),
+        )
+        self._audited = True
+
+    def __call__(self, resume, pages: int, trim_log: tuple[str, ...]) -> str | None:
+        candidate = self._next_candidate(resume)
+        if candidate is None:
+            self.audit()
+            if self.pipeline.allow_fit_recovery:
+                raise FitRecoveryRequired(resume, pages, trim_log, self.log)
+            return None
+
+        (
+            relevance,
+            negative_words,
+            _section_index,
+            item_index,
+            bullet_index,
+            candidate_id,
+            bullet,
+        ) = candidate
+        del negative_words
+        self.attempted.add(candidate_id)
+        original_text = bullet.text
+        original_words = len(original_text.split())
+        target_words = min(24, max(10, int(original_words * 0.75)))
+        source_facts = [self.fact_index[item] for item in bullet.source_ids]
+        assignment = self.assignments.get(bullet.evidence_assignment_id or "")
+        section = candidate_id.replace(":", "[", 1).replace(":", "] bullet ", 1)
+
+        def validate(result: BulletConcision) -> None:
+            result.text = " ".join(result.text.split())
+            validate_concise_bullet(
+                bullet,
+                result.text,
+                max_words=target_words,
+                fact_index=self.fact_index,
+                assignment=assignment,
+                section=section,
+            )
+
+        self.pipeline.tracker.detail(
+            "One-page fit exhausted protected trims; invoking emergency concision"
+        )
+        result = self.pipeline._simple_stage(
+            "concise_bullet",
+            BulletConcision,
+            selected_ids=[candidate_id],
+            validator=validate,
+            target_words=target_words,
+            original_bullet_json=json.dumps(bullet.model_dump(mode="json"), indent=2),
+            source_facts_json=json.dumps(source_facts, indent=2),
+        )
+        bullet.text = result.text
+        final_words = len(result.text.split())
+        self.log.append(
+            {
+                "candidate_id": candidate_id,
+                "section": candidate_id.split(":", 1)[0],
+                "item_index": item_index,
+                "bullet_index": bullet_index,
+                "relevance": relevance,
+                "original_text": original_text,
+                "final_text": result.text,
+                "original_words": original_words,
+                "final_words": final_words,
+                "source_ids": list(bullet.source_ids),
+            }
+        )
+        return (
+            f"emergency concision {candidate_id} (rel={relevance}, "
+            f"{original_words} -> {final_words} words)"
+        )
+
+
+class TailorPipeline:
+    """One parse/select/rewrite/assemble/review/render pass."""
+
+    def __init__(
+        self,
+        model: str = DEFAULT_MODEL,
+        call_interval: float = DEFAULT_CALL_INTERVAL,
+        provider: ChatProvider | None = None,
+        reporter: ProgressReporter | None = None,
+        bridge_skills: bool = False,
+        allow_fit_recovery: bool = False,
+        research_company: bool = False,
+    ) -> None:
+        self.model = model
+        self.bridge_skills = bridge_skills
+        self.allow_fit_recovery = allow_fit_recovery
+        self.research_company = research_company
+        self.tracker = ProgressTracker(reporter)
+        self.stage_executor = StageExecutor(self.tracker)
+        raw_provider = provider or initialize_llm_provider(
+            model, progress_callback=lambda message: self.tracker.detail(message)
+        )
+        self.provider: ChatProvider = PacedProvider(
+            raw_provider, RatePacer(call_interval, self.tracker)
+        )
+        self.templates = TemplateManager(str(_TEMPLATE_DIR))
+        self.options = MODEL_PARAMETERS.get(model, {"temperature": 0.1, "top_p": 0.9})
+
+    def _messages(self, template_name: str, **context: object) -> list[dict[str, str]]:
+        stage = {
+            "jd_parse": "JD parse",
+            "holistic_review": "holistic review",
+            "research_company_stack": "company research",
+            "research_company_signals": "company research",
+        }.get(template_name, template_name.replace("_", " "))
+        system = self.templates.render_template("system_message", stage=stage)
+        prompt = self.templates.render_template(template_name, **context)
+        if not prompt:
+            raise StageFailure(
+                template_name, 0, [], None, "prompt template unavailable"
+            )
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        return messages
+
+    def _call_once[_Result: BaseModel](
+        self,
+        template_name: str,
+        response_model: type[_Result],
+        **context: object,
+    ) -> _Result:
+        options = dict(self.options)
+        if template_name in {
+            "jd_parse",
+            "select_work",
+            "select_projects",
+            "plan_evidence",
+            "plan_skill_bridges",
+            "tailor_skills",
+            "holistic_review",
+            "audit_concision",
+        }:
+            options.update({"temperature": 0.0, "top_p": 1.0})
+        return call_llm_with_retry(
+            self.provider,
+            self.model,
+            self._messages(template_name, **context),
+            response_model,
+            options=options,
+            max_retries=0,
+        )  # type: ignore[return-value]
+
+    def _retry(self, template_name: str, attempt: int, error: object) -> None:
+        self.tracker.retry(
+            _TEMPLATE_STAGES[template_name],
+            attempt=attempt,
+            max_attempts=2,
+            message=str(error),
+        )
+
+    def _simple_stage[_Result: BaseModel](
+        self,
+        template_name: str,
+        response_model: type[_Result],
+        selected_ids: Sequence[str] = (),
+        validator: Any | None = None,
+        **context: object,
+    ) -> _Result:
+        def operation(attempt: int, prior_error: Exception | None) -> _Result:
+            call_context = dict(context)
+            if attempt > 1:
+                call_context["feedback"] = "Correct the previous response. " + str(
+                    prior_error
+                )
+            return self._call_once(template_name, response_model, **call_context)
+
+        return self.stage_executor.run(
+            name=template_name,
+            stage=_TEMPLATE_STAGES[template_name],
+            operation=operation,
+            selected_ids=selected_ids,
+            validator=validator,
+        )
+
+    def _parse_jd(self, jd_text: str) -> JDProfile:
+        return self._simple_stage("jd_parse", JDProfile, jd_text=jd_text)
+
+    def _call_grounded[_Result: BaseModel](
+        self,
+        template_name: str,
+        response_model: type[_Result],
+        **context: object,
+    ) -> _Result | None:
+        """Best-effort grounded call: never fails the run, degrades to no context."""
+        try:
+            return call_llm_with_retry(
+                self.provider,
+                self.model,
+                self._messages(template_name, **context),
+                response_model,
+                options={**self.options, "temperature": 0.0, "top_p": 1.0},
+                max_retries=1,
+                grounding=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort enrichment, never fatal
+            self.tracker.warn(
+                f"{template_name} failed, continuing without company research: {exc}"
+            )
+            return None
+
+    def _research_company_stack(self, jd: JDProfile) -> CompanyStackResearch | None:
+        return self._call_grounded(
+            "research_company_stack",
+            CompanyStackResearch,
+            company_name=jd.company_name,
+            jd_profile_json=jd.model_dump_json(indent=2),
+        )
+
+    def _research_company_signals(self, jd: JDProfile) -> CompanyHiringSignals | None:
+        return self._call_grounded(
+            "research_company_signals",
+            CompanyHiringSignals,
+            company_name=jd.company_name,
+            jd_profile_json=jd.model_dump_json(indent=2),
+        )
+
+    @staticmethod
+    def _partial_entries(
+        values: Sequence[Any], expected: dict[str, dict], validator: Any
+    ) -> tuple[dict[str, Any], set[str], list[str]]:
+        grouped: dict[str, list[Any]] = {}
+        unknown: list[str] = []
+        for value in values:
+            if value.source_id not in expected:
+                unknown.append(value.source_id)
+            else:
+                grouped.setdefault(value.source_id, []).append(value)
+        accepted: dict[str, Any] = {}
+        invalid: set[str] = set()
+        errors: list[str] = []
+        for source_id, items in grouped.items():
+            if len(items) != 1:
+                invalid.add(source_id)
+                errors.append(f"duplicate source_id {source_id}")
+                continue
+            try:
+                validator(items[0], expected[source_id])
+                accepted[source_id] = items[0]
+            except ContractError as exc:
+                invalid.add(source_id)
+                errors.append(str(exc))
+        if unknown:
+            errors.append(f"unknown source IDs: {sorted(unknown)}")
+        unresolved = set(expected) - set(accepted)
+        return accepted, unresolved | invalid, errors
+
+    def _select(
+        self,
+        template: str,
+        section: str,
+        jd_json: str,
+        evidence: Sequence[dict],
+        cap: int,
+        company_stack_json: str | None = None,
+        company_signals_json: str | None = None,
+    ) -> list[dict]:
+        del section
+        if not evidence:
+            return []
+        expected = {item["source_id"]: item for item in evidence}
+        accepted: dict[str, Any] = {}
+        last: object = None
+        errors: list[str] = []
+        pending = list(expected)
+        for attempt in (1, 2):
+            subset = [expected[source_id] for source_id in pending]
+            try:
+                result = self._call_once(
+                    template,
+                    CandidateSelection,
+                    jd_profile_json=jd_json,
+                    candidates_json=json.dumps(subset, indent=2),
+                    company_stack_json=company_stack_json,
+                    company_signals_json=company_signals_json,
+                    feedback=(
+                        None
+                        if attempt == 1
+                        else "Return only these missing or invalid source IDs exactly once: "
+                        + ", ".join(pending)
+                    ),
+                )
+                last = result
+            except LLMExtractionError as exc:
+                last = exc.raw_response
+                errors.append(str(exc))
+                if attempt == 2:
+                    break
+                self._retry(template, 2, exc)
+                pending = list(expected)
+                continue
+            partial, unresolved, partial_errors = self._partial_entries(
+                result.candidates,
+                {source_id: expected[source_id] for source_id in pending},
+                lambda _candidate, _source: None,
+            )
+            if any(error.startswith("unknown source IDs") for error in partial_errors):
+                raise StageFailure(
+                    template, attempt, list(expected), result, "; ".join(partial_errors)
+                )
+            errors.extend(partial_errors)
+            accepted.update(partial)
+            pending = [source_id for source_id in pending if source_id in unresolved]
+            if not pending:
+                try:
+                    return choose_selected(accepted, evidence, cap)
+                except ContractError as exc:
+                    errors.append(str(exc))
+                    if attempt == 1:
+                        self._retry(template, 2, exc)
+                        accepted.clear()
+                        pending = list(expected)
+                        continue
+                    break
+            if attempt == 1:
+                self._retry(template, 2, "; ".join(partial_errors) or "missing entries")
+        raise StageFailure(template, 2, list(expected), last, "; ".join(errors))
+
+    def _rewrite_work(
+        self,
+        jd_json: str,
+        sources: Sequence[dict],
+        evidence_plan: EvidencePlan,
+        transferable_skill_plan: TransferableSkillPlan,
+        fact_index: dict[str, dict],
+        company_stack_json: str | None = None,
+        company_signals_json: str | None = None,
+    ) -> list[WorkRewriteItem]:
+        if not sources:
+            return []
+        expected = {item["source_id"]: item for item in sources}
+        accepted: dict[str, WorkRewriteItem] = {}
+        pending = list(expected)
+        last: object = None
+        errors: list[str] = []
+        for attempt in (1, 2):
+            subset = [expected[source_id] for source_id in pending]
+            try:
+                result = self._call_once(
+                    "tailor_work",
+                    WorkRewriteResponse,
+                    jd_profile_json=jd_json,
+                    selected_work_json=json.dumps(subset, indent=2),
+                    evidence_assignments_json=json.dumps(
+                        [
+                            assignment.model_dump(mode="json")
+                            for assignment in evidence_plan.assignments
+                            if assignment.destination_work_id in pending
+                        ],
+                        indent=2,
+                    ),
+                    transferable_skill_keywords_json=json.dumps(
+                        [item.keyword for item in transferable_skill_plan.skills]
+                    ),
+                    company_stack_json=company_stack_json,
+                    company_signals_json=company_signals_json,
+                    feedback=(
+                        None
+                        if attempt == 1
+                        else "Rewrite only these missing or invalid source IDs: "
+                        + ", ".join(pending)
+                    ),
+                )
+                last = result
+            except LLMExtractionError as exc:
+                last = exc.raw_response
+                errors.append(str(exc))
+                if attempt == 2:
+                    break
+                self._retry("tailor_work", 2, exc)
+                pending = list(expected)
+                accepted.clear()
+                continue
+            partial, unresolved, partial_errors = self._partial_entries(
+                result.work,
+                {source_id: expected[source_id] for source_id in pending},
+                lambda item, source: validate_work_item(
+                    item,
+                    source,
+                    evidence_plan,
+                    fact_index,
+                    transferable_skill_plan,
+                ),
+            )
+            if any(error.startswith("unknown source IDs") for error in partial_errors):
+                raise StageFailure(
+                    "tailor_work",
+                    attempt,
+                    list(expected),
+                    result,
+                    "; ".join(partial_errors),
+                )
+            accepted.update(partial)
+            errors.extend(partial_errors)
+            pending = [source_id for source_id in pending if source_id in unresolved]
+            if not pending:
+                return [accepted[item["source_id"]] for item in sources]
+            if attempt == 1:
+                self._retry(
+                    "tailor_work", 2, "; ".join(partial_errors) or "missing entries"
+                )
+        raise StageFailure("tailor_work", 2, list(expected), last, "; ".join(errors))
+
+    def _rewrite_project_batch(
+        self,
+        jd_json: str,
+        sources: Sequence[dict],
+        batch_number: int,
+        batch_total: int,
+        transferable_skill_plan: TransferableSkillPlan,
+        fact_index: dict[str, dict],
+        company_stack_json: str | None = None,
+        company_signals_json: str | None = None,
+    ) -> list[ProjectRewriteItem]:
+        self.tracker.detail(
+            f"Project rewrite batch {batch_number}/{batch_total}", verbose_only=False
+        )
+        expected = {item["source_id"]: item for item in sources}
+        accepted: dict[str, ProjectRewriteItem] = {}
+        pending = list(expected)
+        last: object = None
+        errors: list[str] = []
+        for attempt in (1, 2):
+            subset = [expected[source_id] for source_id in pending]
+            try:
+                result = self._call_once(
+                    "tailor_projects",
+                    ProjectRewriteResponse,
+                    jd_profile_json=jd_json,
+                    selected_projects_json=json.dumps(subset, indent=2),
+                    transferable_skill_keywords_json=json.dumps(
+                        [item.keyword for item in transferable_skill_plan.skills]
+                    ),
+                    company_stack_json=company_stack_json,
+                    company_signals_json=company_signals_json,
+                    feedback=(
+                        None
+                        if attempt == 1
+                        else "Rewrite only these missing or invalid source IDs: "
+                        + ", ".join(pending)
+                    ),
+                )
+                last = result
+            except LLMExtractionError as exc:
+                last = exc.raw_response
+                errors.append(str(exc))
+                if attempt == 2:
+                    break
+                self._retry("tailor_projects", 2, exc)
+                pending = list(expected)
+                accepted.clear()
+                continue
+            partial, unresolved, partial_errors = self._partial_entries(
+                result.projects,
+                {source_id: expected[source_id] for source_id in pending},
+                lambda item, source: validate_project_item(
+                    item, source, fact_index, transferable_skill_plan
+                ),
+            )
+            if any(error.startswith("unknown source IDs") for error in partial_errors):
+                raise StageFailure(
+                    f"tailor_projects.batch_{batch_number}",
+                    attempt,
+                    list(expected),
+                    result,
+                    "; ".join(partial_errors),
+                )
+            accepted.update(partial)
+            errors.extend(partial_errors)
+            pending = [source_id for source_id in pending if source_id in unresolved]
+            if not pending:
+                return [accepted[item["source_id"]] for item in sources]
+            if attempt == 1:
+                self._retry(
+                    "tailor_projects",
+                    2,
+                    "; ".join(partial_errors) or "missing entries",
+                )
+        raise StageFailure(
+            f"tailor_projects.batch_{batch_number}",
+            2,
+            list(expected),
+            last,
+            "; ".join(errors),
+        )
+
+    def _rewrite_projects(
+        self,
+        jd_json: str,
+        sources: Sequence[dict],
+        transferable_skill_plan: TransferableSkillPlan,
+        fact_index: dict[str, dict],
+        company_stack_json: str | None = None,
+        company_signals_json: str | None = None,
+    ) -> list[ProjectRewriteItem]:
+        rewritten: list[ProjectRewriteItem] = []
+        batch_total = max(
+            1,
+            (len(sources) + PROJECT_REWRITE_BATCH_SIZE - 1)
+            // PROJECT_REWRITE_BATCH_SIZE,
+        )
+        for start in range(0, len(sources), PROJECT_REWRITE_BATCH_SIZE):
+            batch = sources[start : start + PROJECT_REWRITE_BATCH_SIZE]
+            rewritten.extend(
+                self._rewrite_project_batch(
+                    jd_json,
+                    batch,
+                    start // PROJECT_REWRITE_BATCH_SIZE + 1,
+                    batch_total,
+                    transferable_skill_plan,
+                    fact_index,
+                    company_stack_json,
+                    company_signals_json,
+                )
+            )
+        return rewritten
+
+    def run(
+        self,
+        master: JSONResume,
+        jd_text: str,
+        out_dir: Path,
+        no_pdf: bool = False,
+        job: JobContext | None = None,
+    ) -> int:
+        out_dir = Path(out_dir)
+        self.tracker.job = job
+        try:
+            with self.tracker.stage(Stage.PREFLIGHT):
+                self.tracker.detail(f"Model: {self.model}")
+                clear_artifacts(out_dir)
+                if not no_pdf:
+                    ensure_tectonic()
+
+            with self.tracker.stage(Stage.PARSE_JD):
+                jd = self._parse_jd(jd_text)
+                jd_json = jd.model_dump_json(indent=2)
+
+            company_stack_json: str | None = None
+            company_signals_json: str | None = None
+            if self.research_company:
+                provider_ok = _provider_supports_grounding(self.model)
+                thin = jd_signal_is_thin(jd)
+                has_company = bool(jd.company_name)
+
+                def _skip_reason() -> str | None:
+                    if not provider_ok:
+                        return (
+                            "active provider does not support Gemini web-search "
+                            "grounding"
+                        )
+                    if not has_company:
+                        return "could not identify a company name in the job description"
+                    if not thin:
+                        return (
+                            f"JD signal is sufficient ({jd_signal_strength(jd)} "
+                            f"> {RESEARCH_THIN_JD_SIGNAL_THRESHOLD})"
+                        )
+                    return None
+
+                with self.tracker.stage(Stage.RESEARCH_COMPANY_STACK):
+                    reason = _skip_reason()
+                    if reason:
+                        self.tracker.detail(f"Skipping company research: {reason}")
+                    else:
+                        stack = self._research_company_stack(jd)
+                        company_stack_json = (
+                            stack.model_dump_json(indent=2) if stack else None
+                        )
+
+                with self.tracker.stage(Stage.RESEARCH_COMPANY_SIGNALS):
+                    reason = _skip_reason()
+                    if reason:
+                        self.tracker.detail(f"Skipping company research: {reason}")
+                    else:
+                        signals = self._research_company_signals(jd)
+                        company_signals_json = (
+                            signals.model_dump_json(indent=2) if signals else None
+                        )
+
+            all_work = work_evidence(master)
+            all_projects = project_evidence(master)
+            with self.tracker.stage(Stage.SELECT_WORK):
+                selected_work = tuple(
+                    self._select(
+                        "select_work",
+                        "work",
+                        jd_json,
+                        all_work,
+                        MAX_SELECTED_WORK,
+                        company_stack_json,
+                        company_signals_json,
+                    )
+                )
+            with self.tracker.stage(Stage.SELECT_PROJECTS):
+                selected_projects = tuple(
+                    self._select(
+                        "select_projects",
+                        "projects",
+                        jd_json,
+                        all_projects,
+                        MAX_SELECTED_PROJECTS,
+                        company_stack_json,
+                        company_signals_json,
+                    )
+                )
+            selected = SelectedEvidence(work=selected_work, projects=selected_projects)
+
+            facts = master_fact_index(master)
+            targets = work_bullet_targets(selected.work)
+            with self.tracker.stage(Stage.PLAN_EVIDENCE):
+                evidence_plan = self._simple_stage(
+                    "plan_evidence",
+                    EvidencePlan,
+                    selected_ids=list(targets),
+                    validator=lambda value: validate_evidence_plan(
+                        value, selected.work, facts
+                    ),
+                    jd_profile_json=jd_json,
+                    global_evidence_json=json.dumps(
+                        global_evidence_payload(master), indent=2
+                    ),
+                    selected_work_destinations_json=json.dumps(
+                        [
+                            {
+                                "source_id": item["source_id"],
+                                "name": item.get("name"),
+                                "position": item.get("position"),
+                                "startDate": item.get("startDate"),
+                                "endDate": item.get("endDate"),
+                                "required_bullets": targets[item["source_id"]],
+                                "selection_relevance": item.get("selection_relevance"),
+                                "matched_requirements": item.get(
+                                    "selection_matched_requirements", []
+                                ),
+                            }
+                            for item in selected.work
+                        ],
+                        indent=2,
+                    ),
+                    bullet_targets_json=json.dumps(targets, indent=2),
+                )
+
+            transferable_skill_plan = TransferableSkillPlan(skills=[])
+            if self.bridge_skills:
+                with self.tracker.stage(Stage.PLAN_TRANSFERABLE_SKILLS):
+                    transferable_skill_plan = self._simple_stage(
+                        "plan_skill_bridges",
+                        TransferableSkillPlan,
+                        validator=lambda value: validate_transferable_skill_plan(
+                            value, jd, master, facts
+                        ),
+                        jd_profile_json=jd_json,
+                        global_evidence_json=json.dumps(
+                            global_evidence_payload(master), indent=2
+                        ),
+                        master_skill_keywords_json=json.dumps(
+                            [
+                                keyword
+                                for group in master.skills or []
+                                for keyword in group.keywords or []
+                            ],
+                            indent=2,
+                        ),
+                    )
+
+            with self.tracker.stage(Stage.TAILOR_SKILLS):
+                skills: TailoredSkills | None = None
+                if master.skills or transferable_skill_plan.skills:
+                    skills = self._simple_stage(
+                        "tailor_skills",
+                        TailoredSkills,
+                        validator=lambda value: validate_skills(
+                            value, master, transferable_skill_plan
+                        ),
+                        jd_profile_json=jd_json,
+                        master_skills_json=json.dumps(
+                            [
+                                item.model_dump(mode="json")
+                                for item in master.skills or []
+                            ],
+                            indent=2,
+                        ),
+                        transferable_skill_plan_json=(
+                            transferable_skill_plan.model_dump_json(indent=2)
+                        ),
+                    )
+            with self.tracker.stage(Stage.REWRITE_WORK):
+                work = tuple(
+                    self._rewrite_work(
+                        jd_json,
+                        selected.work,
+                        evidence_plan,
+                        transferable_skill_plan,
+                        facts,
+                        company_stack_json,
+                        company_signals_json,
+                    )
+                )
+            with self.tracker.stage(Stage.REWRITE_PROJECTS):
+                projects = tuple(
+                    self._rewrite_projects(
+                        jd_json,
+                        selected.projects,
+                        transferable_skill_plan,
+                        facts,
+                        company_stack_json,
+                        company_signals_json,
+                    )
+                )
+            components = PipelineComponents(
+                skills=skills,
+                work=work,
+                projects=projects,
+                selected=selected,
+                evidence_plan=evidence_plan,
+                transferable_skill_plan=transferable_skill_plan,
+            )
+            with self.tracker.stage(Stage.ASSEMBLE):
+                draft = assemble_scored(master, components)
+                draft_plain = scored_to_plain(draft)
+
+            with self.tracker.stage(Stage.HOLISTIC_REVIEW):
+                review = self._simple_stage(
+                    "holistic_review",
+                    HolisticReview,
+                    jd_profile_json=jd_json,
+                    master_json=master.model_dump_json(indent=2),
+                    tailored_resume_json=draft_plain.model_dump_json(indent=2),
+                    evidence_plan_json=evidence_plan.model_dump_json(indent=2),
+                    transferable_skill_plan_json=(
+                        transferable_skill_plan.model_dump_json(indent=2)
+                    ),
+                    generated_components_json=json.dumps(
+                        {
+                            "skills": (
+                                skills.model_dump(mode="json") if skills else None
+                            ),
+                            "work": [item.model_dump(mode="json") for item in work],
+                            "projects": [
+                                item.model_dump(mode="json") for item in projects
+                            ],
+                        },
+                        indent=2,
+                    ),
+                    selection_metadata_json=json.dumps(
+                        {
+                            "work": [item["source_id"] for item in selected.work],
+                            "projects": [
+                                item["source_id"] for item in selected.projects
+                            ],
+                            "work_bullet_targets": targets,
+                            "project_bullet_target": 2,
+                        },
+                        indent=2,
+                    ),
+                )
+
+            with self.tracker.stage(Stage.VALIDATE_REVIEW):
+                jd_keywords = [
+                    *jd.must_have_skills,
+                    *jd.nice_to_have_skills,
+                    *(item.term for item in jd.keywords),
+                ]
+                edited_components, rejected_edits = apply_review_edits(
+                    review, master, components, jd_keywords=jd_keywords
+                )
+                final_scored = assemble_scored(
+                    master, edited_components, jd_keywords=jd_keywords
+                )
+                for style_message in scan_bullet_style(final_scored):
+                    self.tracker.warn(f"Bullet style: {style_message}")
+                report_payload = review.model_dump(mode="json")
+                report_payload["rejected_section_edits"] = rejected_edits
+                report_payload["cross_entry_attributions"] = cross_entry_attributions(
+                    evidence_plan, facts
+                )
+                report_payload["inferred_metrics"] = inferred_metrics(evidence_plan)
+                report_payload["transferable_skill_injections"] = (
+                    transferable_skill_injections(transferable_skill_plan)
+                )
+                unresolved_violations, resolved_violations = (
+                    partition_review_truth_violations(review, final_scored)
+                )
+                report_payload["truth_violations"] = [
+                    item.model_dump(mode="json") for item in unresolved_violations
+                ]
+                report_payload["resolved_truth_violations"] = [
+                    item.model_dump(mode="json") for item in resolved_violations
+                ]
+
+            if unresolved_violations:
+                report_payload["pipeline_status"] = "blocked_truth_violations"
+                write_json(out_dir / "match_report.json", report_payload)
+                return 1
+            for message in rejected_edits:
+                self.tracker.warn(f"Reviewer edit rejected: {message}")
+
+            with self.tracker.stage(Stage.RENDER):
+                if no_pdf:
+                    final_plain = scored_to_plain(final_scored)
+                    render(final_plain, out_dir, False)
+                else:
+                    concision = _ConcisionController(self, facts, evidence_plan)
+                    try:
+                        fit_kwargs: dict[str, object] = {
+                            "progress_callback": lambda message: self.tracker.detail(
+                                message
+                            )
+                        }
+                        if (
+                            "exhaustion_handler"
+                            in inspect.signature(fit_to_one_page).parameters
+                        ):
+                            fit_kwargs["exhaustion_handler"] = concision
+                        final_plain = fit_to_one_page(
+                            final_scored, out_dir, **fit_kwargs
+                        )
+                        concision.audit()
+                    except FitRecoveryRequired as recovery:
+                        report_payload["automatic_concisions"] = recovery.concision_log
+                        report_payload["pipeline_status"] = "action_required"
+                        persist_fit_recovery(
+                            out_dir,
+                            recovery.scored_resume,
+                            page_count=recovery.page_count,
+                            pending_report=report_payload,
+                            trim_log=recovery.trim_log,
+                            concision_log=recovery.concision_log,
+                        )
+                        for name in ("resume.tex", "resume.pdf"):
+                            (out_dir / name).unlink(missing_ok=True)
+                        return 2
+                    except StageFailure:
+                        for name in ("resume.tex", "resume.pdf"):
+                            (out_dir / name).unlink(missing_ok=True)
+                        raise
+                    report_payload["automatic_concisions"] = concision.log
+            with self.tracker.stage(Stage.WRITE_ARTIFACTS):
+                write_json(out_dir / "tailored.json", final_plain)
+                report_payload["pipeline_status"] = (
+                    "completed_with_rejected_edits" if rejected_edits else "completed"
+                )
+                write_json(out_dir / "match_report.json", report_payload)
+                write_json(out_dir / ".done", {"pdf": not no_pdf})
+            return 0
+        except StageFailure as exc:
+            write_json(out_dir / "diagnostic_report.json", exc.diagnostic())
+            raise
+        except (ContractError, LLMExtractionError) as exc:
+            failure = StageFailure("pipeline_validation", 1, [], None, exc)
+            write_json(out_dir / "diagnostic_report.json", failure.diagnostic())
+            raise failure from exc
+        except RenderError as exc:
+            failure = StageFailure("render", 1, [], None, exc)
+            clear_artifacts(out_dir)
+            write_json(out_dir / "diagnostic_report.json", failure.diagnostic())
+            raise failure from exc
