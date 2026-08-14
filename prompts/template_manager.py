@@ -51,6 +51,8 @@ class TemplateManager:
         """
         template_files: dict[str, str] = {
             "jd_parse": "jd_parse.jinja",
+            "research_company_stack": "research_company_stack.jinja",
+            "research_company_signals": "research_company_signals.jinja",
             "plan_evidence": "plan_evidence.jinja",
             "plan_skill_bridges": "plan_skill_bridges.jinja",
             "tailor_skills": "tailor_skills.jinja",

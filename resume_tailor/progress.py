@@ -18,6 +18,8 @@ from typing import Protocol, TextIO
 class Stage(StrEnum):
     PREFLIGHT = "Preflight"
     PARSE_JD = "Parse job description"
+    RESEARCH_COMPANY_STACK = "Research company tech stack"
+    RESEARCH_COMPANY_SIGNALS = "Research company hiring signals"
     SELECT_WORK = "Select work"
     SELECT_PROJECTS = "Select projects"
     PLAN_EVIDENCE = "Plan evidence"

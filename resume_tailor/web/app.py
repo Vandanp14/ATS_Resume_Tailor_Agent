@@ -273,7 +273,12 @@ def create_app(
                 "Tectonic is not installed; set no_pdf=true to run without PDF output.",
             )
         fingerprint = job_fingerprint(
-            body, JobOptions(bridge_skills=body.bridge_skills, no_pdf=body.no_pdf)
+            body,
+            JobOptions(
+                bridge_skills=body.bridge_skills,
+                research_company=body.research_company,
+                no_pdf=body.no_pdf,
+            ),
         )
         existing = registry.find_idempotent(key)
         if existing is not None:

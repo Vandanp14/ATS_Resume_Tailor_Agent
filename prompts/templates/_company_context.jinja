@@ -1,0 +1,28 @@
+{% if company_stack_json or company_signals_json %}
+## Optional external company context (shapes SELECTION and EMPHASIS only, never fabrication)
+
+This is public research about the target company, not evidence about the
+candidate. Use it only to prefer already-true master-resume evidence that
+overlaps the company's likely stack or domain, and to lean into the existing
+ownership-calibration ladder when hiring signals emphasize ownership,
+velocity, or craft — using only ownership language the master evidence
+already supports.
+
+{% if company_stack_json %}
+<<<COMPANY_INFERRED_TECH_STACK>>>
+{{ company_stack_json }}
+<<<END_COMPANY_INFERRED_TECH_STACK>>>
+{% endif %}
+{% if company_signals_json %}
+<<<COMPANY_HIRING_SIGNALS>>>
+{{ company_signals_json }}
+<<<END_COMPANY_HIRING_SIGNALS>>>
+{% endif %}
+
+Never:
+- Add an inferred-stack term to the skills section, a bullet, or a summary
+  unless independently supported by the master resume's own evidence.
+- Claim or imply the candidate used any technology listed here.
+- Treat a hiring-signal phrase as a requirement to satisfy with an invented
+  claim.
+{% endif %}

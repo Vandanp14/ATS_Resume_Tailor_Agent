@@ -10,6 +10,8 @@ def test_pipeline_templates_are_registered_and_summary_is_gone():
     manager = TemplateManager(str(ROOT))
     expected = {
         "jd_parse",
+        "research_company_stack",
+        "research_company_signals",
         "select_work",
         "select_projects",
         "plan_evidence",

@@ -22,6 +22,15 @@ def _common_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="add up to four JD-grounded skills in a labeled transferable group",
     )
+    parser.add_argument(
+        "--research-company",
+        action="store_true",
+        help=(
+            "when the parsed JD has thin signal, research the company's tech "
+            "stack and hiring signals via grounded Gemini web search to guide "
+            "selection and tone (Gemini only; no effect on an already-detailed JD)"
+        ),
+    )
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument(
         "--verbose",

@@ -71,6 +71,11 @@ class OllamaProvider:
         options: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        if kwargs.get("grounding"):
+            raise RuntimeError(
+                "OllamaProvider does not support Gemini web-search grounding; "
+                "the caller must gate grounded calls behind an active Gemini provider."
+            )
         params: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -155,6 +160,7 @@ class GeminiProvider:
             for message in messages
             if message["role"] != "system"
         ]
+        grounding = bool(kwargs.get("grounding"))
         schema = kwargs.get("format")
         if isinstance(schema, type) and issubclass(schema, BaseModel):
             schema = schema.model_json_schema()
@@ -163,8 +169,14 @@ class GeminiProvider:
             temperature=(options or {}).get("temperature"),
             top_p=(options or {}).get("top_p"),
             max_output_tokens=(options or {}).get("max_output_tokens", 8192),
-            response_mime_type="application/json" if schema is not None else None,
-            response_json_schema=schema,
+            # Gemini's search-grounding tool and forced-JSON schema decoding are
+            # mutually exclusive; grounded calls rely on prompt-level JSON
+            # instructions plus extract_json_from_response() instead.
+            response_mime_type=(
+                None if grounding else ("application/json" if schema is not None else None)
+            ),
+            response_json_schema=None if grounding else schema,
+            tools=[types.Tool(google_search=types.GoogleSearch())] if grounding else None,
         )
         for attempt in range(3):
             try:
@@ -239,6 +251,7 @@ def call_llm_with_retry(
     response_model: type[BaseModel],
     options: dict[str, Any] | None = None,
     max_retries: int = 1,
+    grounding: bool = False,
 ) -> BaseModel:
     """Make one structured call and at most one schema-correction call."""
     current_messages = list(messages)
@@ -255,6 +268,7 @@ def call_llm_with_retry(
                     if _is_ollama(provider)
                     else response_model
                 ),
+                grounding=grounding,
             )
             last_raw = response["message"]["content"]
             payload = json.loads(extract_json_from_response(last_raw))

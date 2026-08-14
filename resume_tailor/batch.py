@@ -42,6 +42,7 @@ def pipeline_from_args(
         call_interval=args.call_interval,
         reporter=reporter,
         bridge_skills=getattr(args, "bridge_skills", False),
+        research_company=getattr(args, "research_company", False),
     )
 
 

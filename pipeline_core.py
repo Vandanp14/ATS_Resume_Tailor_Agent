@@ -38,6 +38,7 @@ from render import ScoredResume
 WORK_BULLET_COUNTS = (4, 3, 3)
 PROJECT_BULLET_COUNT = 2
 MAX_SKILL_GROUPS = 5
+RESEARCH_THIN_JD_SIGNAL_THRESHOLD = 12
 
 _NUMBER_RE = re.compile(r"(?<![A-Za-z])(?:\$?\d[\d,]*(?:\.\d+)?%?|\d+x)\b", re.I)
 _HEDGED_METRIC_RE = re.compile(
@@ -87,6 +88,18 @@ def _fact(source_id: str, text: str | None, kind: str, entry_id: str) -> dict | 
         "kind": kind,
         "entry_id": entry_id,
     }
+
+
+def jd_signal_strength(jd: JDProfile) -> int:
+    """Count of explicit requirement/keyword terms a parsed JD actually named."""
+    return len(jd.must_have_skills) + len(jd.nice_to_have_skills) + len(jd.keywords)
+
+
+def jd_signal_is_thin(
+    jd: JDProfile, threshold: int = RESEARCH_THIN_JD_SIGNAL_THRESHOLD
+) -> bool:
+    """True when a JD names too few explicit requirements to tailor against well."""
+    return jd_signal_strength(jd) <= threshold
 
 
 def work_evidence(master: JSONResume) -> list[dict]:

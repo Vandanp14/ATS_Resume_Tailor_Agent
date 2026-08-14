@@ -13,6 +13,8 @@ from pydantic import BaseModel
 from models import (
     BulletConcision,
     CandidateSelection,
+    CompanyHiringSignals,
+    CompanyStackResearch,
     ConcisionAudit,
     EvidencePlan,
     HolisticReview,
@@ -39,10 +41,13 @@ from .assembly import (
 )
 from .config import DEFAULT_MODEL, MODEL_PARAMETERS
 from .evidence import (
+    RESEARCH_THIN_JD_SIGNAL_THRESHOLD,
     ContractError,
     SelectedEvidence,
     choose_selected,
     global_evidence_payload,
+    jd_signal_is_thin,
+    jd_signal_strength,
     master_fact_index,
     project_evidence,
     validate_evidence_plan,
@@ -90,6 +95,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 _TEMPLATE_DIR = _ROOT / "prompts" / "templates"
 _TEMPLATE_STAGES = {
     "jd_parse": Stage.PARSE_JD,
+    "research_company_stack": Stage.RESEARCH_COMPANY_STACK,
+    "research_company_signals": Stage.RESEARCH_COMPANY_SIGNALS,
     "select_work": Stage.SELECT_WORK,
     "select_projects": Stage.SELECT_PROJECTS,
     "plan_evidence": Stage.PLAN_EVIDENCE,
@@ -101,6 +108,11 @@ _TEMPLATE_STAGES = {
     "concise_bullet": Stage.EMERGENCY_CONCISION,
     "audit_concision": Stage.CONCISION_AUDIT,
 }
+
+
+def _provider_supports_grounding(model: str) -> bool:
+    """Gemini's web-search grounding tool has no Ollama equivalent."""
+    return model.startswith("gemini")
 
 
 class _ConcisionController:
@@ -268,10 +280,12 @@ class TailorPipeline:
         reporter: ProgressReporter | None = None,
         bridge_skills: bool = False,
         allow_fit_recovery: bool = False,
+        research_company: bool = False,
     ) -> None:
         self.model = model
         self.bridge_skills = bridge_skills
         self.allow_fit_recovery = allow_fit_recovery
+        self.research_company = research_company
         self.tracker = ProgressTracker(reporter)
         self.stage_executor = StageExecutor(self.tracker)
         raw_provider = provider or initialize_llm_provider(
@@ -287,6 +301,8 @@ class TailorPipeline:
         stage = {
             "jd_parse": "JD parse",
             "holistic_review": "holistic review",
+            "research_company_stack": "company research",
+            "research_company_signals": "company research",
         }.get(template_name, template_name.replace("_", " "))
         system = self.templates.render_template("system_message", stage=stage)
         prompt = self.templates.render_template(template_name, **context)
@@ -362,6 +378,45 @@ class TailorPipeline:
     def _parse_jd(self, jd_text: str) -> JDProfile:
         return self._simple_stage("jd_parse", JDProfile, jd_text=jd_text)
 
+    def _call_grounded[_Result: BaseModel](
+        self,
+        template_name: str,
+        response_model: type[_Result],
+        **context: object,
+    ) -> _Result | None:
+        """Best-effort grounded call: never fails the run, degrades to no context."""
+        try:
+            return call_llm_with_retry(
+                self.provider,
+                self.model,
+                self._messages(template_name, **context),
+                response_model,
+                options={**self.options, "temperature": 0.0, "top_p": 1.0},
+                max_retries=1,
+                grounding=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort enrichment, never fatal
+            self.tracker.warn(
+                f"{template_name} failed, continuing without company research: {exc}"
+            )
+            return None
+
+    def _research_company_stack(self, jd: JDProfile) -> CompanyStackResearch | None:
+        return self._call_grounded(
+            "research_company_stack",
+            CompanyStackResearch,
+            company_name=jd.company_name,
+            jd_profile_json=jd.model_dump_json(indent=2),
+        )
+
+    def _research_company_signals(self, jd: JDProfile) -> CompanyHiringSignals | None:
+        return self._call_grounded(
+            "research_company_signals",
+            CompanyHiringSignals,
+            company_name=jd.company_name,
+            jd_profile_json=jd.model_dump_json(indent=2),
+        )
+
     @staticmethod
     def _partial_entries(
         values: Sequence[Any], expected: dict[str, dict], validator: Any
@@ -399,6 +454,8 @@ class TailorPipeline:
         jd_json: str,
         evidence: Sequence[dict],
         cap: int,
+        company_stack_json: str | None = None,
+        company_signals_json: str | None = None,
     ) -> list[dict]:
         del section
         if not evidence:
@@ -416,6 +473,8 @@ class TailorPipeline:
                     CandidateSelection,
                     jd_profile_json=jd_json,
                     candidates_json=json.dumps(subset, indent=2),
+                    company_stack_json=company_stack_json,
+                    company_signals_json=company_signals_json,
                     feedback=(
                         None
                         if attempt == 1
@@ -466,6 +525,8 @@ class TailorPipeline:
         evidence_plan: EvidencePlan,
         transferable_skill_plan: TransferableSkillPlan,
         fact_index: dict[str, dict],
+        company_stack_json: str | None = None,
+        company_signals_json: str | None = None,
     ) -> list[WorkRewriteItem]:
         if not sources:
             return []
@@ -493,6 +554,8 @@ class TailorPipeline:
                     transferable_skill_keywords_json=json.dumps(
                         [item.keyword for item in transferable_skill_plan.skills]
                     ),
+                    company_stack_json=company_stack_json,
+                    company_signals_json=company_signals_json,
                     feedback=(
                         None
                         if attempt == 1
@@ -548,6 +611,8 @@ class TailorPipeline:
         batch_total: int,
         transferable_skill_plan: TransferableSkillPlan,
         fact_index: dict[str, dict],
+        company_stack_json: str | None = None,
+        company_signals_json: str | None = None,
     ) -> list[ProjectRewriteItem]:
         self.tracker.detail(
             f"Project rewrite batch {batch_number}/{batch_total}", verbose_only=False
@@ -568,6 +633,8 @@ class TailorPipeline:
                     transferable_skill_keywords_json=json.dumps(
                         [item.keyword for item in transferable_skill_plan.skills]
                     ),
+                    company_stack_json=company_stack_json,
+                    company_signals_json=company_signals_json,
                     feedback=(
                         None
                         if attempt == 1
@@ -625,6 +692,8 @@ class TailorPipeline:
         sources: Sequence[dict],
         transferable_skill_plan: TransferableSkillPlan,
         fact_index: dict[str, dict],
+        company_stack_json: str | None = None,
+        company_signals_json: str | None = None,
     ) -> list[ProjectRewriteItem]:
         rewritten: list[ProjectRewriteItem] = []
         batch_total = max(
@@ -642,6 +711,8 @@ class TailorPipeline:
                     batch_total,
                     transferable_skill_plan,
                     fact_index,
+                    company_stack_json,
+                    company_signals_json,
                 )
             )
         return rewritten
@@ -667,12 +738,60 @@ class TailorPipeline:
                 jd = self._parse_jd(jd_text)
                 jd_json = jd.model_dump_json(indent=2)
 
+            company_stack_json: str | None = None
+            company_signals_json: str | None = None
+            if self.research_company:
+                provider_ok = _provider_supports_grounding(self.model)
+                thin = jd_signal_is_thin(jd)
+                has_company = bool(jd.company_name)
+
+                def _skip_reason() -> str | None:
+                    if not provider_ok:
+                        return (
+                            "active provider does not support Gemini web-search "
+                            "grounding"
+                        )
+                    if not has_company:
+                        return "could not identify a company name in the job description"
+                    if not thin:
+                        return (
+                            f"JD signal is sufficient ({jd_signal_strength(jd)} "
+                            f"> {RESEARCH_THIN_JD_SIGNAL_THRESHOLD})"
+                        )
+                    return None
+
+                with self.tracker.stage(Stage.RESEARCH_COMPANY_STACK):
+                    reason = _skip_reason()
+                    if reason:
+                        self.tracker.detail(f"Skipping company research: {reason}")
+                    else:
+                        stack = self._research_company_stack(jd)
+                        company_stack_json = (
+                            stack.model_dump_json(indent=2) if stack else None
+                        )
+
+                with self.tracker.stage(Stage.RESEARCH_COMPANY_SIGNALS):
+                    reason = _skip_reason()
+                    if reason:
+                        self.tracker.detail(f"Skipping company research: {reason}")
+                    else:
+                        signals = self._research_company_signals(jd)
+                        company_signals_json = (
+                            signals.model_dump_json(indent=2) if signals else None
+                        )
+
             all_work = work_evidence(master)
             all_projects = project_evidence(master)
             with self.tracker.stage(Stage.SELECT_WORK):
                 selected_work = tuple(
                     self._select(
-                        "select_work", "work", jd_json, all_work, MAX_SELECTED_WORK
+                        "select_work",
+                        "work",
+                        jd_json,
+                        all_work,
+                        MAX_SELECTED_WORK,
+                        company_stack_json,
+                        company_signals_json,
                     )
                 )
             with self.tracker.stage(Stage.SELECT_PROJECTS):
@@ -683,6 +802,8 @@ class TailorPipeline:
                         jd_json,
                         all_projects,
                         MAX_SELECTED_PROJECTS,
+                        company_stack_json,
+                        company_signals_json,
                     )
                 )
             selected = SelectedEvidence(work=selected_work, projects=selected_projects)
@@ -774,6 +895,8 @@ class TailorPipeline:
                         evidence_plan,
                         transferable_skill_plan,
                         facts,
+                        company_stack_json,
+                        company_signals_json,
                     )
                 )
             with self.tracker.stage(Stage.REWRITE_PROJECTS):
@@ -783,6 +906,8 @@ class TailorPipeline:
                         selected.projects,
                         transferable_skill_plan,
                         facts,
+                        company_stack_json,
+                        company_signals_json,
                     )
                 )
             components = PipelineComponents(

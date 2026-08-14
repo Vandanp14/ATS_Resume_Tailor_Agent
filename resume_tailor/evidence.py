@@ -1,10 +1,13 @@
 """Evidence extraction and provenance validation facade."""
 
 from pipeline_core import (
+    RESEARCH_THIN_JD_SIGNAL_THRESHOLD,
     ContractError,
     SelectedEvidence,
     choose_selected,
     global_evidence_payload,
+    jd_signal_is_thin,
+    jd_signal_strength,
     master_fact_index,
     project_evidence,
     validate_evidence_plan,
@@ -18,10 +21,13 @@ from pipeline_core import (
 )
 
 __all__ = [
+    "RESEARCH_THIN_JD_SIGNAL_THRESHOLD",
     "ContractError",
     "SelectedEvidence",
     "choose_selected",
     "global_evidence_payload",
+    "jd_signal_is_thin",
+    "jd_signal_strength",
     "master_fact_index",
     "project_evidence",
     "validate_evidence_plan",

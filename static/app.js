@@ -6,6 +6,8 @@
 const STAGE_NAMES = [
   "Preflight",
   "Parse job description",
+  "Research company tech stack",
+  "Research company hiring signals",
   "Select work",
   "Select projects",
   "Plan evidence",
@@ -19,7 +21,9 @@ const STAGE_NAMES = [
   "Render and fit one page",
   "Write artifacts",
 ];
-const BRIDGE_INDEX = 5;
+const RESEARCH_STACK_INDEX = 2;
+const RESEARCH_SIGNALS_INDEX = 3;
+const BRIDGE_INDEX = 7;
 const TAB_NAMES = ["progress", "preview", "files"];
 
 const $ = (id) => document.getElementById(id);
@@ -112,6 +116,12 @@ function stateLabel(value) {
 function stageStatus(stageName, job) {
   const index = STAGE_NAMES.indexOf(stageName);
   if (index === BRIDGE_INDEX && job.options && !job.options.bridge_skills) return "skipped";
+  if (
+    (index === RESEARCH_STACK_INDEX || index === RESEARCH_SIGNALS_INDEX) &&
+    job.options &&
+    !job.options.research_company
+  )
+    return "skipped";
   if (job.current_stage === stageName && job.state === "running") return "active";
   const events = state.events.get(job.job_id) || [];
   for (const event of [...events].reverse()) {
@@ -961,6 +971,7 @@ async function submitJob(event) {
         role: formFields.role.value.trim(),
         jd_text: formFields.jd.value.trim(),
         bridge_skills: $("bridge-skills").checked,
+        research_company: $("research-company").checked,
         no_pdf: $("no-pdf").checked,
       }),
     });

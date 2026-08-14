@@ -164,9 +164,64 @@ class JDProfile(StrictModel):
     role: str = Field(min_length=1)
     seniority: str | None = None
     domain: str | None = None
+    company_name: str | None = None
     must_have_skills: list[str]
     nice_to_have_skills: list[str]
     keywords: list[KeywordWeight]
+
+
+# Company research (grounded web search; unconstrained decoding — see llm_utils
+# .GeminiProvider.chat's `grounding` branch) ------------------------------------
+
+
+class CompanySourceRef(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    url: str = Field(min_length=1)
+    title: str | None = None
+
+
+class StackSignal(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    term: str = Field(min_length=1)
+    confidence: Literal["high", "medium", "low"]
+    source_snippet: str | None = None
+
+
+class CompanyStackResearch(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    company_name: str
+    found: bool
+    inferred_stack: list[StackSignal] = Field(default_factory=list)
+    sources: list[CompanySourceRef] = Field(default_factory=list)
+    notes: str | None = None
+
+
+class HiringSignalItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    phrase: str = Field(min_length=1)
+    theme: Literal[
+        "ownership",
+        "velocity",
+        "craft_quality",
+        "collaboration",
+        "customer_obsession",
+        "other",
+    ]
+    source_snippet: str | None = None
+
+
+class CompanyHiringSignals(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    company_name: str
+    found: bool
+    signals: list[HiringSignalItem] = Field(default_factory=list)
+    sources: list[CompanySourceRef] = Field(default_factory=list)
+    notes: str | None = None
 
 
 class SelectionCandidate(StrictModel):

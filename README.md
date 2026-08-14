@@ -102,6 +102,8 @@ Useful batch options:
 --no-pdf               skip compilation and one-page fitting
 --force                rerun completed jobs
 --bridge-skills        add up to four JD-grounded skills in a labeled transferable group
+--research-company     when the JD is thin, research the company's stack and hiring
+                        signals via grounded Gemini web search (Gemini only)
 --verbose              show retries, pacing waits, and fit decisions
 --quiet                show only failures and the final batch result
 ```
@@ -130,6 +132,17 @@ Use `--bridge-skills` to run an additional evidence-backed gap analysis. Missing
 JD skill keywords may be added only under `Transferable / Adjacent Tools`, never
 to work or project claims. Every addition and its supporting master fact IDs are
 recorded in `match_report.json`; the default command does not run this stage.
+
+Use `--research-company` on job descriptions that are heavy on responsibilities
+and culture but light on explicit tech-stack keywords. After `jd_parse`, the
+pipeline checks the extracted must-have/nice-to-have/keyword count against a
+threshold; only a thin JD triggers two grounded Gemini web-search calls (company
+tech stack, then hiring signals). Research output only ever shapes which
+already-true work/project evidence is selected and how existing bullets are
+worded — it can never add a skill, keyword, or technology claim that isn't
+already in the master resume. Requires an active Gemini provider; it is a no-op
+on Ollama and on an already-detailed JD, and adds at most two extra calls to a
+job's Gemini usage.
 
 The executable `tailor.py` is a compatibility shim. Application code lives in
 the `resume_tailor` package: `cli` owns arguments and logging, `batch` owns job

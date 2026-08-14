@@ -347,7 +347,9 @@ class QueueRegistry:
                         company=payload.company,
                         role=payload.role,
                         options=JobOptions(
-                            bridge_skills=payload.bridge_skills, no_pdf=payload.no_pdf
+                            bridge_skills=payload.bridge_skills,
+                            research_company=payload.research_company,
+                            no_pdf=payload.no_pdf,
                         ),
                         created_at=payload.created_at,
                         idempotency_key=payload.idempotency_key,
@@ -477,12 +479,17 @@ class QueueRegistry:
     # -- queue mutations -------------------------------------------------------
 
     def enqueue(self, request: CreateJobRequest, idempotency_key: str) -> Job:
-        options = JobOptions(bridge_skills=request.bridge_skills, no_pdf=request.no_pdf)
+        options = JobOptions(
+            bridge_skills=request.bridge_skills,
+            research_company=request.research_company,
+            no_pdf=request.no_pdf,
+        )
         payload = QueuePayload(
             company=request.company,
             role=request.role,
             jd_text=request.jd_text,
             bridge_skills=request.bridge_skills,
+            research_company=request.research_company,
             no_pdf=request.no_pdf,
             idempotency_key=idempotency_key,
             request_fingerprint=job_fingerprint(request, options),
@@ -741,6 +748,7 @@ class QueueRegistry:
                 provider=self.provider,
                 reporter=job.reporter,
                 bridge_skills=payload.bridge_skills,
+                research_company=payload.research_company,
                 allow_fit_recovery=True,
             )
             exit_code = pipeline.run(

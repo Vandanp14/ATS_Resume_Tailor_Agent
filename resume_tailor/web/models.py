@@ -68,6 +68,7 @@ class CreateJobRequest(BaseModel):
     role: str = Field(min_length=1, max_length=MAX_NAME_LENGTH)
     jd_text: str = Field(min_length=1, max_length=MAX_JD_LENGTH)
     bridge_skills: bool = False
+    research_company: bool = False
     no_pdf: bool = False
 
     @field_validator("company", "role")
@@ -91,6 +92,7 @@ class CreateJobRequest(BaseModel):
 
 class JobOptions(BaseModel):
     bridge_skills: bool = False
+    research_company: bool = False
     no_pdf: bool = False
 
 
@@ -125,6 +127,7 @@ class QueuePayload(BaseModel):
     role: str
     jd_text: str
     bridge_skills: bool = False
+    research_company: bool = False
     no_pdf: bool = False
     created_at: str = Field(default_factory=utc_now_iso)
     idempotency_key: str | None = None
@@ -388,6 +391,7 @@ def job_fingerprint(request: CreateJobRequest, options: JobOptions) -> str:
         request.role,
         request.jd_text,
         options.bridge_skills,
+        options.research_company,
         options.no_pdf,
     )
     return uuid.uuid5(uuid.NAMESPACE_URL, repr(seed)).hex
