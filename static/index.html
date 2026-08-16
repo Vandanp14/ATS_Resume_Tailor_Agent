@@ -22,16 +22,17 @@
     </div>
 
     <div class="header-actions">
-      <div class="model-summary desktop-meta">
-        <span id="model-provider">Model unavailable</span>
-        <span id="master-identity">Master unavailable</span>
-      </div>
-      <button class="usage-trigger" id="tracker" type="button" popovertarget="tracker-detail">
-        <span class="status-dot" id="tracker-dot" aria-hidden="true"></span>
-        <span class="desktop-label">Gemini usage</span>
-        <strong class="tabnum" id="tracker-copy">—</strong>
-      </button>
-      <button class="button primary header-new" id="header-new-job" type="button">New tailoring</button>
+        <div class="model-summary desktop-meta">
+            <span id="model-provider">Model unavailable</span>
+            <span id="master-identity">Master unavailable</span>
+        </div>
+        <button class="usage-trigger" id="tracker" type="button" popovertarget="tracker-detail">
+            <span class="status-dot" id="tracker-dot" aria-hidden="true"></span>
+            <span class="desktop-label">Gemini usage</span>
+            <strong class="tabnum" id="tracker-copy">—</strong>
+        </button>
+        <button class="button secondary header-new" id="header-apps" type="button">Applications</button>
+        <button class="button primary header-new" id="header-new-job" type="button">New tailoring</button>
     </div>
   </header>
 
@@ -72,7 +73,10 @@
             <span aria-hidden="true">×</span>
           </button>
         </div>
-        <button class="button rail-new" id="rail-new-job" type="button">New tailoring</button>
+        <div class="rail-primary-actions">
+          <button class="button rail-new" id="rail-new-job" type="button">New tailoring</button>
+          <button class="button rail-applications" id="rail-applications" type="button">Applications</button>
+        </div>
 
         <section class="queue-banner" id="queue-banner" aria-live="polite">
           <div class="queue-banner-copy">
@@ -113,14 +117,70 @@
     </aside>
 
     <main class="main-workspace" id="main" tabindex="-1">
-      <section class="workspace-state detail-empty" id="detail-empty">
-        <p class="eyebrow">Resume workspace</p>
-        <h1>Tailor your next resume</h1>
-        <p>Add a job description, then follow its progress and review the generated resume here.</p>
-        <button class="button primary" id="empty-new-job" type="button">New tailoring</button>
-      </section>
+        <section class="workspace-state detail-empty" id="detail-empty">
+            <p class="eyebrow">Resume workspace</p>
+            <h1>Tailor your next resume</h1>
+            <p>Add a job description, then follow its progress and review the generated resume here.</p>
+            <button class="button primary" id="empty-new-job" type="button">New tailoring</button>
+        </section>
 
-      <section class="workspace-state detail-loading" id="detail-loading" aria-label="Loading selected job" hidden>
+        <section class="workspace-state apps-dashboard" id="apps-dashboard" aria-labelledby="apps-title" hidden>
+            <header class="dashboard-heading">
+              <div><p class="eyebrow">Application tracking</p><h1 id="apps-title">Applications</h1></div>
+              <a class="button secondary" id="apps-download-csv" href="/api/applications.csv" download="applications.csv">Download CSV</a>
+            </header>
+            <div class="dashboard-toolbar" role="search">
+                <div class="field compact-field">
+                  <label for="apps-search">Search applications</label>
+                  <input type="search" id="apps-search" placeholder="Company or role" autocomplete="off">
+                </div>
+                <div class="field compact-field">
+                  <label for="apps-filter">Application status</label>
+                  <select id="apps-filter">
+                      <option value="all">All statuses</option>
+                      <option value="not_applied">Not applied</option>
+                      <option value="applied">Applied</option>
+                  </select>
+                </div>
+            </div>
+            <div class="dashboard-summary">
+                <div class="summary-item">
+                    <strong>Total</strong>
+                    <span id="apps-total">0</span>
+                </div>
+                <div class="summary-item">
+                    <strong>Applied</strong>
+                    <span id="apps-applied">0</span>
+                </div>
+                <div class="summary-item">
+                    <strong>Not applied</strong>
+                    <span id="apps-not-applied">0</span>
+                </div>
+            </div>
+            <div class="dashboard-list-area">
+                <div class="list-state skeleton-stack" id="apps-loading" aria-label="Loading applications" hidden>
+                    <span></span><span></span><span></span>
+                </div>
+                <div class="list-state error-state" id="apps-error" role="alert" hidden>
+                    <strong>Applications could not be loaded</strong>
+                    <span id="apps-error-copy"></span>
+                    <button class="button secondary" id="apps-retry-btn" type="button">Try again</button>
+                </div>
+                <div class="list-state empty-state" id="apps-empty" hidden>
+                    <strong>No applications</strong>
+                    <span>Tailor a job to start tracking applications.</span>
+                    <button class="button primary compact" id="apps-empty-new-job" type="button">New tailoring</button>
+                </div>
+                <div class="list-state no-match" id="apps-no-match" hidden>
+                    <strong>No applications match</strong>
+                    <span>Try adjusting your search or filters.</span>
+                    <button class="button secondary" id="apps-clear-filters" type="button">Clear filters</button>
+                </div>
+                <ul class="apps-list" id="apps-list" aria-label="Applications"></ul>
+            </div>
+        </section>
+
+        <section class="workspace-state detail-loading" id="detail-loading" aria-label="Loading selected job" hidden>
         <div class="skeleton heading-skeleton"></div>
         <div class="skeleton subheading-skeleton"></div>
         <div class="skeleton overview-skeleton"></div>
@@ -156,6 +216,20 @@
             <div><dt>Queue</dt><dd class="tabnum" id="detail-position">—</dd></div>
             <div><dt>Output</dt><dd id="detail-output">Pending</dd></div>
           </dl>
+        </section>
+
+        <section class="job-application-card" id="job-application-card" aria-labelledby="job-application-title">
+          <div class="job-application-copy">
+            <p class="eyebrow">Application tracking</p>
+            <div class="application-card-heading">
+              <h2 id="job-application-title">Application status</h2>
+              <span id="job-application-status"></span>
+            </div>
+            <p id="job-application-date">No application date</p>
+            <a id="job-application-url" target="_blank" rel="noreferrer" hidden>Open job posting</a>
+            <p id="job-application-notes">Add a job URL or notes when you track this application.</p>
+          </div>
+          <button class="button secondary compact" id="edit-job-application" type="button">Edit tracking</button>
         </section>
 
         <div class="notice warning" id="detail-export-warning" role="status" hidden></div>
@@ -301,6 +375,53 @@
         <footer class="dialog-footer recovery-dialog-footer">
           <button class="button secondary" id="cancel-recovery-dialog" type="button">Cancel</button>
           <button class="button primary" id="apply-removals-btn" type="submit">Remove selected and render</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog class="application-editor-dialog" id="application-editor-dialog" aria-labelledby="application-editor-title" aria-describedby="application-editor-description">
+    <div class="dialog-shell">
+      <header class="dialog-header">
+        <div><p class="eyebrow">Application tracking</p><h2 id="application-editor-title">Edit application</h2><p class="dialog-context" id="application-editor-context"></p></div>
+        <button class="icon-button" id="close-application-editor-dialog" type="button" aria-label="Close application editor"><span aria-hidden="true">×</span></button>
+      </header>
+
+      <form id="application-editor-form" novalidate>
+        <div class="dialog-body">
+          <p class="dialog-intro" id="application-editor-description">Keep the application status, source link, and follow-up notes with this tailored resume.</p>
+          <div class="field">
+            <label for="app-status">Status</label>
+            <select id="app-status" name="status" required aria-describedby="app-status-error">
+              <option value="not_applied">Not applied</option>
+              <option value="applied">Applied</option>
+            </select>
+            <p class="error-slot" id="app-status-error" role="alert"></p>
+          </div>
+          <div class="field" id="app-applied-on-field" hidden>
+            <label for="app-applied-on">Applied date</label>
+            <input id="app-applied-on" name="applied_on" type="date" max="3000-12-31" aria-describedby="app-applied-on-help app-applied-on-error">
+            <p class="field-help" id="app-applied-on-help">Use the date the application was submitted.</p>
+            <p class="error-slot" id="app-applied-on-error" role="alert"></p>
+          </div>
+          <div class="field">
+            <label for="app-job-url">Job URL <span class="optional">Optional</span></label>
+            <input id="app-job-url" name="job_url" type="url" inputmode="url" autocomplete="url" maxlength="2048" placeholder="https://company.example/jobs/…" aria-describedby="app-job-url-help app-job-url-error">
+            <p class="field-help" id="app-job-url-help">Paste the original posting so it is easy to revisit later.</p>
+            <p class="error-slot" id="app-job-url-error" role="alert"></p>
+          </div>
+          <div class="field">
+            <label for="app-notes">Notes <span class="optional">Optional</span></label>
+            <textarea id="app-notes" name="notes" rows="4" maxlength="4000" placeholder="Contact, next step, follow-up date…" aria-describedby="app-notes-help app-notes-error"></textarea>
+            <p class="field-help" id="app-notes-help">Store reminders or follow-up context. Maximum 4,000 characters.</p>
+            <p class="error-slot" id="app-notes-error" role="alert"></p>
+          </div>
+          <p class="form-status" id="application-editor-status" aria-live="polite"></p>
+          <button class="button secondary compact" id="reload-application-editor" type="button" hidden>Reload latest values</button>
+        </div>
+        <footer class="dialog-footer">
+          <button class="button secondary" id="cancel-application-editor-dialog" type="button">Cancel</button>
+          <button class="button primary" type="submit" id="save-application-editor-dialog">Save changes</button>
         </footer>
       </form>
     </div>

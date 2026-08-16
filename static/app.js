@@ -56,6 +56,21 @@ const state = {
     requestSignature: "",
     idempotencyKey: "",
   },
+  workspaceMode: "job",
+  applications: {
+    items: [],
+    summary: { total: 0, applied: 0, not_applied: 0 },
+    status: "idle",
+    error: "",
+    search: "",
+    filter: "all",
+  },
+  applicationEditor: {
+    jobId: null,
+    revision: 0,
+    submitting: false,
+    returnFocus: null,
+  },
 };
 
 /* DOM helpers: untrusted provider, JD, and job values never become HTML. */
@@ -69,6 +84,15 @@ function el(tag, className, text) {
 
 function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
+}
+
+function appItemRow(label, value) {
+  const row = el("div", "app-item-row");
+  const labelEl = el("span", "app-item-label", label);
+  const valueEl = el("span", "app-item-value", value === null || value === undefined ? "—" : String(value));
+  row.appendChild(labelEl);
+  row.appendChild(valueEl);
+  return row;
 }
 
 function parseTime(value) {
@@ -137,7 +161,10 @@ async function fetchJson(url, options = {}) {
   const body = response.status === 204 ? null : await response.json().catch(() => null);
   if (!response.ok) {
     const detail = body && body.detail ? body.detail : `Request failed (${response.status}).`;
-    throw new Error(detail);
+    const error = new Error(detail);
+    error.status = response.status;
+    error.body = body;
+    throw error;
   }
   return body;
 }
@@ -412,6 +439,16 @@ async function fetchDetail(jobId) {
 }
 
 function renderDetailState() {
+  const showingApplications = state.workspaceMode === "applications";
+  $("apps-dashboard").hidden = !showingApplications;
+  if (showingApplications) {
+    $("detail-empty").hidden = true;
+    $("detail-loading").hidden = true;
+    $("detail-error").hidden = true;
+    $("detail-body").hidden = true;
+    renderApplicationsDashboard();
+    return;
+  }
   $("detail-empty").hidden = state.detailStatus !== "empty";
   $("detail-loading").hidden = state.detailStatus !== "loading";
   $("detail-error").hidden = state.detailStatus !== "error";
@@ -420,6 +457,7 @@ function renderDetailState() {
 }
 
 function selectJob(jobId, { reveal = true } = {}) {
+  state.workspaceMode = "job";
   if (!jobId) {
     state.selectedId = null;
     state.currentDetail = null;
@@ -456,6 +494,7 @@ function renderDetail(job) {
   $("detail-message").textContent = job.message || "";
   $("detail-export-warning").hidden = !job.export_warning;
   $("detail-export-warning").textContent = job.export_warning || "";
+  renderApplicationSummary(job);
   renderRecoveryCard(job);
   renderStages(job);
   renderVerbose(job);
@@ -622,22 +661,271 @@ function renderRecoveryLoadError(error) {
 }
 
 async function loadRecoveryDialog({ resetSelection = true } = {}) {
-  const jobId = state.recovery.jobId;
-  if (!jobId) return;
-  state.recovery.loading = true;
-  state.recovery.error = "";
-  renderRecoveryLoading();
+    const jobId = state.recovery.jobId;
+    if (!jobId) return;
+    state.recovery.loading = true;
+    state.recovery.error = "";
+    renderRecoveryLoading();
+    try {
+        const data = await ensureRecoverySummary(jobId, { force: true });
+        if (state.recovery.jobId !== jobId) return;
+        state.recovery.loading = false;
+        renderRecoveryDialogData(data, { resetSelection });
+    } catch (error) {
+        if (state.recovery.jobId !== jobId) return;
+        state.recovery.loading = false;
+        state.recovery.error = String(error.message || error);
+        renderRecoveryLoadError(error);
+    }
+}
+
+async function fetchApplications() {
+  state.applications.status = "loading";
+  state.applications.error = "";
+  renderApplicationsDashboard();
   try {
-    const data = await ensureRecoverySummary(jobId, { force: true });
-    if (state.recovery.jobId !== jobId) return;
-    state.recovery.loading = false;
-    renderRecoveryDialogData(data, { resetSelection });
+    const body = await fetchJson("/api/applications");
+    state.applications.items = Array.isArray(body.items) ? body.items : [];
+    state.applications.summary = body.summary || { total: 0, applied: 0, not_applied: 0 };
+    state.applications.status = "success";
   } catch (error) {
-    if (state.recovery.jobId !== jobId) return;
-    state.recovery.loading = false;
-    state.recovery.error = String(error.message || error);
-    renderRecoveryLoadError(error);
+    state.applications.status = "error";
+    state.applications.error = String(error.message || error);
   }
+  renderApplicationsDashboard();
+}
+
+function renderApplicationsDashboard() {
+  const data = state.applications;
+  const filtered = filterAndSortApps();
+  const hasRows = data.items.length > 0;
+  const hasMatches = filtered.length > 0;
+  $("apps-loading").hidden = data.status !== "loading";
+  $("apps-error").hidden = data.status !== "error";
+  $("apps-error-copy").textContent = data.error;
+  $("apps-empty").hidden = data.status !== "success" || hasRows;
+  $("apps-no-match").hidden = data.status !== "success" || !hasRows || hasMatches;
+  $("apps-list").hidden = data.status !== "success" || !hasMatches;
+  $("apps-total").textContent = String(data.summary.total || 0);
+  $("apps-applied").textContent = String(data.summary.applied || 0);
+  $("apps-not-applied").textContent = String(data.summary.not_applied || 0);
+  if (data.status === "success") renderAppsList(filtered);
+}
+
+function filterAndSortApps() {
+  const query = state.applications.search.trim().toLowerCase();
+  return state.applications.items.filter((item) => {
+    const haystack = `${item.company || ""} ${item.role || ""}`.toLowerCase();
+    const statusMatches = state.applications.filter === "all" || item.application.status === state.applications.filter;
+    return statusMatches && (!query || haystack.includes(query));
+  });
+}
+
+function renderAppsList(apps) {
+  const list = $("apps-list");
+  clear(list);
+  for (const app of apps) list.appendChild(appItem(app));
+}
+
+function appItem(app) {
+  const item = el("li", "app-item");
+  const content = el("div", "app-item-content");
+  const heading = el("div", "app-item-heading");
+  const title = el("div", "app-item-title");
+  title.appendChild(el("strong", null, app.company || "Untitled company"));
+  title.appendChild(el("span", null, app.role || "Role not provided"));
+  heading.appendChild(title);
+  heading.appendChild(applicationBadge(app.application.status));
+  content.appendChild(heading);
+
+  const facts = el("div", "app-item-facts");
+  facts.appendChild(appItemRow("Applied date", app.application.applied_on || "—"));
+  facts.appendChild(appItemRow("Tailoring", stateLabel(app.state)));
+  facts.appendChild(appItemRow("Updated", formatWhen(app.application.updated_at) || "Not edited"));
+  content.appendChild(facts);
+  if (app.application.notes) content.appendChild(el("p", "app-item-notes", app.application.notes));
+
+  const actions = el("div", "app-item-actions");
+  const view = el("button", "button tertiary compact", "View job");
+  view.type = "button";
+  view.addEventListener("click", () => selectJob(app.job_id, { reveal: true }));
+  const edit = el("button", "button secondary compact", "Edit tracking");
+  edit.type = "button";
+  edit.addEventListener("click", () => openApplicationEditor(app, edit));
+  actions.appendChild(view);
+  actions.appendChild(edit);
+  item.appendChild(content);
+  item.appendChild(actions);
+  return item;
+}
+
+function applicationBadge(status) {
+  return el("span", `application-badge ${status}`, status === "applied" ? "Applied" : "Not applied");
+}
+
+function upsertApplication(entry) {
+  const index = state.applications.items.findIndex((item) => item.job_id === entry.job_id);
+  if (index === -1) state.applications.items.unshift(entry);
+  else state.applications.items[index] = entry;
+  const applied = state.applications.items.filter((item) => item.application.status === "applied").length;
+  state.applications.summary = {
+    total: state.applications.items.length,
+    applied,
+    not_applied: state.applications.items.length - applied,
+  };
+  const known = state.jobs.get(entry.job_id);
+  if (known) known.application = entry.application;
+  if (state.currentDetail && state.currentDetail.job_id === entry.job_id) state.currentDetail.application = entry.application;
+}
+
+function todayLocal() {
+  const now = new Date();
+  const offset = now.getTimezoneOffset() * 60_000;
+  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function syncAppliedDateField({ fillDefault = false } = {}) {
+  const applied = $("app-status").value === "applied";
+  $("app-applied-on-field").hidden = !applied;
+  $("app-applied-on").disabled = !applied;
+  $("app-applied-on").required = applied;
+  if (applied && fillDefault && !$("app-applied-on").value) $("app-applied-on").value = todayLocal();
+  if (!applied) $("app-applied-on-error").textContent = "";
+}
+
+function clearApplicationErrors() {
+  for (const id of ["app-status", "app-applied-on", "app-job-url", "app-notes"]) {
+    $(id).setAttribute("aria-invalid", "false");
+    $(`${id}-error`).textContent = "";
+  }
+  $("application-editor-status").textContent = "";
+  $("application-editor-status").classList.remove("error");
+  $("reload-application-editor").hidden = true;
+}
+
+function openApplicationEditor(app, returnFocus = document.activeElement) {
+  state.applicationEditor.jobId = app.job_id;
+  state.applicationEditor.revision = Number(app.application.revision || 0);
+  state.applicationEditor.returnFocus = returnFocus;
+  $("application-editor-title").textContent = `Track ${app.company || "application"}`;
+  $("application-editor-context").textContent = app.role || "Role not provided";
+  $("app-status").value = app.application.status;
+  $("app-applied-on").value = app.application.applied_on || "";
+  $("app-job-url").value = app.application.job_url || "";
+  $("app-notes").value = app.application.notes || "";
+  clearApplicationErrors();
+  syncAppliedDateField({ fillDefault: true });
+  const dialog = $("application-editor-dialog");
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => $("app-status").focus());
+}
+
+function closeApplicationEditorDialog() {
+  const dialog = $("application-editor-dialog");
+  if (dialog.open) dialog.close();
+}
+
+function validateApplicationEditor() {
+  clearApplicationErrors();
+  const invalid = [];
+  if ($("app-status").value === "applied" && !$("app-applied-on").value) {
+    $("app-applied-on-error").textContent = "Choose the date you applied.";
+    invalid.push($("app-applied-on"));
+  }
+  const url = $("app-job-url");
+  if (url.value) {
+    let validUrl = !url.validity.typeMismatch;
+    try {
+      const parsed = new URL(url.value);
+      validUrl = validUrl && ["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password;
+    } catch {
+      validUrl = false;
+    }
+    if (!validUrl) {
+      $("app-job-url-error").textContent = "Enter a complete HTTP or HTTPS job URL without credentials.";
+      invalid.push(url);
+    }
+  }
+  for (const field of invalid) field.setAttribute("aria-invalid", "true");
+  if (invalid.length) invalid[0].focus();
+  return invalid.length === 0;
+}
+
+async function reloadApplicationEditor() {
+  const jobId = state.applicationEditor.jobId;
+  if (!jobId) return;
+  try {
+    const detail = await fetchJson(`/api/jobs/${jobId}`);
+    const job = detail.job;
+    state.jobs.set(jobId, job);
+    openApplicationEditor({ ...job, resume_available: (job.artifacts || []).includes("resume.pdf") }, state.applicationEditor.returnFocus);
+  } catch (error) {
+    $("application-editor-status").textContent = `The latest values could not be loaded. ${String(error.message || error)}`;
+    $("application-editor-status").classList.add("error");
+  }
+}
+
+async function submitApplicationEditor(event) {
+  event.preventDefault();
+  if (state.applicationEditor.submitting || !validateApplicationEditor()) return;
+  state.applicationEditor.submitting = true;
+  const button = $("save-application-editor-dialog");
+  button.disabled = true;
+  button.textContent = "Saving…";
+  try {
+    const applied = $("app-status").value === "applied";
+    const entry = await fetchJson(`/api/jobs/${state.applicationEditor.jobId}/application`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        status: $("app-status").value,
+        applied_on: applied ? $("app-applied-on").value || null : null,
+        job_url: $("app-job-url").value.trim() || null,
+        notes: $("app-notes").value.trim(),
+        revision: state.applicationEditor.revision,
+      }),
+    });
+    upsertApplication(entry);
+    renderApplicationsDashboard();
+    if (state.currentDetail && state.currentDetail.job_id === entry.job_id) renderApplicationSummary(state.currentDetail);
+    closeApplicationEditorDialog();
+  } catch (error) {
+    const status = $("application-editor-status");
+    status.classList.add("error");
+    if (error.status === 409) {
+      status.textContent = "This record changed in another view. Reload the latest values before saving.";
+      $("reload-application-editor").hidden = false;
+      $("reload-application-editor").focus();
+    } else {
+      status.textContent = `Changes were not saved. ${String(error.message || error)}`;
+    }
+  } finally {
+    state.applicationEditor.submitting = false;
+    button.disabled = false;
+    button.textContent = "Save changes";
+  }
+}
+
+function openApplicationsDashboard() {
+  state.workspaceMode = "applications";
+  showMobileView("detail");
+  renderDetailState();
+  fetchApplications();
+}
+
+function renderApplicationSummary(job) {
+  const application = job.application || { status: "not_applied", revision: 0 };
+  const host = $("job-application-card");
+  clear($("job-application-status"));
+  $("job-application-status").appendChild(applicationBadge(application.status));
+  $("job-application-date").textContent = application.applied_on || "No application date";
+  const link = $("job-application-url");
+  link.hidden = !application.job_url;
+  if (application.job_url) link.href = application.job_url;
+  else link.removeAttribute("href");
+  $("job-application-notes").textContent = application.notes || "Add a job URL or notes when you track this application.";
+  $("edit-job-application").onclick = () => openApplicationEditor({ ...job, application }, $("edit-job-application"));
+  host.hidden = job.source !== "web" || job.application_tracking_available === false;
 }
 
 function openRecoveryDialog() {
@@ -1040,6 +1328,13 @@ function applyEvent(event) {
         }
       });
     }
+    if (state.workspaceMode === "applications") fetchApplications().catch(() => {});
+    return;
+  }
+  if (kind === "job_application_updated" && event.data) {
+    upsertApplication(event.data);
+    renderApplicationsDashboard();
+    if (event.job_id === state.selectedId && state.currentDetail) renderApplicationSummary(state.currentDetail);
     return;
   }
   if (!kind.startsWith("stage_") || !event.job_id) return;
@@ -1060,7 +1355,7 @@ function openStream() {
   const source = new EventSource("/api/events");
   source.onopen = () => loadAll();
   source.onerror = () => { /* EventSource reconnects and loadAll runs on the next open. */ };
-  const kinds = ["queue_changed", "job_started", "stage_started", "stage_completed", "stage_retry", "stage_detail", "stage_warning", "job_action_required", "job_completed", "job_failed", "tracker_changed"];
+  const kinds = ["queue_changed", "job_started", "stage_started", "stage_completed", "stage_retry", "stage_detail", "stage_warning", "job_action_required", "job_completed", "job_failed", "job_application_updated", "tracker_changed"];
   for (const kind of kinds) {
     source.addEventListener(kind, (message) => {
       try { applyEvent(JSON.parse(message.data)); } catch { /* Ignore malformed event frames. */ }
@@ -1082,7 +1377,7 @@ function showMobileView(name) {
 }
 
 function bindEvents() {
-  const openers = ["header-new-job", "rail-new-job", "empty-new-job", "add-jd-action"];
+  const openers = ["header-new-job", "rail-new-job", "empty-new-job", "add-jd-action", "apps-empty-new-job"];
   for (const id of openers) $(id).addEventListener("click", openJobDialog);
   $("close-job-dialog").addEventListener("click", closeJobDialog);
   $("cancel-job-dialog").addEventListener("click", closeJobDialog);
@@ -1099,6 +1394,8 @@ function bindEvents() {
     state.recovery.requestSignature = "";
     state.recovery.idempotencyKey = "";
   });
+  $("header-apps").addEventListener("click", openApplicationsDashboard);
+  $("rail-applications").addEventListener("click", openApplicationsDashboard);
   $("show-jobs-btn").addEventListener("click", () => showMobileView("jobs"));
   $("hide-jobs-btn").addEventListener("click", () => showMobileView("detail"));
   $("detail-back-btn").addEventListener("click", () => showMobileView("jobs"));
@@ -1111,6 +1408,32 @@ function bindEvents() {
 
   $("filter-queue").addEventListener("click", () => { state.listFilter = "queue"; renderJobLists(); });
   $("filter-recent").addEventListener("click", () => { state.listFilter = "recent"; renderJobLists(); });
+  $("close-application-editor-dialog").addEventListener("click", closeApplicationEditorDialog);
+  $("cancel-application-editor-dialog").addEventListener("click", closeApplicationEditorDialog);
+  $("application-editor-form").addEventListener("submit", submitApplicationEditor);
+  $("app-status").addEventListener("change", () => syncAppliedDateField({ fillDefault: true }));
+  $("reload-application-editor").addEventListener("click", reloadApplicationEditor);
+  $("application-editor-dialog").addEventListener("close", () => {
+    const target = state.applicationEditor.returnFocus;
+    if (target && target.isConnected) target.focus();
+  });
+  $("apps-search").addEventListener("input", () => {
+    state.applications.search = $("apps-search").value;
+    renderApplicationsDashboard();
+  });
+  $("apps-filter").addEventListener("change", () => {
+    state.applications.filter = $("apps-filter").value;
+    renderApplicationsDashboard();
+  });
+  $("apps-retry-btn").addEventListener("click", fetchApplications);
+  $("apps-clear-filters").addEventListener("click", () => {
+    state.applications.search = "";
+    state.applications.filter = "all";
+    $("apps-search").value = "";
+    $("apps-filter").value = "all";
+    renderApplicationsDashboard();
+    $("apps-search").focus();
+  });
   for (const name of TAB_NAMES) {
     const tab = $(`tab-${name}`);
     tab.addEventListener("click", () => activateTab(name, false));
