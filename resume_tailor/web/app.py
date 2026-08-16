@@ -232,10 +232,6 @@ def create_app(
         )
 
     def job_or_404(job_id: str) -> Job:
-        try:
-            uuid.UUID(job_id)
-        except ValueError:
-            raise HTTPException(404, f"Unknown job: {job_id}")
         job = registry.get(job_id)
         if job is None:
             raise HTTPException(404, f"Unknown job: {job_id}")

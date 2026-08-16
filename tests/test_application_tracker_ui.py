@@ -29,6 +29,7 @@ def test_application_client_uses_safe_api_and_state_contracts():
     assert 'kind === "job_application_updated"' in app_js
     assert "error.status = response.status" in app_js
     assert "job.application_tracking_available === false" in app_js
+    assert 'jobs.filter((job) => job.source === "web")' in app_js
     assert "innerHTML" not in app_js
     assert "insertAdjacentHTML" not in app_js
     assert '$("#' not in app_js

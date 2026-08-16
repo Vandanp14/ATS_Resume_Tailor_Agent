@@ -47,6 +47,19 @@ def test_create_valid_job_and_safe_detail(web_client):
     assert (web_client.output_dir / body["job_id"] / "web_job.json").is_file()
 
 
+def test_cli_history_job_can_open_detail(make_app, tmp_path):
+    cli_dir = tmp_path / "output" / "cisco"
+    cli_dir.mkdir(parents=True)
+    (cli_dir / "resume.pdf").write_bytes(b"%PDF-1.4 fake")
+    app, _ = make_app()
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    response = client.get("/api/jobs/cisco")
+
+    assert response.status_code == 200
+    assert response.json()["job"]["source"] == "cli"
+
+
 def test_create_validation_uses_problem_documents(web_client):
     for payload in (
         {"company": "", "role": "Engineer", "jd_text": "Job"},

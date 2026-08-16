@@ -281,8 +281,10 @@ async function fetchJobs() {
   renderJobLists();
 
   if (!state.selectedId) {
-    const active = jobs.find((job) => job.active);
-    const newest = jobs.find((job) => ["completed", "failed", "action_required"].includes(job.state));
+    const webJobs = jobs.filter((job) => job.source === "web");
+    const preferred = webJobs.length ? webJobs : jobs;
+    const active = preferred.find((job) => job.active);
+    const newest = preferred.find((job) => ["completed", "failed", "action_required"].includes(job.state));
     const initial = active || newest;
     if (initial) selectJob(initial.job_id, { reveal: false });
   }
