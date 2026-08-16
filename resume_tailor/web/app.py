@@ -20,13 +20,22 @@ from ..config import DEFAULT_MODEL
 from ..pipeline import TailorPipeline
 from ..runtime import DEFAULT_CALL_INTERVAL, load_master
 from models import JSONResume
-from .jobs import Job, JobState, QueueRegistry, RecoveryRequestError
+from .jobs import (
+    ApplicationUpdateError,
+    Job,
+    JobState,
+    QueueRegistry,
+    RecoveryRequestError,
+)
 from .models import (
     ARTIFACT_ALLOWLIST,
     CALLS_FILE,
     DEFAULT_MAX_CALLS_PER_MINUTE,
     DEFAULT_MAX_INPUT_TOKENS_PER_MINUTE,
     DEFAULT_MAX_REQUESTS_PER_DAY,
+    ApplicationEntry,
+    ApplicationListResponse,
+    ApplicationUpdateRequest,
     CreateJobRequest,
     CreateJobResponse,
     FitRecoveryRequest,
@@ -34,7 +43,6 @@ from .models import (
     JobDetail,
     JobEntry,
     JobOptions,
-    JobSource,
     MetaResponse,
     ProblemDetails,
     QueueSnapshot,
@@ -78,6 +86,7 @@ _EVENT_KINDS = {
     "job_action_required",
     "job_recovery_queued",
     "job_recovery_started",
+    "job_application_updated",
     "tracker_changed",
 }
 
@@ -223,10 +232,6 @@ def create_app(
         )
 
     def job_or_404(job_id: str) -> Job:
-        try:
-            uuid.UUID(job_id)
-        except ValueError:
-            raise HTTPException(404, f"Unknown job: {job_id}")
         job = registry.get(job_id)
         if job is None:
             raise HTTPException(404, f"Unknown job: {job_id}")
@@ -257,6 +262,20 @@ def create_app(
         )
 
     # -- jobs ------------------------------------------------------------------
+
+    @app.get("/api/applications", response_model=ApplicationListResponse)
+    async def list_applications() -> ApplicationListResponse:
+        return registry.applications()
+
+    @app.put("/api/jobs/{job_id}/application", response_model=ApplicationEntry)
+    async def update_application(
+        body: ApplicationUpdateRequest,
+        job: Job = Depends(job_or_404),
+    ) -> ApplicationEntry:
+        try:
+            return registry.update_application(job, body)
+        except ApplicationUpdateError as exc:
+            raise HTTPException(exc.status, exc.detail) from exc
 
     @app.post("/api/jobs", status_code=202)
     async def create_job(
@@ -396,6 +415,22 @@ def create_app(
             content_disposition_type=(
                 "inline" if artifact == "resume.pdf" and download == 0 else "attachment"
             ),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/applications.csv", response_class=FileResponse)
+    async def download_csv() -> FileResponse:
+        """Download the current applications CSV file.
+
+        The CSV is regenerated on every tracking change and at startup.
+        """
+        csv_path = registry.applications_csv_path
+        if not csv_path.is_file():
+            raise HTTPException(404, "CSV file not found")
+        return FileResponse(
+            csv_path,
+            media_type="text/csv; charset=utf-8",
+            filename="applications.csv",
             headers={"Cache-Control": "no-store"},
         )
 

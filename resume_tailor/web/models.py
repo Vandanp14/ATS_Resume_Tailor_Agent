@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -57,6 +58,121 @@ class JobState(StrEnum):
 class JobSource(StrEnum):
     WEB = "web"
     CLI = "cli"
+
+
+class ApplicationStatus(StrEnum):
+    NOT_APPLIED = "not_applied"
+    APPLIED = "applied"
+
+
+def _application_date(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("Applied date must use YYYY-MM-DD.") from exc
+    return value
+
+
+def _application_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+    try:
+        parsed = urlsplit(trimmed)
+    except ValueError as exc:
+        raise ValueError("Enter a complete HTTP or HTTPS job URL.") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Enter a complete HTTP or HTTPS job URL.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Job URLs cannot contain credentials.")
+    return trimmed
+
+
+def _application_notes(value: str) -> str:
+    return value.strip()
+
+
+def _application_status(value: object) -> object:
+    if isinstance(value, ApplicationStatus):
+        return value
+    if type(value) is str:
+        return ApplicationStatus(value)
+    return value
+
+
+class ApplicationRecord(BaseModel):
+    """Server-owned application tracking state persisted in ``web_job.json``."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    status: ApplicationStatus = ApplicationStatus.NOT_APPLIED
+    applied_on: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    job_url: str | None = Field(default=None, max_length=2048)
+    notes: str = Field(default="", max_length=4000)
+    updated_at: str | None = None
+    revision: int = Field(default=0, ge=0)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _validate_status(cls, value: object) -> object:
+        return _application_status(value)
+
+    @field_validator("job_url")
+    @classmethod
+    def _validate_url(cls, value: str | None) -> str | None:
+        return _application_url(value)
+
+    @field_validator("applied_on")
+    @classmethod
+    def _validate_applied_on(cls, value: str | None) -> str | None:
+        return _application_date(value)
+
+    @field_validator("notes")
+    @classmethod
+    def _validate_notes(cls, value: str) -> str:
+        return _application_notes(value)
+
+    @model_validator(mode="after")
+    def _clear_inapplicable_date(self) -> ApplicationRecord:
+        if self.status == ApplicationStatus.NOT_APPLIED and self.applied_on:
+            self.applied_on = None
+        return self
+
+
+class ApplicationUpdateRequest(BaseModel):
+    """Complete user-editable payload for one application tracking update."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    status: ApplicationStatus
+    applied_on: str | None = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    job_url: str | None = Field(max_length=2048)
+    notes: str = Field(max_length=4000)
+    revision: int = Field(ge=0)
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _validate_status(cls, value: object) -> object:
+        return _application_status(value)
+
+    @field_validator("job_url")
+    @classmethod
+    def _validate_url(cls, value: str | None) -> str | None:
+        return _application_url(value)
+
+    @field_validator("applied_on")
+    @classmethod
+    def _validate_applied_on(cls, value: str | None) -> str | None:
+        return _application_date(value)
+
+    @field_validator("notes")
+    @classmethod
+    def _validate_notes(cls, value: str) -> str:
+        return _application_notes(value)
 
 
 class CreateJobRequest(BaseModel):
@@ -116,6 +232,8 @@ class PersistedJob(BaseModel):
     request_fingerprint: str | None = None
     pdf_library_name: str | None = None
     export_warning: str | None = None
+    application: ApplicationRecord = Field(default_factory=ApplicationRecord)
+    application_tracking_available: bool = False
 
 
 class QueuePayload(BaseModel):
@@ -352,6 +470,35 @@ class JobEntry(BaseModel):
     pdf_library_name: str | None = None
     export_warning: str | None = None
     active: bool = False
+    application: ApplicationRecord = Field(default_factory=ApplicationRecord)
+    application_tracking_available: bool = True
+
+
+class ApplicationEntry(BaseModel):
+    """One web-created job projected into the applications dashboard."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    company: str
+    role: str
+    source: str = JobSource.WEB.value
+    state: str
+    created_at: str
+    finished_at: str | None = None
+    resume_available: bool = False
+    application: ApplicationRecord
+
+
+class ApplicationSummary(BaseModel):
+    total: int = Field(ge=0)
+    applied: int = Field(ge=0)
+    not_applied: int = Field(ge=0)
+
+
+class ApplicationListResponse(BaseModel):
+    summary: ApplicationSummary
+    items: list[ApplicationEntry] = Field(default_factory=list)
 
 
 class JobDetail(BaseModel):

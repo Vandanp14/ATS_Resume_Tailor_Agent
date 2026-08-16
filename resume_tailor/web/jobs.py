@@ -8,6 +8,8 @@ long-lived worker loop woken by a condition.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 import shutil
@@ -32,6 +34,12 @@ from .models import (
     PDF_EXPORT_WARNING,
     QUEUE_DIR_NAME,
     QUEUE_STATE_FILE,
+    ApplicationEntry,
+    ApplicationListResponse,
+    ApplicationRecord,
+    ApplicationStatus,
+    ApplicationSummary,
+    ApplicationUpdateRequest,
     CreateJobRequest,
     FitRecoveryRequest,
     FitRecoveryResponse,
@@ -70,10 +78,20 @@ class Job:
     journal: EventJournal
     reporter: WebProgressReporter
     payload: QueuePayload | RecoveryQueuePayload | None = None
+    application_trackable: bool = True
 
 
 class RecoveryRequestError(ValueError):
     """A safe, expected fit-recovery request conflict."""
+
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+
+
+class ApplicationUpdateError(ValueError):
+    """A safe application-tracking request failure."""
 
     def __init__(self, status: int, detail: str) -> None:
         super().__init__(detail)
@@ -184,6 +202,8 @@ class QueueRegistry:
         self.pdf_dir.mkdir(parents=True, exist_ok=True)
         self._paused = self._read_paused(self.state_dir / QUEUE_STATE_FILE)
         self._hydrate()
+        with self._mutex:
+            self._regenerate_csv_locked()
         self._start_worker()
         if scheduler is not None:
             scheduler.set_paused(self._paused)
@@ -224,6 +244,82 @@ class QueueRegistry:
     def _queue_payload_path(self, job_id: str) -> Path:
         return self.queue_dir / f"{job_id}.json"
 
+    @property
+    def applications_csv_path(self) -> Path:
+        return self.state_dir / "applications.csv"
+
+    @staticmethod
+    def _csv_cell(value: object, *, user_controlled: bool = False) -> str:
+        text = "" if value is None else str(value)
+        if user_controlled and text.lstrip().startswith(("=", "+", "-", "@")):
+            return f"'{text}"
+        return text
+
+    def _application_entry_locked(self, job: Job) -> ApplicationEntry:
+        persisted = job.persisted
+        return ApplicationEntry(
+            job_id=persisted.job_id,
+            company=persisted.company,
+            role=persisted.role,
+            source=persisted.source.value,
+            state=persisted.state.value,
+            created_at=persisted.created_at,
+            finished_at=persisted.finished_at,
+            resume_available=(job.directory / "resume.pdf").is_file(),
+            application=persisted.application,
+        )
+
+    def _application_entries_locked(self) -> list[ApplicationEntry]:
+        entries = [
+            self._application_entry_locked(job)
+            for job in self._jobs.values()
+            if job.persisted.source == JobSource.WEB and job.application_trackable
+        ]
+        return sorted(
+            entries,
+            key=lambda entry: (entry.created_at, entry.job_id),
+            reverse=True,
+        )
+
+    def _regenerate_csv_locked(self) -> None:
+        output = io.StringIO(newline="")
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerow(
+            (
+                "job_id",
+                "company",
+                "role",
+                "application_status",
+                "applied_on",
+                "job_url",
+                "notes",
+                "tracking_updated_at",
+                "tailoring_state",
+                "created_at",
+                "finished_at",
+                "resume_available",
+            )
+        )
+        for entry in self._application_entries_locked():
+            application = entry.application
+            writer.writerow(
+                (
+                    entry.job_id,
+                    self._csv_cell(entry.company, user_controlled=True),
+                    self._csv_cell(entry.role, user_controlled=True),
+                    application.status.value,
+                    application.applied_on or "",
+                    self._csv_cell(application.job_url, user_controlled=True),
+                    self._csv_cell(application.notes, user_controlled=True),
+                    application.updated_at or "",
+                    entry.state,
+                    entry.created_at,
+                    entry.finished_at or "",
+                    "true" if entry.resume_available else "false",
+                )
+            )
+        atomic_write_text(self.applications_csv_path, output.getvalue(), mode=0o600)
+
     def _persist_payload(self, job: Job) -> None:
         assert job.payload is not None
         atomic_write_text(
@@ -233,9 +329,13 @@ class QueueRegistry:
         )
 
     def _persist_job(self, job: Job) -> None:
+        self._persist_job_model(job.directory, job.persisted)
+
+    @staticmethod
+    def _persist_job_model(directory: Path, persisted: PersistedJob) -> None:
         atomic_write_text(
-            job.directory / JOB_FILE,
-            job.persisted.model_dump_json(indent=2, exclude_none=True),
+            directory / JOB_FILE,
+            persisted.model_dump_json(indent=2, exclude_none=True),
         )
 
     def _recovery_idempotency_path(self, job: Job) -> Path:
@@ -275,8 +375,15 @@ class QueueRegistry:
             if not job_file.is_file():
                 continue
             try:
-                persisted = PersistedJob.model_validate_json(
-                    job_file.read_text(encoding="utf-8")
+                raw = json.loads(job_file.read_text(encoding="utf-8"))
+                application_trackable = raw.get(
+                    "application_tracking_available", "application" in raw
+                )
+                if type(application_trackable) is not bool:
+                    application_trackable = False
+                persisted = PersistedJob.model_validate(raw)
+                persisted = persisted.model_copy(
+                    update={"application_tracking_available": application_trackable}
                 )
             except Exception:
                 continue
@@ -302,7 +409,11 @@ class QueueRegistry:
                         }
                     )
                     known.add(directory.name)
-                    job = self._add(directory, persisted)
+                    job = self._add(
+                        directory,
+                        persisted,
+                        application_trackable=application_trackable,
+                    )
                     job.payload = recovery_payload
                     self._persist_job(job)
                     self._waiting.append(job)
@@ -320,7 +431,11 @@ class QueueRegistry:
                 except (FileNotFoundError, OSError):
                     pass
             known.add(directory.name)
-            self._add(directory, persisted)
+            self._add(
+                directory,
+                persisted,
+                application_trackable=application_trackable,
+            )
 
         revived: list[tuple[PersistedJob, QueuePayload]] = []
         for path in sorted(self.queue_dir.glob("*.json"), key=lambda p: p.name):
@@ -360,7 +475,11 @@ class QueueRegistry:
             )
         revived.sort(key=lambda pair: (pair[1].created_at, pair[0].job_id))
         for persisted, payload in revived:
-            job = self._add(self.output_dir / persisted.job_id, persisted)
+            job = self._add(
+                self.output_dir / persisted.job_id,
+                persisted,
+                application_trackable=False,
+            )
             job.payload = payload
             self._ensure_job_file(job)
             self._waiting.append(job)
@@ -380,13 +499,20 @@ class QueueRegistry:
                         role="CLI run",
                         created_at=utc_now_iso(),
                     ),
+                    application_trackable=False,
                 )
 
     def _ensure_job_file(self, job: Job) -> None:
         if not (job.directory / JOB_FILE).is_file():
             self._persist_job(job)
 
-    def _add(self, directory: Path, persisted: PersistedJob) -> Job:
+    def _add(
+        self,
+        directory: Path,
+        persisted: PersistedJob,
+        *,
+        application_trackable: bool = True,
+    ) -> Job:
         journal = EventJournal(directory / EVENT_FILE)
         job = Job(
             persisted=persisted,
@@ -395,6 +521,7 @@ class QueueRegistry:
             reporter=WebProgressReporter(
                 journal, self.hub, persisted.job_id, on_stage=self._note_stage
             ),
+            application_trackable=application_trackable,
         )
         self._jobs[persisted.job_id] = job
         return job
@@ -476,6 +603,95 @@ class QueueRegistry:
                 "Fit-recovery options are unavailable; reload the job before retrying.",
             ) from exc
 
+    def applications(self) -> ApplicationListResponse:
+        """Return application tracking rows for web-created jobs only."""
+        with self._mutex:
+            items = self._application_entries_locked()
+        applied = sum(
+            item.application.status == ApplicationStatus.APPLIED for item in items
+        )
+        return ApplicationListResponse(
+            summary=ApplicationSummary(
+                total=len(items),
+                applied=applied,
+                not_applied=len(items) - applied,
+            ),
+            items=items,
+        )
+
+    def update_application(
+        self, job: Job, request: ApplicationUpdateRequest
+    ) -> ApplicationEntry:
+        """Persist a complete tracking edit, refresh the export, and publish it."""
+        with self._mutex:
+            current_job = self._jobs.get(job.persisted.job_id)
+            if (
+                current_job is None
+                or current_job.persisted.source != JobSource.WEB
+                or not current_job.application_trackable
+            ):
+                raise ApplicationUpdateError(
+                    409,
+                    "Application tracking is available for jobs created after tracking was enabled.",
+                )
+
+            current = current_job.persisted.application
+            applied_on = request.applied_on
+            if request.status == ApplicationStatus.NOT_APPLIED:
+                applied_on = None
+            elif applied_on is None:
+                applied_on = datetime.now().astimezone().date().isoformat()
+
+            desired = (
+                request.status,
+                applied_on,
+                request.job_url,
+                request.notes,
+            )
+            existing = (
+                current.status,
+                current.applied_on,
+                current.job_url,
+                current.notes,
+            )
+            if desired == existing and request.revision in {
+                current.revision,
+                max(0, current.revision - 1),
+            }:
+                self._regenerate_csv_locked()
+                return self._application_entry_locked(current_job)
+            if request.revision != current.revision:
+                raise ApplicationUpdateError(
+                    409,
+                    "This application record changed. Reload the latest values before saving.",
+                )
+
+            application = ApplicationRecord(
+                status=request.status,
+                applied_on=applied_on,
+                job_url=request.job_url,
+                notes=request.notes,
+                updated_at=utc_now_iso(),
+                revision=current.revision + 1,
+            )
+            persisted = current_job.persisted.model_copy(
+                update={"application": application}
+            )
+            self._persist_job_model(current_job.directory, persisted)
+            current_job.persisted = persisted
+            self._regenerate_csv_locked()
+            entry = self._application_entry_locked(current_job)
+
+        self.hub.publish(
+            StreamEvent(
+                id=self.hub.next_id(),
+                kind="job_application_updated",
+                job_id=entry.job_id,
+                data=entry.model_dump(mode="json"),
+            )
+        )
+        return entry
+
     # -- queue mutations -------------------------------------------------------
 
     def enqueue(self, request: CreateJobRequest, idempotency_key: str) -> Job:
@@ -503,6 +719,7 @@ class QueueRegistry:
             options=options,
             idempotency_key=idempotency_key,
             request_fingerprint=payload.request_fingerprint,
+            application_tracking_available=True,
         )
         directory = self.output_dir / persisted.job_id
         journal = EventJournal(directory / EVENT_FILE)
@@ -520,6 +737,7 @@ class QueueRegistry:
             self._persist_job(job)
             self._jobs[persisted.job_id] = job
             self._waiting.append(job)
+            self._regenerate_csv_locked()
             self._cond.notify_all()
         self._publish_queue_changed()
         return job
@@ -637,12 +855,15 @@ class QueueRegistry:
         with self._cond:
             if job not in self._waiting:
                 return False
-            self._waiting.remove(job)
-            self._jobs.pop(job.persisted.job_id, None)
             try:
                 self._queue_payload_path(job.persisted.job_id).unlink()
-            except (FileNotFoundError, OSError):
+            except FileNotFoundError:
+                pass
+            except OSError:
                 return False
+            self._waiting.remove(job)
+            self._jobs.pop(job.persisted.job_id, None)
+            self._regenerate_csv_locked()
             self._cond.notify_all()
         self._publish_queue_changed()
         return True
@@ -690,6 +911,8 @@ class QueueRegistry:
             pdf_library_name=persisted.pdf_library_name,
             export_warning=persisted.export_warning,
             active=self._active == persisted.job_id,
+            application=persisted.application,
+            application_tracking_available=job.application_trackable,
         )
 
     # -- worker loop -----------------------------------------------------------
@@ -836,6 +1059,7 @@ class QueueRegistry:
             }
         )
         self._persist_job(job)
+        self._refresh_applications_csv()
         return True
 
     def _complete_recovery_idempotency(self, job: Job, key: str) -> None:
@@ -902,6 +1126,15 @@ class QueueRegistry:
             }
         )
         self._persist_job(job)
+        self._refresh_applications_csv()
+
+    def _refresh_applications_csv(self) -> None:
+        """Refresh the derived export without changing a job's outcome."""
+        try:
+            with self._mutex:
+                self._regenerate_csv_locked()
+        except OSError as exc:
+            LOGGER.warning("Could not refresh applications.csv: %s", _say(exc))
 
     # -- stream ----------------------------------------------------------------
 

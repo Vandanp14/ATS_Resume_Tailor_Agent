@@ -4,9 +4,7 @@
 
 **Status:** Implementation-ready handoff
 
-**Related design:** `docs/superpowers/specs/2026-08-09-web-ui-design.md`
-
-This is the authoritative v1 specification. Where it conflicts with the related design, earlier drafts, or the current one-shot web implementation, this document wins. The implementer must not combine conflicting behavior from those sources.
+This is the authoritative v1 specification. Where it conflicts with earlier drafts or the current one-shot web implementation, this document wins. The implementer must not combine conflicting behavior from those sources.
 
 ## Goal
 
