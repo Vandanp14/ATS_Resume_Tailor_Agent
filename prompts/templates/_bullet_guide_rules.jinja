@@ -56,6 +56,24 @@ Do not:
   "drove strategic impact."
 * Add a result clause merely to make the bullet sound complete.
 * Overload one bullet with unrelated contributions.
+* Use a multi-word technical noun phrase that is not a standard, googleable
+  industry term. "SQL dual-identifier engine", "agentic AI integration across
+  internal manufacturing systems", and "dynamic specification generation layer"
+  name a category instead of describing what was built. Name the literal
+  artifact — the endpoint, the table, the script, the query, the job, the
+  service — before or instead of the abstract label.
+* Use absolute or self-congratulatory qualifiers: "zero", "no tuning required",
+  "no issues", "always", "never fails", "flawless", "seamless", "effortless",
+  "perfect", "100% uptime", "fully automated end-to-end".
+* State a number with no baseline or denominator. Every metric must carry or
+  imply what it is measured against — "X of Y", "from A to B", "against a Z
+  threshold", "within the team's N ms budget".
+* Put more than one quantified claim in a single bullet. When a count does not
+  by itself demonstrate difficulty, coverage, or reliability — route counts,
+  table counts, file counts, line counts, test counts — drop it and state what
+  the system does instead.
+* Report a metric to more precision than the source supports. Prefer a round
+  number the candidate can defend arithmetically, out loud, in an interview.
 
 ### Ownership Calibration
 
@@ -71,25 +89,32 @@ Use language that matches the evidence:
 
 Never select a stronger ownership verb than the source material supports.
 
-### Bullet Templates
+### Bullet Structures
 
-Use these only as structural guides. Do not repeat the same template across all
-bullets.
+Bullets in one role must not share a rhythm. These are five DIFFERENT shapes,
+not five ways to say the same thing. Rotate them.
 
-* **[Verb] [specific deliverable] using [method or technology], enabling
-  [verified outcome or purpose].**
-* **[Verb] [system, feature, or workflow] across [scope], improving [specific
-  supported condition].**
-* **[Verb] [technical problem] by [method], resolving [failure, limitation, or
-  user need].**
-* **[Verb] [data or subject] using [method], producing [finding, report, model,
-  or decision support].**
-* **[Verb] [defined component] within [larger system], contributing to
-  [supported team or product outcome].**
-* **[Verb] [manual workflow] through [automation method], reducing [verified
-  step, effort, or delay].**
-* **[Verb] [test or validation process] for [system or feature], identifying or
-  preventing [specific issue].**
+* **A — verb-first.** [Verb] [specific deliverable] using [method], enabling
+  [verified outcome].
+* **B — constraint-first.** [Constraint, limit, or requirement], so [verb]
+  [what the candidate did about it].
+* **C — problem-first.** [Verb] [the failure, bottleneck, or gap] by [method],
+  [what stopped happening as a result].
+* **D — contrast.** [What the system did before]; [verb] [the change], and
+  [what it does now].
+* **E — decision.** [Verb] [choice made] over [the alternative] because
+  [reason], [what that bought].
+
+Hard rules on structure:
+
+* Never use the same structure in two consecutive bullets within one role.
+* Never use one structure more than twice across the entire resume.
+* Do not end more than one bullet per role with a trailing participial result
+  clause (", enabling …", ", establishing …", ", reducing …", ", allowing …").
+  Three of those in a row is the single most recognizable sign of
+  machine-written prose.
+* Vary bullet length. If every bullet in a role is within a few words of the
+  same length, rewrite the longest and the shortest.
 
 ### Final Bullet Test
 
@@ -105,3 +130,41 @@ Keep a bullet only when:
 * Every phrase can be defended in an interview.
 * The bullet would remain meaningful after removing company names and branded
   technologies.
+* A reader outside the candidate's team can picture the literal thing that was
+  built or changed.
+* Every number on the page is one the candidate could defend the arithmetic for,
+  live, in an interview.
+* The bullet does not read as though it were produced by the same generator as
+  the bullet above it.
+
+### Calibration examples
+
+Match the prose in the "after" column. These are the target voice.
+
+**Naming a category instead of the thing, plus an inflated verb**
+* Before: *"Architected and deployed 5 read-only REST API endpoints with dynamic
+  OpenAPI 3.0 specification generation, establishing a proof-of-concept for
+  agentic AI integration across internal manufacturing systems."*
+* After: *"Built 5 read-only REST endpoints with auto-generated OpenAPI specs —
+  the first internal API designed for an AI agent to call directly instead of a
+  person using a UI."*
+* Why: 5 endpoints is tier-1 work, so "built". "Agentic AI integration across
+  internal manufacturing systems" names a category; "an AI agent calls it
+  instead of a person" describes the actual thing.
+
+**Unfalsifiable metric with no baseline**
+* Before: *"Validated API performance at scale on staging, serving 82,000+
+  records with a 37 ms worst-case query time and zero tuning required."*
+* After: *"Load-tested the endpoint against the full 82,000-record staging
+  dataset; worst-case query time held at 37 ms, within the team's 50 ms SLA."*
+* Why: the SLA gives the number something to mean. "Zero tuning required" is a
+  self-congratulatory absolute and carries no information.
+
+**Count stacking**
+* Before: *"Built a full-stack PWA using React, TypeScript, and FastAPI,
+  exposing 44 API routes across 20 relational tables to enable automated
+  tracking of health metrics and personalized coaching insights."*
+* After: *"Built a full-stack PWA (React, TypeScript, FastAPI) that automates
+  health-metric tracking and generates personalized coaching insights from it."*
+* Why: route and table counts demonstrate nothing on their own. What the system
+  does is the signal.

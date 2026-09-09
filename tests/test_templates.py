@@ -127,8 +127,15 @@ def test_bullet_guide_rules_preserve_core_content():
         "Owned",
     ):
         assert f"**{level}**" in rules
-    assert "### Bullet Templates" in rules
+    assert "### Bullet Structures" in rules
     assert "### Final Bullet Test" in rules
+    assert "### Calibration examples" in rules
+    # Voice guardrails: the structures block must forbid the machine-written
+    # tells the QA report found (uniform shape, trailing result clauses).
+    assert "Never use the same structure in two consecutive bullets" in rules
+    for banned in ("no tuning required", "flawless", "seamless"):
+        assert banned in rules
+    assert "baseline or denominator" in rules
     assert "every bullet as a concise, evidence-backed accomplishment" in rules
 
 
