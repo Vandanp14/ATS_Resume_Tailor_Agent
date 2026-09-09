@@ -45,8 +45,9 @@ Return ONLY:
         "inference_id": "impact-1",
         "destination_work_id": "work[0]",
         "source_fact_ids": ["projects[2].highlights[0]"],
-        "inference_basis": "why this exact point estimate is professionally plausible",
-        "final_claim": "reduced processing time by 35%"
+        "inference_basis": "why this point estimate is professionally plausible",
+        "baseline": "what the number is measured against",
+        "final_claim": "cut the nightly export from 40 minutes to 12"
       }
     }
   ]
@@ -58,11 +59,31 @@ Rules:
   assigned to ANY selected work destination. This cross-entry attribution is
   intentional. The destination employer, title, dates, and URL are never changed.
 - Each assignment represents one future bullet and must have at least one fact.
-- Prefer verified metrics already present in source facts.
+- Verified metrics come first. When a destination's allocated facts already
+  contain a real number, at least one of that destination's assignments must
+  carry it. Never create an inferred metric for a destination while a verified
+  metric available to that same destination goes unused — the strongest
+  defensible numbers in the source material are the ones that must reach the
+  page.
 - When useful evidence has no verified metric, you MAY create one plausible,
-  conservative point estimate. It must contain an exact-looking number, not a
-  range and not words such as approximately/about/roughly. Record its basis and
-  final claim in inferred_impact. Otherwise set inferred_impact to null.
+  conservative point estimate. Rules for it:
+  - It must be a point estimate, not a range, and must not use words such as
+    approximately/about/roughly.
+  - It must state or imply its baseline inside `final_claim` itself, not only
+    in the `baseline` field: "X of Y", "from A to B", "against a Z threshold",
+    "within the team's N ms budget", "N out of M". A bare percentage or a bare
+    count with no denominator is rejected — it is unfalsifiable, and reads as
+    fabricated even when it is true.
+  - It must be a round number the candidate could defend the arithmetic for out
+    loud. No decimal precision: "36.5%" is rejected, "roughly a third" is
+    rejected, "35% against the manual baseline" is accepted.
+  - It must not use absolute or self-congratulatory qualifiers: "zero", "no
+    tuning required", "no issues", "always", "never fails", "flawless",
+    "seamless", "effortless", "100% uptime".
+  - Record the basis, the baseline, and the final claim in inferred_impact.
+    Otherwise set inferred_impact to null.
+- Prefer null. One well-grounded number on the page beats four invented ones —
+  a resume where every bullet ends in a statistic reads as machine output.
 - For inferred_impact, repeat the assignment's destination_work_id and the exact
   same source_fact_ids so traceability is complete.
 - Do not infer employers, titles, dates, schools, degrees, URLs, technologies

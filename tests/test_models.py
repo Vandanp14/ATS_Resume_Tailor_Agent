@@ -62,13 +62,15 @@ def test_evidence_plan_schema_carries_traceable_inference():
                         "destination_work_id": "work[0]",
                         "source_fact_ids": ["projects[0].highlights[0]"],
                         "inference_basis": "Manual workflow was repetitive.",
-                        "final_claim": "reduced processing time by 35%",
+                        "baseline": "the manual workflow runtime",
+                        "final_claim": "reduced processing time by 35% against the manual baseline",
                     },
                 }
             ]
         }
     )
-    assert plan.assignments[0].inferred_impact.final_claim.endswith("35%")
+    assert plan.assignments[0].inferred_impact.baseline
+    assert plan.assignments[0].inferred_impact.final_claim.endswith("baseline")
 
 
 def test_project_generation_schema_excludes_protected_fields():

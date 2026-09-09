@@ -152,7 +152,8 @@ def evidence_plan(selected: SelectedEvidence | None = None) -> EvidencePlan:
                     destination_work_id=destination,
                     source_fact_ids=[source_id],
                     inference_basis="A repetitive three-hour workflow supports a conservative automation gain.",
-                    final_claim="reduced processing time by 35%",
+                    baseline="the manual three-hour workflow runtime",
+                    final_claim="reduced processing time by 35% against the manual baseline",
                 )
             assignments.append(
                 EvidenceAssignment(
@@ -552,3 +553,64 @@ def test_batch_parser_preserves_zero_argument_command_defaults():
 def test_batch_parser_accepts_transferable_skill_opt_in():
     args = tailor._build_batch_parser().parse_args(["--bridge-skills"])
     assert args.bridge_skills is True
+
+
+def _inference(**overrides) -> ImpactInference:
+    fields = {
+        "inference_id": "impact-1",
+        "destination_work_id": "work[0]",
+        "source_fact_ids": ["projects[0].highlights[0]"],
+        "inference_basis": "A repetitive three-hour workflow supports a conservative gain.",
+        "baseline": "the manual three-hour workflow runtime",
+        "final_claim": "reduced processing time by 35% against the manual baseline",
+    }
+    fields.update(overrides)
+    return ImpactInference(**fields)
+
+
+def _plan_with(inference: ImpactInference, selected: SelectedEvidence) -> EvidencePlan:
+    plan = evidence_plan(selected)
+    plan.assignments[0].inferred_impact = inference
+    return plan
+
+
+@pytest.mark.parametrize(
+    ("claim", "match"),
+    [
+        # A bare percentage is unfalsifiable: nothing says what it is measured
+        # against, which is what made the reviewed output read as fabricated.
+        ("reduced processing time by 35%", "baseline"),
+        # False precision on a number that is, by construction, an estimate.
+        (
+            "reduced processing time by 36.5% against the manual baseline",
+            "false precision",
+        ),
+        # Self-congratulatory absolutes carry no information.
+        (
+            "held query time at 37 ms against the SLA with zero tuning required",
+            "qualifiers",
+        ),
+    ],
+)
+def test_inferred_metric_contract_rejects_undefendable_numbers(claim, match):
+    resume = master()
+    selected = selected_evidence(resume)
+    plan = _plan_with(_inference(final_claim=claim), selected)
+    with pytest.raises(ContractError, match=match):
+        validate_evidence_plan(plan, selected.work, master_fact_index(resume))
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "reduced processing time by 35% against the manual baseline",
+        "cut the nightly export from 40 minutes to 12",
+        "held worst-case query time at 37 ms, within the 50 ms budget",
+        "resolved 18 of the 22 open reconciliation defects",
+    ],
+)
+def test_inferred_metric_contract_accepts_baselined_round_numbers(claim):
+    resume = master()
+    selected = selected_evidence(resume)
+    plan = _plan_with(_inference(final_claim=claim), selected)
+    validate_evidence_plan(plan, selected.work, master_fact_index(resume))

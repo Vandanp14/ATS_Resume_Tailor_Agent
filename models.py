@@ -241,6 +241,7 @@ class ImpactInference(StrictModel):
     destination_work_id: str = Field(min_length=1)
     source_fact_ids: list[str] = Field(min_length=1)
     inference_basis: str = Field(min_length=1)
+    baseline: str = Field(min_length=1)
     final_claim: str = Field(min_length=1)
 
 

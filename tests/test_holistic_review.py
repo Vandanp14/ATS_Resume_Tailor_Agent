@@ -169,9 +169,9 @@ def test_evidence_planner_replaces_summary_and_reviewer_runs_exactly_once(
     assert [len(item["highlights"]) for item in tailored["projects"]] == [2, 2]
     assert report["cross_entry_attributions"][0]["destination_work_id"] == "work[0]"
     assert (
-        report["inferred_metrics"][0]["final_claim"] == "reduced processing time by 35%"
+        report["inferred_metrics"][0]["final_claim"] == "reduced processing time by 35% against the manual baseline"
     )
-    assert "reduced processing time by 35%" in tailored["work"][0]["highlights"][0]
+    assert "reduced processing time by 35% against the manual baseline" in tailored["work"][0]["highlights"][0]
     assert report["transferable_skill_injections"] == []
 
 
@@ -330,7 +330,7 @@ def test_reviewer_skills_edit_accepts_jd_grounded_keywords_and_dedupes():
 def test_unresolved_truth_violation_blocks_render_and_done(monkeypatch, tmp_path):
     unsupported_claim = (
         "Automated a repetitive operations workflow with Python, "
-        "reduced processing time by 35%."
+        "reduced processing time by 35% against the manual baseline."
     )
     review = HolisticReview.model_validate(
         {
@@ -365,7 +365,7 @@ def test_reviewer_correction_moves_stale_violation_to_resolved(monkeypatch, tmp_
     )
     old_claim = replacement.work[0].bullets[0].text
     replacement.work[0].bullets[0].text = (
-        "Built a validated Python automation, cutting processing time by 35%."
+        "Built a validated Python automation, cutting processing time by 35% against the manual baseline."
     )
     review = HolisticReview(
         coverage_pct=90,

@@ -41,6 +41,23 @@ MAX_SKILL_GROUPS = 5
 RESEARCH_THIN_JD_SIGNAL_THRESHOLD = 12
 
 _NUMBER_RE = re.compile(r"(?<![A-Za-z])(?:\$?\d[\d,]*(?:\.\d+)?%?|\d+x)\b", re.I)
+_BASELINE_RE = re.compile(
+    r"\b(?:of|out of|from|to|against|within|under|over|per|versus|vs\.?|"
+    r"baseline|budget|threshold|target|sla|quota|cap|limit)\b",
+    re.I,
+)
+_DECIMAL_METRIC_RE = re.compile(r"(?<![A-Za-z])\d[\d,]*\.\d")
+ABSOLUTE_QUALIFIERS = (
+    "zero ",
+    "no tuning required",
+    "no issues",
+    "never fails",
+    "flawless",
+    "seamless",
+    "effortless",
+    "100% uptime",
+    "fully automated end-to-end",
+)
 _HEDGED_METRIC_RE = re.compile(
     r"\b(?:about|approx(?:imately)?|around|estimated?|nearly|roughly)\b|"
     r"\d\s*(?:-|–|—|to)\s*\d",
@@ -323,6 +340,23 @@ def _validate_inference(assignment: EvidenceAssignment) -> None:
         raise ContractError(
             f"{assignment.assignment_id} inferred impact must be a point estimate "
             "without hedging or ranges"
+        )
+    if not _BASELINE_RE.search(inference.final_claim):
+        raise ContractError(
+            f"{assignment.assignment_id} inferred impact states a number with no "
+            "baseline. Carry the denominator into the claim itself: 'X of Y', "
+            "'from A to B', 'against a Z threshold'"
+        )
+    if _DECIMAL_METRIC_RE.search(inference.final_claim):
+        raise ContractError(
+            f"{assignment.assignment_id} inferred impact uses false precision. An "
+            "estimated metric must be a round number the candidate can defend"
+        )
+    lowered = inference.final_claim.casefold()
+    if found := [word for word in ABSOLUTE_QUALIFIERS if word in lowered]:
+        raise ContractError(
+            f"{assignment.assignment_id} inferred impact uses absolute or "
+            f"self-congratulatory qualifiers {found}"
         )
 
 
