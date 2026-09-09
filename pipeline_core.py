@@ -1242,12 +1242,38 @@ RESTRICTED_VERBS = (
 REPETITION_LIMIT = 3
 
 
+def _iter_sections(
+    final_resume: ScoredResume,
+) -> Iterable[tuple[str, Callable[[int], str], list[str]]]:
+    """Yield (section label, bullet-owner labeller, bullet texts) per entry."""
+
+    for index, item in enumerate(final_resume.work or []):
+        yield (
+            f"Work[{index}]",
+            lambda i, n=index: f"Work[{n}] bullet {i + 1}",
+            [bullet.text for bullet in item.highlights or []],
+        )
+    for index, item in enumerate(final_resume.projects or []):
+        yield (
+            f"Projects[{index}]",
+            lambda i, n=index: f"Projects[{n}] bullet {i + 1}",
+            [bullet.text for bullet in item.highlights or []],
+        )
+
+
+_RESULT_CLAUSE_RE = re.compile(r",\s+\w+ing\b[^,]*[.!?]?\s*$")
+_SHAPE_LIMIT = 3
+_RESULT_CLAUSE_LIMIT = 2
+
+
 def scan_bullet_style(final_resume: ScoredResume) -> list[str]:
     """Return warn-only bullet-style findings (never blocks the run).
 
     Mirrors the bullet guide's writing rules: banned weak openers, restricted
-    ownership/impact verbs, and three or more bullets opening with the same
-    verb. Findings are advisory; the holistic reviewer owns semantic judgment.
+    ownership/impact verbs anywhere in the sentence, repeated opening verbs, and
+    the uniform-shape tells the QA report found -- a section where most bullets
+    end in a trailing participial result clause reads as generated. Findings are
+    advisory; the holistic reviewer owns semantic judgment.
     """
 
     findings: list[str] = []
@@ -1255,45 +1281,78 @@ def scan_bullet_style(final_resume: ScoredResume) -> list[str]:
     def first_word(text: str) -> str:
         return text.split(maxsplit=1)[0].rstrip(",:;.?!()").casefold()
 
-    def scan_section(
-        bullets: Iterable[str], section: str, owner: Callable[[int], str]
-    ) -> None:
+    for section, owner, bullets in _iter_sections(final_resume):
         opener_counts: dict[str, int] = {}
+        result_clauses = 0
         for index, text in enumerate(bullets):
             lowered = text.casefold()
+            opened_badly = False
             for phrase in BANNED_OPENER_PHRASES:
                 if re.search(rf"^\s*{re.escape(phrase)}\b", lowered):
                     findings.append(
                         f"{owner(index)} opens with {phrase!r}: {text[:90]!r}"
                     )
+                    opened_badly = True
                     break
-            else:
+            if not opened_badly:
                 word = first_word(text)
-                if not word:
-                    continue
-                opener_counts[word] = opener_counts.get(word, 0) + 1
-                if word in RESTRICTED_VERBS:
+                if word:
+                    opener_counts[word] = opener_counts.get(word, 0) + 1
+            # A restricted verb is a scope claim wherever it sits. Checking only
+            # the opening token missed "architected and deployed 5 endpoints".
+            for verb in RESTRICTED_VERBS:
+                if re.search(rf"\b{verb}\b", lowered):
                     findings.append(
-                        f"{owner(index)} opens with restricted verb "
-                        f"{word!r} (needs supporting evidence): {text[:90]!r}"
+                        f"{owner(index)} uses restricted verb {verb!r} "
+                        f"(needs supporting evidence at that scope): {text[:90]!r}"
                     )
+            if _RESULT_CLAUSE_RE.search(text):
+                result_clauses += 1
         for word, count in opener_counts.items():
             if count >= REPETITION_LIMIT:
                 findings.append(
                     f"{section} opens {count} bullets with the same verb "
                     f"{word!r}; vary the openers"
                 )
+        if result_clauses >= _RESULT_CLAUSE_LIMIT:
+            findings.append(
+                f"{section} ends {result_clauses} bullets with a trailing "
+                "participial result clause (', enabling ...'); vary the structure"
+            )
+    return findings
 
-    for index, item in enumerate(final_resume.work or []):
-        scan_section(
-            (bullet.text for bullet in item.highlights or []),
-            f"Work[{index}]",
-            lambda i, n=index: f"Work[{n}] bullet {i + 1}",
-        )
-    for index, item in enumerate(final_resume.projects or []):
-        scan_section(
-            (bullet.text for bullet in item.highlights or []),
-            f"Projects[{index}]",
-            lambda i, n=index: f"Projects[{n}] bullet {i + 1}",
-        )
+
+def scan_metric_quality(final_resume: ScoredResume) -> list[str]:
+    """Return warn-only findings about numbers that a reader cannot check.
+
+    Covers the QA report's metric patterns: a figure with no baseline to measure
+    it against, decimal precision no one could defend, several counts stacked in
+    one sentence, and absolute qualifiers that carry no information.
+    """
+
+    findings: list[str] = []
+    for _, owner, bullets in _iter_sections(final_resume):
+        for index, text in enumerate(bullets):
+            lowered = text.casefold()
+            numbers = _NUMBER_RE.findall(text)
+            has_baseline = bool(_BASELINE_RE.search(text))
+            if numbers and not has_baseline:
+                findings.append(
+                    f"{owner(index)} states {numbers[0]!r} with no baseline or "
+                    f"denominator: {text[:90]!r}"
+                )
+            if _DECIMAL_METRIC_RE.search(text):
+                findings.append(
+                    f"{owner(index)} uses decimal precision a candidate cannot "
+                    f"defend in an interview: {text[:90]!r}"
+                )
+            if len(numbers) >= 3 or (len(numbers) == 2 and not has_baseline):
+                findings.append(
+                    f"{owner(index)} stacks {len(numbers)} quantified claims; "
+                    f"keep one: {text[:90]!r}"
+                )
+            if found := [word for word in ABSOLUTE_QUALIFIERS if word in lowered]:
+                findings.append(
+                    f"{owner(index)} uses absolute qualifiers {found}: {text[:90]!r}"
+                )
     return findings

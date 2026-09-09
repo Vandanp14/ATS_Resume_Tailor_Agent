@@ -8,6 +8,7 @@ from pipeline_core import (
     inferred_metrics,
     partition_review_truth_violations,
     scan_bullet_style,
+    scan_metric_quality,
     transferable_skill_injections,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "inferred_metrics",
     "partition_review_truth_violations",
     "scan_bullet_style",
+    "scan_metric_quality",
     "transferable_skill_injections",
 ]
