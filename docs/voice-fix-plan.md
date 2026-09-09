@@ -179,3 +179,33 @@ Re-run the pipeline against the same JD that produced `CTG_Vandan_Patel_Resume.p
 and diff against the report's eight patterns. The lint additions
 (`scan_bullet_style`, `scan_metric_quality`) give a countable pass/fail signal
 per pattern; findings #1, #2, #4, #5 all become machine-checkable.
+
+---
+
+## Status — all eight findings shipped
+
+| # | Finding | Landed in | Commit |
+|---|---------|-----------|--------|
+| 1 | Identical bullet template | `_bullet_guide_rules` (5 distinct structures + hard rules), `_bullet_rules` (verb-first softened), `_work_rules` (one metric-free decision bullet per role) | `ab59a64` |
+| 2 | False precision, no baseline | `ImpactInference.baseline` required; `_validate_inference` rejects unbaselined, decimal-precise, and absolute-qualifier claims; `plan_evidence` + `_truth_floor` rewritten | `945c88c` |
+| 3 | Jargon with no referent | `_bullet_guide_rules` prohibition + Final Bullet Test + three worked before/after calibration examples | `ab59a64` |
+| 4 | Verb intensity vs scope | `_action_verbs` Verb Restrictions rebuilt as a three-tier scope ladder | `ab59a64` |
+| 5 | Count stacking | `_bullet_rules`, `_project_rules`, `_bullet_guide_rules` one-claim cap | `ab59a64` |
+| 6 | Skills missing bullet-only technologies | `technologies_in_experience()` widens `validate_skills`' allowed set; `tailor_skills` gets the mined list; `_skills_rules` demotes process categories | `0888f36` |
+| 7 | Verified metric unused | `plan_evidence` hard-orders verified metrics ahead of inferred ones per destination | `945c88c` |
+| 8 | Overlapping dates | `render._concurrent_role_indices` appends "(concurrent)" to the shorter overlapping role | `532c651` |
+
+Machine-checkable coverage added in `64cd68a`: `scan_bullet_style` now catches
+restricted verbs anywhere in the sentence (not just the opening token, which is
+how the report's own "architected and deployed" example slipped through) and
+repeated trailing participial result clauses; `scan_metric_quality` covers
+findings #2 and #5. Both are warn-only and report through the existing tracker.
+
+Findings #1, #3, and the "every bullet ends in a statistic" half of #7 remain
+partly judgment calls — those are enforced by prompt and audited by the
+holistic reviewer, which gained matching checks.
+
+**Not yet verified against a real run.** The test suite (162 tests) covers the
+contracts and the linters; the next step is regenerating a resume from the same
+JD that produced `CTG_Vandan_Patel_Resume.pdf` and reading the output against
+the report's eight rows.
