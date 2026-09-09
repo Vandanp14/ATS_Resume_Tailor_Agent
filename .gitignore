@@ -22,3 +22,17 @@ jds/*.txt
 
 # NOTE: do NOT ignore test_*.py — hiring-agent's .gitignore did, which silently
 # excluded every test file from version control. Keep tests tracked.
+
+# macOS
+.DS_Store
+
+# Editor / agent local config
+.cursor/
+.claude/
+.agents/
+.resume-tailor/
+
+# Local scratch + generated
+output_new/
+graphify-out/
+*.bak
