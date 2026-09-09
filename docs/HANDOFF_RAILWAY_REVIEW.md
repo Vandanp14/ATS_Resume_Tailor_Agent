@@ -10,8 +10,12 @@ continue without reconstructing the work from chat history.
 - Delivered commit: `a7cf9ce feat: harden Railway deployment and resume review workspace`
 - Remote: `origin/main` contains the delivered commit.
 - Working tree: clean after the commit.
-- Railway project: none linked or created for this repository.
-- Live URL: none yet. A Railway URL exists only after a service is created and deployed.
+- Railway project: `ats-resume-tailor` (`c92dda1c-5a6c-4e6d-b60c-baaee1ef3ec6`)
+- Railway service: `ats-resume-tailor` (`f2f58754-45ca-43d4-8569-d5170c69defd`)
+- Production environment: `32494d4f-7782-4929-8b57-30abdc78f61e`
+- Persistent volume: `ats-resume-tailor-volume` (`1cee6d15-393d-4858-aba0-b3e4b65fefec`), mounted at `/data`
+- Live URL: https://ats-resume-tailor-production-1da4.up.railway.app
+- Deployment: `eaf2f516-11ab-4d32-bca9-51e93e3b91c9` (SUCCESS, one RUNNING instance)
 
 The implementation was started only after verifying that the prior baseline was clean and
 already pushed (`47dd19c`).
@@ -117,8 +121,10 @@ flowchart LR
 7. Sign in, queue a test job with `no_pdf=true` first if the image's PDF check is not yet
    available, then verify a real PDF job and downloadable artifacts.
 
-There is no deployment URL until steps 1–5 are performed. The Railway CLI was authenticated
-for the workspace but reported “No linked project found”; no project or service was mutated.
+The production deployment is live at the URL listed above. The deployed smoke checks returned
+`/healthz` → `{"ready":true}`, `/` → `303 /login`, and an authenticated `/api/meta` response
+reported `pdf_available: true` with the Gemini tracker ready. No Gemini tailoring request was
+submitted during deployment verification.
 
 ## Verification evidence
 
@@ -147,10 +153,9 @@ builder before choosing an ARM-only deployment target.
 
 ## Suggested continuation order
 
-1. Create/link the Railway project, mount `/data`, set the variables, and deploy.
-2. Run the hosted smoke test: login, logout, expired cookie, wrong origin, `/healthz`, one
+1. Run the hosted smoke test: login, logout, expired cookie, wrong origin, `/healthz`, one
    no-PDF job, one PDF job, one restart, one download.
-3. Add a retry-interrupted-job action and durable sessions if the app needs stronger restart
+2. Add a retry-interrupted-job action and durable sessions if the app needs stronger restart
    or multi-user guarantees.
-4. Add application tracking, master resume versioning, and DOCX export only after the hosted
+3. Add application tracking, master resume versioning, and DOCX export only after the hosted
    review workflow is being used regularly.
