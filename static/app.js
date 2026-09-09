@@ -24,7 +24,7 @@ const STAGE_NAMES = [
 const RESEARCH_STACK_INDEX = 2;
 const RESEARCH_SIGNALS_INDEX = 3;
 const BRIDGE_INDEX = 7;
-const TAB_NAMES = ["progress", "preview", "files"];
+const TAB_NAMES = ["progress", "preview", "review", "files"];
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -44,6 +44,10 @@ const state = {
   listFilter: "queue",
   activeTab: "progress",
   submitting: false,
+  submission: null,
+  review: null,
+  reviewJobId: null,
+  reviewLoadingId: null,
   recoveryCache: new Map(),
   recoveryLoads: new Map(),
   recovery: {
@@ -133,7 +137,11 @@ function stageStatus(stageName, job) {
 }
 
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const response = await fetch(url, { ...options, signal: options.signal || AbortSignal.timeout(15000) });
+  if (response.status === 401) {
+    location.assign("/login");
+    throw new Error("Your session ended. Sign in to continue.");
+  }
   const body = response.status === 204 ? null : await response.json().catch(() => null);
   if (!response.ok) {
     const detail = body && body.detail ? body.detail : `Request failed (${response.status}).`;
@@ -154,6 +162,7 @@ async function fetchMeta() {
 function renderMeta() {
   if (!state.meta) return;
   const meta = state.meta;
+  $("logout-btn").hidden = !meta.auth_required;
   $("server-status").textContent = meta.ready
     ? `Ready · PDF ${meta.pdf_available === false ? "unavailable" : "available"}`
     : "Starting…";
@@ -360,10 +369,15 @@ function renderJobLists() {
     queueList.appendChild(jobRow(job, entry.queue_position));
   }
 
+  const search = $("job-search").value.trim().toLowerCase();
+  const statusFilter = $("job-status-filter").value;
   const recent = [...state.jobs.values()]
     .filter((job) => ["completed", "failed", "action_required"].includes(job.state))
+    .filter((job) => jobLabel(job).toLowerCase().includes(search) && (statusFilter === "all" || job.state === statusFilter))
     .sort((a, b) => String(b.finished_at || b.created_at).localeCompare(String(a.finished_at || a.created_at)));
-  for (const job of recent.slice(0, 30)) recentList.appendChild(jobRow(job));
+  for (const job of recent) recentList.appendChild(jobRow(job));
+  $("recent-empty").querySelector("strong").textContent = search || statusFilter !== "all" ? "No matching runs" : "No recent runs";
+  $("recent-empty").querySelector("span").textContent = search || statusFilter !== "all" ? "Try another search or change the status filter." : "Completed and failed jobs will appear here.";
 
   $("queue-count").textContent = String(state.queue.queue_count || 0);
   $("queue-empty").hidden = state.listFilter !== "queue" || Boolean(active) || state.queue.waiting.length > 0;
@@ -431,6 +445,7 @@ function selectJob(jobId, { reveal = true } = {}) {
   const changed = state.selectedId !== jobId;
   state.selectedId = jobId;
   const job = state.jobs.get(jobId);
+  if (changed && job) state.listFilter = ["queued", "running"].includes(job.state) ? "queue" : "recent";
   if (changed) state.activeTab = job && job.state === "completed" && (job.artifacts || []).includes("resume.pdf") ? "preview" : "progress";
   renderJobLists();
   if (reveal) showMobileView("detail");
@@ -442,6 +457,9 @@ function renderDetail(job) {
   state.detailStatus = "success";
   renderDetailState();
   $("detail-company").textContent = job.company || "Untitled company";
+  $("detail-body").dataset.state = job.state;
+  $("duplicate-job").hidden = job.source === "cli";
+  $("duplicate-job").textContent = job.state === "failed" ? "Retry tailoring" : "Tailor again";
   $("detail-role").textContent = job.role || "Role not provided";
   const badge = $("detail-state");
   badge.className = `status-pill ${job.state}`;
@@ -461,6 +479,11 @@ function renderDetail(job) {
   renderVerbose(job);
   renderPreview(job);
   renderFiles(job);
+  if (state.reviewJobId !== job.job_id) {
+    state.review = null;
+    state.reviewJobId = job.job_id;
+    clear($("review-content"));
+  }
   activateTab(state.activeTab, false);
 }
 
@@ -784,7 +807,7 @@ function renderPreview(job) {
   jsonView.hidden = true;
   pending.hidden = false;
   if (job.state === "completed" && hasPdf) {
-    const src = `/api/jobs/${job.job_id}/files/resume.pdf?download=0`;
+    const src = `/api/jobs/${job.job_id}/files/resume.pdf?download=0#navpanes=0&view=FitH`;
     if (!frame.src.endsWith(src)) frame.src = src;
     frame.hidden = false;
     pending.hidden = true;
@@ -846,23 +869,24 @@ function renderFiles(job) {
   const location = $("pdf-library-location");
   location.hidden = !job.pdf_library_name;
   if (job.pdf_library_name) {
-    const directory = state.meta && state.meta.directory_labels ? state.meta.directory_labels.pdf_dir : "resumepdfs";
-    location.textContent = `Application PDF: ${directory}/${job.pdf_library_name}`;
+    location.textContent = `Saved as ${job.pdf_library_name}`;
   }
 }
 
 function activateTab(name, focus = true) {
   if (!TAB_NAMES.includes(name)) return;
   state.activeTab = name;
+  $("detail-body").dataset.activeTab = name;
   for (const tabName of TAB_NAMES) {
     const tab = $(`tab-${tabName}`);
     const panel = $(`panel-${tabName}`);
     const active = tabName === name;
     tab.setAttribute("aria-selected", String(active));
     tab.tabIndex = active ? 0 : -1;
-    panel.hidden = !active;
+    panel.hidden = !active && !(name === "preview" && tabName === "review");
   }
   if (focus) $(`tab-${name}`).focus();
+  if ((name === "review" || name === "preview") && state.currentDetail && !state.review && state.reviewLoadingId !== state.selectedId) loadReview();
 }
 
 function onTabKeydown(event) {
@@ -937,7 +961,7 @@ function validateField(name) {
 function openJobDialog() {
   const dialog = $("new-job-dialog");
   if (!dialog.open) dialog.showModal();
-  requestAnimationFrame(() => formFields.company.focus());
+  requestAnimationFrame(() => formFields.jd.focus());
 }
 
 function closeJobDialog() {
@@ -963,18 +987,16 @@ async function submitJob(event) {
   button.textContent = "Adding…";
   status.textContent = "Adding the job to the queue.";
   try {
+    const body = JSON.stringify(currentDraft());
+    if (!state.submission || state.submission.body !== body) state.submission = { body, key: crypto.randomUUID() };
+    saveDraft();
     const result = await fetchJson("/api/jobs", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
-      body: JSON.stringify({
-        company: formFields.company.value.trim(),
-        role: formFields.role.value.trim(),
-        jd_text: formFields.jd.value.trim(),
-        bridge_skills: $("bridge-skills").checked,
-        research_company: $("research-company").checked,
-        no_pdf: $("no-pdf").checked,
-      }),
+      headers: { "Content-Type": "application/json", "Idempotency-Key": state.submission.key },
+      body,
     });
+    state.submission = null;
+    try { sessionStorage.removeItem("tailoring-draft"); } catch { /* Storage may be unavailable. */ }
     $("job-form").reset();
     if (state.meta && state.meta.pdf_available === false) lockSkipPdf();
     touchedFields.clear();
@@ -984,7 +1006,7 @@ async function submitJob(event) {
     await loadJobData();
     selectJob(result.job_id, { reveal: true });
   } catch (error) {
-    status.textContent = `The job was not added. ${String(error.message || error)}`;
+    status.textContent = `Submission could not be confirmed. Retry to check the same request. ${String(error.message || error)}`;
   } finally {
     state.submitting = false;
     button.disabled = false;
@@ -993,6 +1015,141 @@ async function submitJob(event) {
 }
 
 /* Live updates */
+
+function currentDraft() {
+  return {
+    company: formFields.company.value.trim(), role: formFields.role.value.trim(),
+    jd_text: formFields.jd.value.trim(), bridge_skills: $("bridge-skills").checked,
+    research_company: $("research-company").checked, no_pdf: $("no-pdf").checked,
+  };
+}
+
+function fillDraft(draft) {
+  formFields.company.value = typeof draft.company === "string" ? draft.company : "";
+  formFields.role.value = typeof draft.role === "string" ? draft.role : "";
+  formFields.jd.value = typeof draft.jd_text === "string" ? draft.jd_text : "";
+  for (const [id, key] of [["bridge-skills", "bridge_skills"], ["research-company", "research_company"], ["no-pdf", "no_pdf"]]) $(id).checked = draft[key] === true;
+  if (state.meta?.pdf_available === false) lockSkipPdf();
+}
+
+function saveDraft() {
+  try { sessionStorage.setItem("tailoring-draft", JSON.stringify({ draft: currentDraft(), submission: state.submission })); }
+  catch { /* In-memory form remains usable when browser storage is unavailable. */ }
+}
+
+function restoreDraft() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem("tailoring-draft") || "null");
+    if (saved?.draft) fillDraft(saved.draft);
+    if (typeof saved?.submission?.key === "string" && typeof saved?.submission?.body === "string") state.submission = saved.submission;
+  } catch { /* Ignore an obsolete or damaged draft. */ }
+}
+
+async function duplicateJob() {
+  const jobId = state.selectedId;
+  const button = $("duplicate-job");
+  button.disabled = true;
+  $("detail-action-status").textContent = "Loading saved job description…";
+  try {
+    const request = await fetchJson(`/api/jobs/${jobId}/request`);
+    if (state.selectedId !== jobId) return;
+    if (formFields.jd.value.trim()) {
+      $("detail-action-status").textContent = "A draft is already open. Finish it or clear it before tailoring this job again.";
+      openJobDialog();
+      return;
+    }
+    fillDraft(request);
+    state.submission = null;
+    saveDraft();
+    $("detail-action-status").textContent = "Review the saved description and options before adding a new run.";
+    openJobDialog();
+  } catch (error) { if (state.selectedId === jobId) $("detail-action-status").textContent = error.message; }
+  finally { button.disabled = false; }
+}
+
+function reviewSection(title, entries) {
+  if (!Array.isArray(entries) || !entries.length) return;
+  const section = el("section", "review-section");
+  section.appendChild(el("h3", null, title));
+  const list = el("ul", "review-list");
+  for (const entry of entries) list.appendChild(el("li", null, typeof entry === "string" ? entry : [entry.claim, entry.reason].filter(Boolean).join(" — ")));
+  section.appendChild(list);
+  $("review-content").appendChild(section);
+}
+
+async function loadReview(force = false) {
+  const job = state.currentDetail;
+  if (!job) return;
+  const id = job.job_id;
+  if (!force && state.reviewLoadingId === id) return;
+  state.reviewLoadingId = id;
+  state.review = null;
+  clear($("review-content"));
+  $("save-review").hidden = true;
+  $("review-status").textContent = "Loading analysis…";
+  try {
+    const report = await fetchJson(`/api/jobs/${id}/review`);
+    if (state.selectedId !== id) return;
+    state.review = report;
+    $("review-status").textContent = typeof report.coverage_pct === "number" ? `${Math.round(report.coverage_pct)}% estimated requirement coverage` : "Review the analysis below.";
+    reviewSection("Missing requirements", report.missing_must_haves);
+    reviewSection("Truth concerns", report.truth_violations);
+    reviewSection("Sections to improve", report.weak_sections);
+    reviewSection("Recommendations", report.recommendations);
+    reviewSection("Edits the validator rejected", report.rejected_section_edits);
+    if (report.notes) reviewSection("Reviewer notes", [report.notes]);
+    const assignments = report.evidence_assignments || [];
+    if (assignments.length) {
+      const details = el("details", "review-section");
+      details.appendChild(el("summary", null, "Planned requirement coverage"));
+      for (const item of assignments) {
+        const row = el("div", "review-section");
+        row.append(el("strong", null, (item.matched_requirements || []).join(", ")), el("p", null, item.intended_accomplishment));
+        details.appendChild(row);
+      }
+      $("review-content").appendChild(details);
+    }
+    if (report.claims.length) {
+      const section = el("section", "review-section");
+      section.append(el("h3", null, "Claims to check"), el("p", "help", "Check each claim only after verifying it against your experience. Saving records your review; it does not change the resume."));
+      for (const claim of report.claims) {
+        const label = el("label", "claim-row");
+        const checkbox = el("input", "checkbox checkbox-sm");
+        checkbox.type = "checkbox";
+        checkbox.value = claim.id;
+        checkbox.checked = report.reviewed_ids.includes(claim.id);
+        const copy = el("span", "claim-copy");
+        copy.append(el("strong", null, claim.kind), el("span", null, claim.claim));
+        if (claim.basis) copy.appendChild(el("small", null, `Basis: ${claim.basis}`));
+        if (claim.baseline) copy.appendChild(el("small", null, `Baseline: ${claim.baseline}`));
+        if (claim.destination) copy.appendChild(el("small", null, `Destination: ${claim.destination}`));
+        if (claim.sources.length) copy.appendChild(el("small", null, `Evidence: ${claim.sources.join("; ")}`));
+        label.append(checkbox, copy);
+        section.appendChild(label);
+      }
+      $("review-content").appendChild(section);
+      $("save-review").hidden = false;
+    } else {
+      reviewSection("Claims to check", ["No estimated metrics or cross-entry attributions were recorded in this report. Review the full resume before applying."]);
+    }
+  } catch (error) {
+    if (state.selectedId === id) $("review-status").textContent = error.message;
+  } finally { if (state.reviewLoadingId === id) state.reviewLoadingId = null; }
+}
+
+async function saveReview() {
+  if (!state.review) return;
+  const id = state.selectedId;
+  const button = $("save-review");
+  if (button.disabled) return;
+  button.disabled = true;
+  const reviewed_ids = [...$("review-content").querySelectorAll("input:checked")].map((input) => input.value);
+  try {
+    await fetchJson(`/api/jobs/${id}/review`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision: state.review.revision, reviewed_ids }) });
+    if (state.selectedId === id) $("review-status").textContent = `Review saved · ${reviewed_ids.length} of ${state.review.claims.length} claims checked`;
+  } catch (error) { if (state.selectedId === id) $("review-status").textContent = error.message; }
+  finally { button.disabled = false; }
+}
 
 function applyEvent(event) {
   if (event.id !== undefined) {
@@ -1058,8 +1215,12 @@ function applyEvent(event) {
 
 function openStream() {
   const source = new EventSource("/api/events");
-  source.onopen = () => loadAll();
-  source.onerror = () => { /* EventSource reconnects and loadAll runs on the next open. */ };
+  source.onopen = () => { state.seenEvents.clear(); loadAll(); };
+  source.onerror = () => {
+    $("server-status").textContent = "Connection lost · reconnecting…";
+    // The worker continues while this browser reconnects.
+    fetchMeta().catch(() => {});
+  };
   const kinds = ["queue_changed", "job_started", "stage_started", "stage_completed", "stage_retry", "stage_detail", "stage_warning", "job_action_required", "job_completed", "job_failed", "tracker_changed"];
   for (const kind of kinds) {
     source.addEventListener(kind, (message) => {
@@ -1082,6 +1243,37 @@ function showMobileView(name) {
 }
 
 function bindEvents() {
+  $("suggest-details").addEventListener("click", () => {
+    const text = formFields.jd.value;
+    const company = text.match(/^\s*(?:company|employer)\s*:\s*(.{1,80})$/im);
+    const role = text.match(/^\s*(?:role|job title|position|title)\s*:\s*(.{1,80})$/im);
+    if (company && !formFields.company.value.trim()) formFields.company.value = company[1].trim();
+    if (role && !formFields.role.value.trim()) formFields.role.value = role[1].trim();
+    $("suggest-status").textContent = company || role ? "Labeled details copied into empty fields. Check them before submitting." : "No labeled company or role found. Enter them below.";
+    saveDraft();
+  });
+  $("clear-draft").addEventListener("click", () => {
+    if (state.submitting) return;
+    if (!window.confirm("Clear this saved draft?")) return;
+    $("job-form").reset(); state.submission = null; touchedFields.clear();
+    for (const name of Object.keys(formFields)) { const error = $(name === "jd" ? "jd-error" : `${name}-error`); error.textContent = ""; formFields[name].removeAttribute("aria-invalid"); }
+    $("enqueue-status").textContent = "Draft cleared.";
+    $("suggest-status").textContent = "";
+    if (state.meta?.pdf_available === false) lockSkipPdf();
+    saveDraft();
+  });
+  $("job-search").addEventListener("input", () => { state.listFilter = "recent"; renderJobLists(); });
+  $("job-status-filter").addEventListener("change", () => { state.listFilter = "recent"; renderJobLists(); });
+  $("duplicate-job").addEventListener("click", duplicateJob);
+  $("reload-review").addEventListener("click", () => loadReview(true));
+  $("save-review").addEventListener("click", saveReview);
+  $("job-form").addEventListener("input", saveDraft);
+  $("job-form").addEventListener("change", saveDraft);
+  $("logout-btn").addEventListener("click", async () => {
+    try { await fetchJson("/api/auth/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      sessionStorage.removeItem("tailoring-draft"); location.replace("/login");
+    } catch (error) { $("server-status").textContent = error.message; }
+  });
   const openers = ["header-new-job", "rail-new-job", "empty-new-job", "add-jd-action"];
   for (const id of openers) $(id).addEventListener("click", openJobDialog);
   $("close-job-dialog").addEventListener("click", closeJobDialog);
@@ -1131,6 +1323,7 @@ function startTicker() {
 }
 
 function boot() {
+  restoreDraft();
   bindEvents();
   renderDetailState();
   renderJobLists();

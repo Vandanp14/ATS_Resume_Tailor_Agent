@@ -1,4 +1,4 @@
-@layer reset, tokens, base, components, responsive, utilities;
+@layer reset, tokens, base, components, responsive, utilities, workspace;
 
 @layer tokens {
   :root {
@@ -37,6 +37,60 @@
     --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
     --mono: "SF Mono", ui-monospace, Menlo, monospace;
     --header-size: 64px;
+  }
+}
+
+@layer workspace {
+  :root { --color-primary: var(--accent); --color-primary-content: #fff; }
+  [hidden] { display: none; }
+  .btn { min-block-size: 44px; font-family: var(--font); }
+  .job-filters { display: grid; gap: 8px; margin-block-start: 16px; }
+  .job-filters label { color: var(--rail-muted); font-size: 12px; }
+  .job-filters :is(.input, .select) { inline-size: 100%; background: var(--rail-raised); color: var(--rail-text); border-color: var(--rail-border); }
+  .job-filters input::placeholder { color: var(--rail-muted); }
+  #rail-new-job, #add-jd-action { display: none; }
+  .detail-header { grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; }
+  .detail-header h1 { font-size: clamp(24px, 2.5vw, 36px); }
+  .job-detail { inline-size: min(1560px, 100%); padding: 24px clamp(16px, 2.5vw, 36px); }
+  .job-detail[data-state="completed"] .job-overview { padding: 14px 18px; margin-block-end: 16px; }
+  .job-detail[data-state="completed"] .overview-primary strong { font-size: 17px; }
+  .preview-panel .panel-heading { margin-block-end: 12px; }
+  .review-panel { min-inline-size: 0; }
+  #review-status { margin-block: 16px; font-weight: 600; }
+  .review-section { display: grid; gap: 10px; padding-block: 18px; border-block-end: 1px solid var(--border-subtle); overflow-wrap: anywhere; }
+  .review-section h3 { font-size: 15px; font-weight: 650; }
+  .review-list { padding-inline-start: 20px; display: grid; gap: 8px; color: var(--text-2); }
+  .claim-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 12px; padding-block: 12px; cursor: pointer; }
+  .claim-copy { display: grid; gap: 7px; }
+  .claim-copy small { color: var(--text-2); }
+  .claim-row .checkbox { margin-block-start: 3px; }
+  #save-review, #reload-review { margin-block-start: 16px; }
+  .detail-tabs { overflow-x: auto; }
+  .detail-tabs button { white-space: nowrap; }
+  #detail-action-status:empty { display: none; }
+  #detail-action-status { color: var(--text-2); margin-block-end: 12px; }
+  .login-page { min-block-size: 100dvh; block-size: auto; display: grid; place-items: center; padding: 24px; overflow: auto; }
+  .login-card { display: grid; gap: 18px; inline-size: min(420px, 100%); }
+  .login-card h1 { font-size: 34px; letter-spacing: -1px; }
+  .login-card > p:not(.eyebrow) { color: var(--text-2); }
+  .login-card form { display: grid; gap: 16px; margin-block-start: 12px; }
+  @media (min-width: 75rem) {
+    .job-detail[data-active-tab="preview"] { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); column-gap: 28px; }
+    .job-detail > * { grid-column: 1 / -1; }
+    .job-detail[data-active-tab="preview"] .preview-panel { grid-column: 1; }
+    .job-detail[data-active-tab="preview"] .review-panel { grid-column: 2; max-block-size: 78dvh; overflow-y: auto; padding-inline-end: 8px; }
+    .job-detail[data-active-tab="preview"] #tab-review { display: none; }
+  }
+  @media (max-width: 74.999rem) {
+    .job-detail[data-active-tab="preview"] .review-panel { display: none; }
+  }
+  @media (max-width: 48rem) {
+    .detail-header { grid-template-columns: auto minmax(0, 1fr) auto; }
+    #duplicate-job { grid-column: 2 / -1; justify-self: start; }
+    .detail-tabs { position: sticky; inset-block-start: 0; z-index: 2; background: var(--bg); }
+    .review-panel { padding-block-end: 24px; }
+    .dialog-footer { flex-wrap: wrap; }
+    #logout-btn { font-size: 12px; padding-inline: 8px; }
   }
 }
 

@@ -76,6 +76,7 @@ def make_app(tmp_path, monkeypatch):
         call_interval: float = 0.01,
         score_timeout: float = 5.0,
         recovery_handler=None,
+        access=None,
     ):
         if not pdf_available:
 
@@ -95,6 +96,7 @@ def make_app(tmp_path, monkeypatch):
             pipeline_factory=pipeline_factory or FakePipe,
             static_dir=static,
             recovery_handler=recovery_handler,
+            access=access,
         )
         return app, output_dir
 

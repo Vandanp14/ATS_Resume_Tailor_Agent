@@ -1,0 +1,9 @@
+@layer theme, base, components, utilities;
+@import "tailwindcss";
+@source "../static/*.html";
+@source "../static/*.js";
+@plugin "daisyui" {
+  themes: light --default;
+  include: button, input, select, badge, checkbox;
+  logs: false;
+}

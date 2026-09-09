@@ -183,3 +183,33 @@ Run all tests, including a real Tectonic compile when installed:
 For a production check, run the normal batch command and inspect
 `tailored.json`, `match_report.json`, `resume.tex`, the PDF page count, and
 extracted PDF text before using the resume.
+
+## Railway deployment
+
+The hosted web app uses the Dockerfile, a Railway volume, and one replica. The image
+includes Python, Tectonic, and the CSS build; personal resume data stays outside Git.
+
+1. Create a Railway project and service from this repository. Railway will use
+   `railway.toml` and the Dockerfile automatically.
+2. Add a volume mounted at `/data`.
+3. Create a password hash locally:
+
+   ```bash
+   .venv/bin/python -m resume_tailor.web.access
+   ```
+
+4. Add these Railway variables:
+
+   | Variable | Value |
+   |---|---|
+   | `PUBLIC_ORIGIN` | Exact HTTPS Railway/custom-domain origin, without a trailing slash |
+   | `APP_PASSWORD_HASH` | Value printed by the password-hash command |
+   | `GEMINI_API_KEY` | Your Gemini API key |
+   | `DEFAULT_MODEL` | Configured Gemini model name |
+   | `MASTER_RESUME_JSON` | Validated JSON Resume, if `master.json` is not already on the volume |
+   | `DATA_DIR` | `/data` |
+
+Railway provides `PORT`; the server binds to `0.0.0.0` automatically in a Railway
+environment. The deployment health check is `/healthz`. Keep one replica because the
+queue worker and in-memory session registry are single-process. Back up `/data` before
+upgrades and use Railway’s previous deployment to roll back.

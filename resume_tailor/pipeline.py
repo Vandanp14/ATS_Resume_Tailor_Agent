@@ -980,6 +980,8 @@ class TailorPipeline:
                 for metric_message in scan_metric_quality(final_scored):
                     self.tracker.warn(f"Metric quality: {metric_message}")
                 report_payload = review.model_dump(mode="json")
+                report_payload["evidence_plan"] = evidence_plan.model_dump(mode="json")
+                report_payload["source_facts"] = facts
                 report_payload["rejected_section_edits"] = rejected_edits
                 report_payload["cross_entry_attributions"] = cross_entry_attributions(
                     evidence_plan, facts

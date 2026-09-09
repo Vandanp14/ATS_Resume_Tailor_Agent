@@ -38,7 +38,7 @@ PDF_EXPORT_WARNING = "The PDF library copy could not be created; the original PD
 
 def utc_now_iso() -> str:
     return (
-        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
     )
 
 
@@ -369,6 +369,7 @@ class CreateJobResponse(BaseModel):
 
 class MetaResponse(BaseModel):
     ready: bool = True
+    auth_required: bool = False
     master_name: str | None = None
     master_email: str | None = None
     model: str | None = None

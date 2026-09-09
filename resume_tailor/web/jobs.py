@@ -162,6 +162,7 @@ class QueueRegistry:
         self.pdf_dir = Path(pdf_dir)
         self.state_dir = Path(state_dir)
         self.queue_dir = private_directory(self.state_dir / QUEUE_DIR_NAME)
+        self.requests_dir = private_directory(self.state_dir / "requests")
         self.pipeline_factory = pipeline_factory
         self.master_path = Path(master_path)
         self.master_name = master_name
@@ -307,6 +308,19 @@ class QueueRegistry:
                     self._persist_job(job)
                     self._waiting.append(job)
                     continue
+                if persisted.state == JobState.QUEUED and payload_path.is_file():
+                    try:
+                        payload = QueuePayload.model_validate_json(
+                            payload_path.read_text(encoding="utf-8")
+                        )
+                    except (ValueError, OSError):
+                        payload = None
+                    if payload is not None:
+                        known.add(directory.name)
+                        job = self._add(directory, persisted)
+                        job.payload = payload
+                        self._waiting.append(job)
+                        continue
                 persisted = persisted.model_copy(
                     update={
                         "state": JobState.FAILED,
@@ -364,6 +378,10 @@ class QueueRegistry:
             job.payload = payload
             self._ensure_job_file(job)
             self._waiting.append(job)
+
+        self._waiting.sort(
+            key=lambda job: (job.persisted.created_at, job.persisted.job_id)
+        )
 
         for directory in sorted(self.output_dir.iterdir()):
             if not directory.is_dir() or (directory / JOB_FILE).is_file():
@@ -516,7 +534,18 @@ class QueueRegistry:
             payload=payload,
         )
         with self._cond:
+            if self._stopping:
+                raise RecoveryRequestError(503, "Server is restarting. Retry shortly.")
+            if len(self._waiting) >= 100:
+                raise RecoveryRequestError(
+                    429, "The queue is full. Wait for a job to finish."
+                )
             self._persist_payload(job)
+            atomic_write_text(
+                self.requests_dir / f"{persisted.job_id}.json",
+                payload.model_dump_json(),
+                mode=0o600,
+            )
             self._persist_job(job)
             self._jobs[persisted.job_id] = job
             self._waiting.append(job)
@@ -643,6 +672,8 @@ class QueueRegistry:
                 self._queue_payload_path(job.persisted.job_id).unlink()
             except (FileNotFoundError, OSError):
                 return False
+            (job.directory / JOB_FILE).unlink(missing_ok=True)
+            (self.requests_dir / f"{job.persisted.job_id}.json").unlink(missing_ok=True)
             self._cond.notify_all()
         self._publish_queue_changed()
         return True

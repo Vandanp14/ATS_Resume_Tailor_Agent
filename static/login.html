@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Resume Tailor</title>
+  <link rel="stylesheet" href="/ui.css">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/login.js" defer></script>
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <p class="eyebrow">Private workspace</p>
+    <h1>Your next opportunity.</h1>
+    <p>Sign in to tailor and review your resumes.</p>
+    <form id="login-form">
+      <div class="field">
+        <label for="password">Workspace password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required aria-describedby="login-error">
+        <p id="login-error" class="error-slot" role="alert"></p>
+      </div>
+      <button class="btn btn-primary" id="sign-in" type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>

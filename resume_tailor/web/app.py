@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel, ConfigDict, Field
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -44,14 +47,20 @@ from .models import (
 )
 from .reporter import EventHub
 from .scheduler import GeminiScheduler, ScheduledProvider, inactive_tracker
+from .access import AccessSettings, Sessions
+from .review import ReviewDecision, read_review
+from .io import atomic_write_text
 
 LOGGER = __import__("logging").getLogger("resume_tailor.web")
 
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
 _HEADERS = {
     "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
     "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-site",
     "Content-Security-Policy": (
         "default-src 'none'; script-src 'self'; style-src 'self'; "
         "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
@@ -82,6 +91,11 @@ _EVENT_KINDS = {
 }
 
 
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    password: str = Field(min_length=1, max_length=256)
+
+
 @dataclass
 class WebSettings:
     master_path: Path
@@ -94,6 +108,7 @@ class WebSettings:
     max_input_tokens_per_minute: int
     max_requests_per_day: int
     static_dir: Path
+    access: AccessSettings = AccessSettings()
 
 
 def _problem(
@@ -143,9 +158,24 @@ def create_app(
     hub: EventHub,
     scheduler: GeminiScheduler | None,
 ) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(_app):
+        yield
+        registry.stop()
+        if registry._worker is not None:
+            await asyncio.to_thread(registry._worker.join, 20)
+
     app = FastAPI(
-        title="ATS Resume Tailor Agent", docs_url=None, redoc_url=None, openapi_url=None
+        title="ATS Resume Tailor Agent",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
     )
+    sessions = Sessions(settings.access)
+    login_lock = asyncio.Lock()
+    app.state.registry = registry
+    app.state.sessions = sessions
     pdf_available = registry.pdf_available
     basics = master.basics
     tracker = lambda: (
@@ -155,24 +185,17 @@ def create_app(
     )
 
     @app.middleware("http")
-    async def security_headers(request: Request, call_next):
-        response = await call_next(request)
-        for key, value in _HEADERS.items():
-            response.headers.setdefault(key, value)
-        if request.url.path.startswith("/api"):
-            response.headers.setdefault("Cache-Control", "no-store")
-        return response
-
-    @app.middleware("http")
     async def host_origin_guard(request: Request, call_next):
-        if request.url.path.startswith("/api"):
-            if not _host_allowed(request.headers.get("host", "")):
+        path = request.url.path
+        host = request.headers.get("host", "")
+        if path != "/healthz":
+            if not settings.access.host_allowed(host):
                 return _problem(
                     400, "Bad Request", "Unrecognized host.", instance=request.url.path
                 )
             if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
                 origin = request.headers.get("origin")
-                if origin is not None and not _origin_allowed(origin):
+                if not settings.access.origin_allowed(origin, host):
                     return _problem(403, "Forbidden", "Cross-origin request rejected.")
                 content_type = request.headers.get("content-type", "")
                 if content_type and "application/json" not in content_type:
@@ -181,7 +204,99 @@ def create_app(
                         "Unsupported Media Type",
                         "API writes require application/json.",
                     )
+                size = 0
+                chunks = []
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > 512_000:
+                        return _problem(
+                            413,
+                            "Request too large",
+                            "Reduce the request size and retry.",
+                        )
+                    chunks.append(chunk)
+                request._body = b"".join(chunks)
+        public = {
+            "/healthz",
+            "/login",
+            "/login.js",
+            "/app.css",
+            "/ui.css",
+            "/api/auth/login",
+        }
+        if settings.access.password_digest and path not in public:
+            if not sessions.valid(request.cookies.get(settings.access.cookie_name, "")):
+                if path.startswith("/api"):
+                    return _problem(
+                        401,
+                        "Sign in required",
+                        "Sign in to your workspace to continue.",
+                    )
+                return RedirectResponse("/login", status_code=303)
         return await call_next(request)
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        for key, value in _HEADERS.items():
+            response.headers.setdefault(key, value)
+        response.headers["Cache-Control"] = "no-store"
+        if settings.access.public_origin:
+            response.headers["Strict-Transport-Security"] = "max-age=63072000"
+        return response
+
+    @app.get("/login")
+    async def login_page():
+        if not settings.access.password_digest:
+            return RedirectResponse("/", status_code=303)
+        return FileResponse(settings.static_dir / "login.html")
+
+    @app.post("/api/auth/login")
+    async def login(body: LoginRequest):
+        if login_lock.locked() or not sessions.allowed_attempt():
+            response = _problem(429, "Too many attempts", "Try again in one minute.")
+            response.headers["Retry-After"] = "60"
+            return response
+        async with login_lock:
+            verified = await asyncio.to_thread(sessions.verify, body.password)
+        if not verified:
+            return _problem(401, "Sign in failed", "The password was not recognized.")
+        response = JSONResponse({"ready": True})
+        response.set_cookie(
+            settings.access.cookie_name,
+            sessions.issue(),
+            max_age=sessions.lifetime,
+            secure=bool(settings.access.public_origin),
+            httponly=True,
+            samesite="strict",
+        )
+        return response
+
+    @app.post("/api/auth/logout")
+    async def logout(request: Request):
+        sessions.tokens.pop(request.cookies.get(settings.access.cookie_name, ""), None)
+        response = JSONResponse({"ready": False})
+        response.delete_cookie(
+            settings.access.cookie_name,
+            secure=bool(settings.access.public_origin),
+            httponly=True,
+            samesite="strict",
+        )
+        return response
+
+    @app.get("/healthz")
+    async def health():
+        ready = (
+            registry._worker is not None
+            and registry._worker.is_alive()
+            and not registry._stopping
+            and (pdf_available or not settings.access.public_origin)
+            and all(
+                os.access(path, os.W_OK)
+                for path in (settings.output_dir, settings.pdf_dir, settings.state_dir)
+            )
+        )
+        return JSONResponse({"ready": ready}, status_code=200 if ready else 503)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(
@@ -241,6 +356,7 @@ def create_app(
     async def meta() -> MetaResponse:
         return MetaResponse(
             ready=True,
+            auth_required=bool(settings.access.password_digest),
             master_name=basics.name if basics else None,
             master_email=basics.email if basics else None,
             model=settings.model,
@@ -286,13 +402,11 @@ def create_app(
                 raise HTTPException(
                     422, "Idempotency-Key was used with a different request."
                 )
-            if existing.persisted.state in {JobState.QUEUED, JobState.RUNNING}:
-                raise HTTPException(
-                    409,
-                    f"An identical request is already in progress (job {existing.persisted.job_id}).",
-                )
             return created(existing.persisted.job_id)
-        job = registry.enqueue(body, idempotency_key=key)
+        try:
+            job = registry.enqueue(body, idempotency_key=key)
+        except RecoveryRequestError as exc:
+            raise HTTPException(exc.status, exc.detail) from exc
         return created(job.persisted.job_id, position=registry.queue_position(job) or 0)
 
     @app.get("/api/jobs", response_model=list[JobEntry])
@@ -302,6 +416,56 @@ def create_app(
     @app.get("/api/jobs/{job_id}", response_model=JobDetail)
     async def job_detail(job: Job = Depends(job_or_404)) -> JobDetail:
         return JobDetail(job=registry.entry(job), events=job.journal.replay())
+
+    @app.get("/api/jobs/{job_id}/request", response_model=CreateJobRequest)
+    async def original_request(job: Job = Depends(job_or_404)):
+        from .models import QueuePayload
+
+        path = registry.requests_dir / f"{job.persisted.job_id}.json"
+        if not path.is_file() or path.is_symlink():
+            raise HTTPException(
+                404,
+                "This older run has no saved job description. Paste the description into a new tailoring.",
+            )
+        payload = QueuePayload.model_validate_json(path.read_text(encoding="utf-8"))
+        return CreateJobRequest(
+            **{name: getattr(payload, name) for name in CreateJobRequest.model_fields}
+        )
+
+    @app.get("/api/jobs/{job_id}/review")
+    async def review(job: Job = Depends(job_or_404)):
+        try:
+            return read_review(job.directory)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(
+                409,
+                "The report could not be read. Download the report or retry the run.",
+            ) from exc
+
+    @app.put("/api/jobs/{job_id}/review")
+    async def save_review(body: ReviewDecision, job: Job = Depends(job_or_404)):
+        current = await review(job)
+        if job.persisted.state not in {
+            JobState.COMPLETED,
+            JobState.FAILED,
+            JobState.ACTION_REQUIRED,
+        }:
+            raise HTTPException(409, "Wait for this run to finish before reviewing.")
+        if current["revision"] != body.revision:
+            raise HTTPException(
+                409, "The report changed. Reload it before saving your review."
+            )
+        allowed = {item["id"] for item in current["claims"]}
+        if not set(body.reviewed_ids) <= allowed or len(set(body.reviewed_ids)) != len(
+            body.reviewed_ids
+        ):
+            raise HTTPException(422, "Select only claims in the current report.")
+        atomic_write_text(
+            job.directory / "review_decision.json", body.model_dump_json(), mode=0o600
+        )
+        return {"reviewed_ids": body.reviewed_ids}
 
     @app.get("/api/jobs/{job_id}/fit-recovery", response_model=FitRecoveryResponse)
     async def get_fit_recovery(job: Job = Depends(job_or_404)) -> FitRecoveryResponse:
@@ -433,6 +597,7 @@ def webapp_factory(
     pipeline_factory: Callable[..., TailorPipeline] = TailorPipeline,
     recovery_handler: Callable[[Path, list[str]], int] | None = None,
     score_timeout: float | None = None,
+    access: AccessSettings | None = None,
 ) -> FastAPI:
     """Assemble settings + shared scheduler + registry + app for entrypoint and tests."""
     del score_timeout  # Accepted for compatibility with the pre-queue web test harness.
@@ -463,6 +628,7 @@ def webapp_factory(
         max_input_tokens_per_minute=max_input_tokens_per_minute,
         max_requests_per_day=max_requests_per_day,
         static_dir=static,
+        access=access or AccessSettings(),
     )
     hub = EventHub()
     provider: ScheduledProvider | None = None

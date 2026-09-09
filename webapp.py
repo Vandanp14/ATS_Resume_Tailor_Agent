@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -17,6 +18,9 @@ import uvicorn
 from resume_tailor.config import DEFAULT_MODEL
 from resume_tailor.runtime import DEFAULT_CALL_INTERVAL
 from resume_tailor.web.app import webapp_factory
+from resume_tailor.web.access import AccessSettings
+from resume_tailor.web.io import atomic_write_text
+from models import JSONResume
 from resume_tailor.web.models import (
     DEFAULT_MAX_CALLS_PER_MINUTE,
     DEFAULT_MAX_INPUT_TOKENS_PER_MINUTE,
@@ -29,10 +33,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="webapp.py",
         description="Local queue-enabled web app for tailoring a resume against pasted JDs.",
     )
-    parser.add_argument("--master", type=Path, default=Path("master.json"))
-    parser.add_argument("--output-dir", type=Path, default=Path("output"))
-    parser.add_argument("--pdf-dir", type=Path, default=Path("resumepdfs"))
-    parser.add_argument("--state-dir", type=Path, default=Path(".resume-tailor"))
+    data_dir = Path(os.environ.get("DATA_DIR", "."))
+    parser.add_argument("--master", type=Path, default=data_dir / "master.json")
+    parser.add_argument("--output-dir", type=Path, default=data_dir / "output")
+    parser.add_argument("--pdf-dir", type=Path, default=data_dir / "resumepdfs")
+    parser.add_argument("--state-dir", type=Path, default=data_dir / ".resume-tailor")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--call-interval", type=float, default=DEFAULT_CALL_INTERVAL)
     parser.add_argument(
@@ -53,7 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_REQUESTS_PER_DAY,
         help="Web-app Gemini request cap per Pacific-time day.",
     )
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0" if os.environ.get("RAILWAY_ENVIRONMENT_ID") else "127.0.0.1",
+    )
     parser.add_argument("--verbose", action="store_true")
     return parser
 
@@ -70,7 +79,9 @@ def _validate(args: argparse.Namespace) -> None:
     for name in ("output_dir", "pdf_dir", "state_dir"):
         path = Path(getattr(args, name))
         if path.exists() and not path.is_dir():
-            raise SystemExit(f"--{name.replace('_', '-')} must be a directory, not a file: {path}")
+            raise SystemExit(
+                f"--{name.replace('_', '-')} must be a directory, not a file: {path}"
+            )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,6 +92,26 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
     try:
+        origin = os.environ.get("PUBLIC_ORIGIN", "")
+        if os.environ.get("RAILWAY_ENVIRONMENT_ID") and not origin:
+            raise RuntimeError("PUBLIC_ORIGIN is required on Railway.")
+        access = AccessSettings(origin, os.environ.get("APP_PASSWORD_HASH", ""))
+        if (
+            args.host not in {"127.0.0.1", "localhost", "::1"}
+            and not access.password_digest
+        ):
+            raise RuntimeError(
+                "APP_PASSWORD_HASH is required when listening beyond localhost."
+            )
+        seed = os.environ.get("MASTER_RESUME_JSON")
+        if seed and not args.master.exists():
+            try:
+                master = JSONResume.model_validate_json(seed)
+            except Exception as exc:
+                raise RuntimeError(
+                    "MASTER_RESUME_JSON does not match the resume schema."
+                ) from exc
+            atomic_write_text(args.master, master.model_dump_json(), mode=0o600)
         app = webapp_factory(
             master_path=args.master,
             output_dir=args.output_dir,
@@ -91,11 +122,18 @@ def main(argv: list[str] | None = None) -> int:
             max_calls_per_minute=args.max_calls_per_minute,
             max_input_tokens_per_minute=args.max_input_tokens_per_minute,
             max_requests_per_day=args.max_requests_per_day,
+            access=access,
         )
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        timeout_graceful_shutdown=25,
+    )
     return 0
 
 

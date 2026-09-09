@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ATS Resume Tailor</title>
+  <link rel="stylesheet" href="/ui.css">
   <link rel="stylesheet" href="/app.css">
 </head>
 <body data-mobile-view="jobs">
@@ -32,6 +33,7 @@
         <strong class="tabnum" id="tracker-copy">—</strong>
       </button>
       <button class="button primary header-new" id="header-new-job" type="button">New tailoring</button>
+      <button class="btn btn-ghost" id="logout-btn" type="button" hidden>Sign out</button>
     </div>
   </header>
 
@@ -85,6 +87,17 @@
         <div class="rail-segment" aria-label="Job list filter">
           <button type="button" id="filter-queue" aria-pressed="true">Queue <span class="tabnum" id="queue-count">0</span></button>
           <button type="button" id="filter-recent" aria-pressed="false">Recent</button>
+        </div>
+        <div class="job-filters">
+          <label for="job-search">Find a tailoring</label>
+          <input class="input" id="job-search" type="search" placeholder="Company or role" autocomplete="off">
+          <label for="job-status-filter">Status</label>
+          <select class="select" id="job-status-filter">
+            <option value="all">All statuses</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="action_required">Needs attention</option>
+          </select>
         </div>
       </div>
 
@@ -143,7 +156,9 @@
             <p id="detail-role">—</p>
           </div>
           <span class="status-pill" id="detail-state">Queued</span>
+          <button class="btn btn-outline" id="duplicate-job" type="button">Tailor again</button>
         </header>
+        <p id="detail-action-status" role="status"></p>
 
         <section class="job-overview" aria-label="Job status overview">
           <div class="overview-primary">
@@ -172,6 +187,7 @@
         <div class="detail-tabs" role="tablist" aria-label="Job details">
           <button type="button" role="tab" id="tab-progress" aria-selected="true" aria-controls="panel-progress" tabindex="0">Progress</button>
           <button type="button" role="tab" id="tab-preview" aria-selected="false" aria-controls="panel-preview" tabindex="-1">Resume preview</button>
+          <button type="button" role="tab" id="tab-review" aria-selected="false" aria-controls="panel-review" tabindex="-1">Review</button>
           <button type="button" role="tab" id="tab-files" aria-selected="false" aria-controls="panel-files" tabindex="-1">Files</button>
         </div>
 
@@ -195,6 +211,15 @@
           </div>
           <iframe id="preview" title="Generated resume PDF preview" hidden></iframe>
           <div class="preview-json" id="preview-json" hidden></div>
+        </section>
+
+        <section class="tab-panel review-panel" id="panel-review" role="tabpanel" aria-labelledby="tab-review" tabindex="0" hidden>
+          <div class="panel-heading"><div><p class="eyebrow">Before you apply</p><h2>Review your resume</h2></div></div>
+          <p class="help">Review the model’s analysis and check any estimated claims against your experience. Coverage is an estimate, not an ATS score.</p>
+          <p id="review-status" role="status"></p>
+          <div id="review-content"></div>
+          <button class="btn btn-outline" id="reload-review" type="button">Reload report</button>
+          <button class="btn btn-primary" id="save-review" type="button" hidden>Save review</button>
         </section>
 
         <section class="tab-panel files-panel" id="panel-files" role="tabpanel" aria-labelledby="tab-files" tabindex="0" hidden>
@@ -228,6 +253,14 @@
       <form id="job-form" novalidate>
         <div class="dialog-body">
           <div class="field">
+            <label for="jd-text">Job description</label>
+            <p class="help" id="jd-help">Paste the full description. Your draft is kept in this browser tab until submitted or cleared.</p>
+            <textarea id="jd-text" name="jd_text" rows="10" maxlength="100000" aria-describedby="jd-help jd-error" required></textarea>
+            <p class="error-slot" id="jd-error" role="alert"></p>
+            <button class="btn btn-ghost btn-sm" id="suggest-details" type="button">Use company and role from description</button>
+            <p class="help" id="suggest-status" role="status"></p>
+          </div>
+          <div class="field">
             <label for="company">Company</label>
             <input id="company" name="company" type="text" maxlength="80" autocomplete="organization" aria-describedby="company-error" required>
             <p class="error-slot" id="company-error" role="alert"></p>
@@ -236,12 +269,6 @@
             <label for="role">Role</label>
             <input id="role" name="role" type="text" maxlength="80" autocomplete="organization-title" aria-describedby="role-error" required>
             <p class="error-slot" id="role-error" role="alert"></p>
-          </div>
-          <div class="field">
-            <label for="jd-text">Job description</label>
-            <p class="help" id="jd-help">Paste the full job description you want to tailor this resume for.</p>
-            <textarea id="jd-text" name="jd_text" rows="12" maxlength="100000" aria-describedby="jd-help jd-error" required></textarea>
-            <p class="error-slot" id="jd-error" role="alert"></p>
           </div>
           <details class="advanced">
             <summary>Advanced options</summary>
@@ -252,6 +279,7 @@
           <p class="form-status" id="enqueue-status" aria-live="polite"></p>
         </div>
         <footer class="dialog-footer">
+          <button class="btn btn-ghost" id="clear-draft" type="button">Clear draft</button>
           <button class="button secondary" id="cancel-job-dialog" type="button">Cancel</button>
           <button class="button primary" type="submit" id="add-btn">Add to queue</button>
         </footer>
