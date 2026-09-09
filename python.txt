@@ -1,0 +1,30 @@
+
+npx freellmapi setup-opencode --url http://localhost:3001 --api-key freellmapi-6bf64c0a17696b993f09f5feb820d1f6ab040b8a5852bd8f
+
+
+
+python3 << 'EOF'
+import json
+import os
+
+config_path = os.path.expanduser('~/.config/opencode/opencode.json')
+
+with open(config_path, 'r') as f:
+    config = json.load(f)
+
+# Add output limit to all models
+for model_id, model_config in config['provider']['freellmapi']['models'].items():
+    if 'limit' in model_config:
+        model_config['limit']['output'] = 8192
+
+with open(config_path, 'w') as f:
+    json.dump(config, f, indent=2)
+
+print("✅ Fixed! Added output limits to all models.")
+EOF
+
+
+
+
+
+

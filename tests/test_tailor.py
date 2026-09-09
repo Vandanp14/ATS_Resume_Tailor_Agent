@@ -35,6 +35,7 @@ from pipeline_core import (
     assemble_scored,
     master_fact_index,
     project_evidence,
+    technologies_in_experience,
     validate_evidence_plan,
     validate_skills,
     validate_transferable_skill_plan,
@@ -614,3 +615,50 @@ def test_inferred_metric_contract_accepts_baselined_round_numbers(claim):
     selected = selected_evidence(resume)
     plan = _plan_with(_inference(final_claim=claim), selected)
     validate_evidence_plan(plan, selected.work, master_fact_index(resume))
+
+
+def test_experience_technologies_surface_tools_named_only_in_bullets():
+    resume = master()
+    resume.work[0].highlights.append(
+        "Shipped a Phoenix/LiveView dashboard backed by RabbitMQ and Node.js."
+    )
+    found = technologies_in_experience(resume)
+    # Named in a bullet, absent from the skills groups: these are exactly the
+    # keywords the QA report found hidden from ATS matching.
+    assert {"Phoenix/LiveView", "RabbitMQ", "Node.js", "REST"} <= set(found)
+    # Already in MASTER_SKILLS, so the skills stage does not need them back.
+    assert "PostgreSQL" not in found
+    # Ordinary prose must not be mined as a tool name.
+    assert not {"Built", "Shipped", "Integrated", "Collaborated"} & set(found)
+
+
+def test_skills_may_surface_a_technology_named_only_in_experience_text():
+    resume = master()
+    resume.work[0].highlights.append("Migrated queue traffic onto RabbitMQ.")
+    skills = TailoredSkills(
+        skills=[
+            ScoredSkill(
+                name="Languages",
+                level=None,
+                keywords=["Python", "Java"],
+                relevance=90,
+            ),
+            ScoredSkill(
+                name="Infrastructure",
+                level=None,
+                keywords=["RabbitMQ"],
+                relevance=70,
+            ),
+        ]
+    )
+    validate_skills(skills, resume)
+
+    unmined = TailoredSkills(
+        skills=[
+            ScoredSkill(
+                name="Infrastructure", level=None, keywords=["Kafka"], relevance=70
+            )
+        ]
+    )
+    with pytest.raises(ContractError, match="absent_from_master"):
+        validate_skills(unmined, resume)

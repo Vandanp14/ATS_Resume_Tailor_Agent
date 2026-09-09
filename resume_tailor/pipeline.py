@@ -50,6 +50,7 @@ from .evidence import (
     jd_signal_strength,
     master_fact_index,
     project_evidence,
+    technologies_in_experience,
     validate_evidence_plan,
     validate_concise_bullet,
     validate_project_item,
@@ -882,6 +883,9 @@ class TailorPipeline:
                                 for item in master.skills or []
                             ],
                             indent=2,
+                        ),
+                        experience_technologies_json=json.dumps(
+                            technologies_in_experience(master), indent=2
                         ),
                         transferable_skill_plan_json=(
                             transferable_skill_plan.model_dump_json(indent=2)

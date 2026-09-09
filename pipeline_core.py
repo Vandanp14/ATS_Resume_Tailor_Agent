@@ -220,6 +220,113 @@ def skill_evidence(master: JSONResume) -> list[dict]:
     return result
 
 
+# A technology named only inside a bullet clause is invisible to keyword
+# matching, so the skills stage is allowed to surface it. Mining free text for
+# tool names is only safe with a tight shape filter: these patterns match names
+# that carry an internal capital, a digit, a dot, a slash, or a symbol
+# (PostgreSQL, LiveView, RabbitMQ, FastAPI, Node.js, CI/CD, gRPC, S3, C#), which
+# ordinary prose words and sentence-initial verbs do not.
+_TECH_SHAPE_RE = re.compile(
+    r"""
+    (?<![\w/.#+-])
+    (?:
+        [A-Za-z][a-z0-9]*[A-Z][A-Za-z0-9]*        # PostgreSQL, LiveView, gRPC
+      | [A-Z][A-Za-z0-9]*\.[A-Za-z][A-Za-z0-9.]* # Node.js, Vue.js
+      | [A-Z]{2,}[0-9]*                           # SQL, AWS, S3, K8S
+      | [A-Z][A-Za-z]+\+\+                       # C++
+      | [A-Z][A-Za-z]*\#                          # C#
+      | [A-Z][A-Za-z]+/[A-Z][A-Za-z]+             # CI/CD, Phoenix/LiveView
+    )
+    (?![\w#+-])
+    """,
+    re.X,
+)
+# Shape-matching tokens that are prose or document furniture, not tools.
+_TECH_SHAPE_STOPWORDS = frozenset(
+    {
+        "A",
+        "AN",
+        "AND",
+        "AS",
+        "AT",
+        "BY",
+        "FOR",
+        "I",
+        "IN",
+        "IT",
+        "OF",
+        "ON",
+        "OR",
+        "STAR",
+        "THE",
+        # Resume furniture that matches the tech shape but names no tool.
+        "GPA",
+        "KPI",
+        "KPIS",
+        "RSVP",
+        "CEO",
+        "CTO",
+        "COO",
+        "VP",
+        "HR",
+        "NYC",
+        "USA",
+        "USD",
+        "PHD",
+        "BS",
+        "MS",
+        "BSC",
+        "MSC",
+        "AM",
+        "PM",
+        "TO",
+        "US",
+        "VS",
+        "WITH",
+    }
+)
+
+
+def technologies_in_experience(master: JSONResume) -> list[str]:
+    """Return technology names that appear in experience/project text.
+
+    The skills section is scored on keyword completeness, but a tool mentioned
+    only inside a work highlight lives nowhere the skills stage may draw from.
+    This widens that source: structured project technologies first, then names
+    mined from free text by shape.
+    """
+
+    found: dict[str, None] = {}
+
+    def add(value: str | None) -> None:
+        if value and (cleaned := value.strip(" .,;:()[]")):
+            found.setdefault(cleaned, None)
+
+    def mine(text: str | None) -> None:
+        for match in _TECH_SHAPE_RE.finditer(text or ""):
+            token = match.group(0)
+            if token.upper() not in _TECH_SHAPE_STOPWORDS:
+                add(token)
+
+    for project in master.projects or []:
+        for value in (project.technologies or []) + (project.skills or []):
+            add(value)
+        mine(project.description)
+        for highlight in project.highlights or []:
+            mine(highlight)
+    for role in master.work or []:
+        mine(role.summary)
+        for highlight in role.highlights or []:
+            mine(highlight)
+
+    already_listed = {
+        keyword.casefold()
+        for group in master.skills or []
+        for keyword in group.keywords or []
+    }
+    return [name for name in found if name.casefold() not in already_listed]
+
+
 def _iter_source_facts(value: object) -> Iterable[dict]:
     if isinstance(value, dict):
         if {"source_id", "text", "entry_id"} <= value.keys():
@@ -730,6 +837,7 @@ def validate_skills(
     allowed = {
         keyword for group in master.skills or [] for keyword in group.keywords or []
     }
+    allowed.update(technologies_in_experience(master))
     if jd_keywords:
         allowed.update(jd_keywords)
     bridge_keywords = [item.keyword for item in transferable_plan.skills]
