@@ -656,7 +656,7 @@ def _role(name: str, start: str, end: str) -> render.Work:
     return render.Work(name=name, position="Engineer", startDate=start, endDate=end)
 
 
-def test_overlapping_roles_are_marked_concurrent():
+def test_overlapping_roles_keep_clean_date_ranges():
     ctx = render._work_ctx(
         [
             _role("Acme", "2024-01", "2025-06"),
@@ -664,11 +664,9 @@ def test_overlapping_roles_are_marked_concurrent():
             _role("Gamma", "2023-01", "2023-06"),
         ]
     )
-    # Beta sits inside Acme, so Beta -- the shorter span -- carries the
-    # qualifier and the reader is not left to infer double employment.
-    assert render.CONCURRENT_ROLE_QUALIFIER not in ctx[0]["dates"]
-    assert render.CONCURRENT_ROLE_QUALIFIER in ctx[1]["dates"]
-    assert render.CONCURRENT_ROLE_QUALIFIER not in ctx[2]["dates"]
+    assert ctx[0]["dates"] == "Jan 2024 -- Jun 2025"
+    assert ctx[1]["dates"] == "Jun 2024 -- Dec 2024"
+    assert ctx[2]["dates"] == "Jan 2023 -- Jun 2023"
 
 
 def test_sequential_and_touching_roles_are_left_alone():
@@ -678,7 +676,7 @@ def test_sequential_and_touching_roles_are_left_alone():
             _role("Beta", "2023-01", "2024-06"),
         ]
     )
-    assert all(render.CONCURRENT_ROLE_QUALIFIER not in item["dates"] for item in ctx)
+    assert [item["dates"] for item in ctx] == ["Jun 2024 -- Jun 2025", "Jan 2023 -- Jun 2024"]
 
 
 def test_unparseable_dates_are_never_annotated():
@@ -689,4 +687,4 @@ def test_unparseable_dates_are_never_annotated():
         ]
     )
     assert ctx[0]["dates"] is None
-    assert render.CONCURRENT_ROLE_QUALIFIER not in ctx[1]["dates"]
+    assert ctx[1]["dates"] == "Jan 2024 -- Present"

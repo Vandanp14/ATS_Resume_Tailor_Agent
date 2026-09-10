@@ -371,50 +371,14 @@ def _education_ctx(education: list[Education] | None) -> list[dict[str, Any]]:
     return ctx
 
 
-CONCURRENT_ROLE_QUALIFIER = "concurrent"
-
-
-def _concurrent_role_indices(work: list[Work]) -> set[int]:
-    """Indices of roles whose dates overlap another role's and need a qualifier.
-
-    Two unqualified overlapping date ranges read as unexplained double
-    employment on a first skim. The shorter of an overlapping pair carries the
-    qualifier, since that is the one a reader is being asked to fit inside the
-    other. Roles with unparseable dates are left alone.
-    """
-
-    spans: dict[int, tuple[float, float]] = {}
-    for index, role in enumerate(work):
-        start = _date_value(role.startDate)
-        end = _date_value(role.endDate)
-        if start is not None and end is not None and start <= end:
-            spans[index] = (start, end)
-
-    flagged: set[int] = set()
-    for first, (start_a, end_a) in spans.items():
-        for second, (start_b, end_b) in spans.items():
-            if second <= first:
-                continue
-            if start_a >= end_b or start_b >= end_a:
-                continue
-            duration_a, duration_b = end_a - start_a, end_b - start_b
-            flagged.add(second if duration_b <= duration_a else first)
-    return flagged
-
-
 def _work_ctx(work: list[Work] | None) -> list[dict[str, Any]]:
     ctx: list[dict[str, Any]] = []
-    roles = list(work or [])
-    concurrent = _concurrent_role_indices(roles)
-    for index, w in enumerate(roles):
-        dates = _date_range(w.startDate, w.endDate)
-        if dates and index in concurrent:
-            dates = f"{dates} ({_esc(CONCURRENT_ROLE_QUALIFIER)})"
+    for w in work or []:
         ctx.append(
             {
                 "name": _esc(w.name),
                 "position": _esc(w.position),
-                "dates": dates,
+                "dates": _date_range(w.startDate, w.endDate),
                 "location": None,  # JSONResume Work carries no location field
                 "highlights": _esc_list(w.highlights),
             }
