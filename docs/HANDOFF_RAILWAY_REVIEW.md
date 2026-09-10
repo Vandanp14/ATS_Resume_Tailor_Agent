@@ -83,6 +83,11 @@ store before scaling.
 - Review checkboxes save to `review_decision.json` only when the report SHA-256 revision still
   matches, preventing stale review decisions from being applied to a changed report.
 - The PDF preview adds `#navpanes=0&view=FitH` to reduce nested viewer chrome.
+- The enterprise workspace control regression was fixed in `29100db`: form controls now have
+  stable intrinsic sizing and explicit typography, and `Tailor again` uses the same button
+  styling as the rest of the workspace.
+- The renderer no longer appends `(concurrent)` to overlapping work-history date ranges;
+  dates remain clean and the behavior is covered by `f824a28`.
 - Tailwind 4.3.3 and daisyUI 5.7.32 are pinned in `package.json` and `package-lock.json`;
   `styles/ui.css` builds `static/ui.css`.
 
