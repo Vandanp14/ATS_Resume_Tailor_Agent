@@ -34,7 +34,7 @@
     --radius-control: 10px;
     --radius-card: 14px;
     --radius-panel: 18px;
-    --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+    --font: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     --mono: "SF Mono", ui-monospace, Menlo, monospace;
     --header-size: 64px;
   }
@@ -43,15 +43,33 @@
 @layer workspace {
   :root { --color-primary: var(--accent); --color-primary-content: #fff; }
   [hidden] { display: none; }
-  .btn { min-block-size: 44px; font-family: var(--font); }
+  .btn {
+    min-block-size: 44px;
+    min-inline-size: 0;
+    max-inline-size: 100%;
+    border-radius: var(--radius-control);
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: normal;
+    white-space: nowrap;
+  }
+  .btn.btn-primary { background: var(--accent); color: #ffffff; }
+  .btn.btn-primary:hover { background: var(--accent-strong); }
+  .btn.btn-outline { border: 1px solid var(--border-strong); background: var(--surface-1); color: var(--text-1); }
+  .btn.btn-outline:hover { border-color: var(--border-strong); background: var(--surface-2); }
+  .btn.btn-ghost { background: transparent; color: var(--text-2); }
+  .btn.btn-ghost:hover { background: var(--surface-2); color: var(--text-1); }
   .job-filters { display: grid; gap: 8px; margin-block-start: 16px; }
   .job-filters label { color: var(--rail-muted); font-size: 12px; }
   .job-filters :is(.input, .select) { inline-size: 100%; background: var(--rail-raised); color: var(--rail-text); border-color: var(--rail-border); }
   .job-filters input::placeholder { color: var(--rail-muted); }
   #rail-new-job, #add-jd-action { display: none; }
-  .detail-header { grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; }
+  .detail-header { min-inline-size: 0; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; }
   .detail-header h1 { font-size: clamp(24px, 2.5vw, 36px); }
-  .job-detail { inline-size: min(1560px, 100%); padding: 24px clamp(16px, 2.5vw, 36px); }
+  .job-detail { inline-size: min(1560px, 100%); min-inline-size: 0; padding: 24px clamp(16px, 2.5vw, 36px); }
+  .detail-title { min-inline-size: 0; overflow: hidden; }
+  .detail-header > .status-pill { flex: 0 0 auto; }
   .job-detail[data-state="completed"] .job-overview { padding: 14px 18px; margin-block-end: 16px; }
   .job-detail[data-state="completed"] .overview-primary strong { font-size: 17px; }
   .preview-panel .panel-heading { margin-block-end: 12px; }
@@ -211,6 +229,8 @@
 
   .button {
     min-block-size: 44px;
+    min-inline-size: 0;
+    max-inline-size: 100%;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -219,6 +239,9 @@
     font-size: 13px;
     font-weight: 750;
     text-decoration: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .button.primary { background: var(--accent); color: #ffffff; }
@@ -576,10 +599,11 @@
   .dialog-body { overflow-y: auto; overscroll-behavior: contain; padding: 20px; }
   .dialog-footer { display: flex; justify-content: flex-end; gap: 9px; border-block-start: 1px solid var(--border-subtle); background: var(--surface-1); padding: 14px 20px; }
 
-  .field { display: grid; gap: 6px; margin-block-end: 10px; }
+  .field { min-inline-size: 0; display: grid; gap: 6px; margin-block-end: 10px; }
   .field label { color: var(--text-2); font-size: 12px; font-weight: 700; }
   .help { color: var(--text-3); font-size: 11.5px; }
   .field input, .field textarea {
+    min-inline-size: 0;
     inline-size: 100%;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-control);
@@ -710,9 +734,6 @@
   .recovery-submit-status { margin-block-start: 9px; }
   .recovery-submit-status.error { color: var(--negative); }
 
-  @supports (field-sizing: content) {
-    .field textarea { field-sizing: content; }
-  }
 }
 
 @layer responsive {
@@ -762,7 +783,7 @@
     .stage-item:nth-last-child(2) { border-block-end: 1px solid var(--border-subtle); }
     .preview-panel iframe { block-size: calc(100dvh - 212px); min-block-size: 480px; }
     .new-job-dialog { inline-size: 100%; }
-    .dialog-footer .button { flex: 1; }
+    .dialog-footer .button, .dialog-footer .btn { min-inline-size: 0; flex: 1 1 0; }
     .recovery-dialog {
       inline-size: 100%;
       block-size: 100dvh;
