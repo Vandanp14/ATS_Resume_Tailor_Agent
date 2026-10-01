@@ -19,6 +19,12 @@ fact bank, not finished prose, and produce concise, strong project entries.
 {{ selected_projects_json or master_projects_json }}
 <<<END_SELECTED_PROJECT_EVIDENCE>>>
 
+{% if requirement_map_json %}
+<<<JD_REQUIREMENT_MAP>>>
+{{ requirement_map_json }}
+<<<END_JD_REQUIREMENT_MAP>>>
+{% endif %}
+
 <<<TRANSFERABLE_SKILLS_RESERVED_FOR_SKILLS_SECTION>>>
 {{ transferable_skill_keywords_json }}
 <<<END_TRANSFERABLE_SKILLS_RESERVED_FOR_SKILLS_SECTION>>>
@@ -55,6 +61,21 @@ Return one entry for each selected source_id and no other entries:
 }
 
 Rules:
+- ATS matching is literal. When a bullet's evidence supports a `direct`
+  requirement in JD_REQUIREMENT_MAP, write that requirement with the map's
+  exact spelling ("PostgreSQL", not "Postgres"). Spell an acronym out once
+  where natural: "Continuous Integration (CI/CD)".
+- Name only technologies the bullet's cited facts name. Never upgrade a
+  generic fact to a specific product: "SQL" evidence stays "SQL", never
+  "PostgreSQL"; "cloud deployment" never becomes "AWS". Code checks this.
+- A `proxy` requirement is a technology the candidate has NOT used. When the
+  evidence is its proxy fact, name the real technology from `proxy_terms` and
+  the shared concept, e.g. "built in Clojure with immutable data structures",
+  never the missing requirement.
+- A proxy bullet reads exactly like any other bullet: real action, real
+  technology, real result. Never explain the resemblance to the job's
+  requirement ("mirroring ... architectures", "aligning with modern ...
+  environments", "matching core ... paradigms"); code rejects those phrases.
 - Return exactly two complementary bullets for every selected project.
 - Every STAR field must be non-empty, and `text` must communicate the supplied
   situation/task, action, and result in one concise sentence.

@@ -11,6 +11,8 @@ from models import (
     HolisticReview,
     JDProfile,
     ProjectRewriteResponse,
+    RequirementProxy,
+    RequirementProxyPlan,
     ScoredSkill,
     SectionEdits,
     SelectionCandidate,
@@ -47,16 +49,19 @@ class Stub:
         self.selected = selected_evidence()
         self.plan = evidence_plan(self.selected)
         self.bridge = bridge
-        self.transferable_plan = TransferableSkillPlan(
-            skills=(
+        self.proxy_plan = RequirementProxyPlan(
+            proxies=(
                 [
-                    TransferableSkill(
-                        keyword="Figma",
+                    RequirementProxy(
+                        requirement="Figma",
                         requirement_type="nice_to_have",
                         category="tool",
+                        proximity="analogous_workflow",
+                        proxy_terms=["reusable components"],
                         source_fact_ids=["work[1].highlights[1]"],
                         transfer_basis="Accessible component design is adjacent UI evidence.",
                         relevance=80,
+                        list_as_transferable_skill=True,
                     )
                 ]
                 if bridge
@@ -87,8 +92,8 @@ class Stub:
             )
         if response_model is EvidencePlan:
             return self.plan
-        if response_model is TransferableSkillPlan:
-            return self.transferable_plan
+        if response_model is RequirementProxyPlan:
+            return self.proxy_plan
         if response_model is TailoredSkills:
             return TailoredSkills(
                 skills=[
@@ -142,7 +147,7 @@ def test_evidence_planner_replaces_summary_and_reviewer_runs_exactly_once(
     assert result == 0
     models = [model for _, model, _ in stub.calls]
     assert models.count(EvidencePlan) == 1
-    assert models.count(TransferableSkillPlan) == 0
+    assert models.count(RequirementProxyPlan) == 0
     assert models.count(HolisticReview) == 1
     assert models[-1] is HolisticReview
     assert all(model.__name__ != "TailoredSummary" for model in models)
@@ -181,12 +186,12 @@ def test_opt_in_transferable_skill_stage_is_traced_and_skills_only(
     result, stub = run(monkeypatch, tmp_path, real_render=True, bridge=True)
     assert result == 0
     models = [model for _, model, _ in stub.calls]
-    assert models.count(TransferableSkillPlan) == 1
+    assert models.count(RequirementProxyPlan) == 1
     bridge_context = next(
-        context for _, model, context in stub.calls if model is TransferableSkillPlan
+        context for _, model, context in stub.calls if model is RequirementProxyPlan
     )
     assert "global_evidence_json" in bridge_context
-    assert "master_skill_keywords_json" in bridge_context
+    assert "Figma" in bridge_context["missing_requirements_json"]
 
     tailored = json.loads((tmp_path / "tailored.json").read_text())
     report = json.loads((tmp_path / "match_report.json").read_text())

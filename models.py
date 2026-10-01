@@ -155,9 +155,29 @@ class JSONResume(BaseModel):
 # Compact LLM contracts -------------------------------------------------------
 
 
+KeywordCategory = Literal[
+    "language",
+    "framework",
+    "tool",
+    "platform",
+    "methodology",
+    "domain_skill",
+    "soft_skill",
+    "responsibility",
+    "other",
+]
+SkillCategory = Literal[
+    "tool", "framework", "language", "platform", "methodology", "domain_skill"
+]
+RequirementType = Literal["must_have", "nice_to_have", "weighted_keyword"]
+
+
 class KeywordWeight(StrictModel):
     term: str = Field(min_length=1)
     weight: int = Field(ge=1, le=5)
+    aliases: list[str] = Field(default_factory=list)
+    category: KeywordCategory | None = None
+    evidence_span: str | None = None
 
 
 class JDProfile(StrictModel):
@@ -168,6 +188,8 @@ class JDProfile(StrictModel):
     must_have_skills: list[str]
     nice_to_have_skills: list[str]
     keywords: list[KeywordWeight]
+    title_aliases: list[str] = Field(default_factory=list)
+    responsibilities: list[str] = Field(default_factory=list)
 
 
 # Company research (grounded web search; unconstrained decoding — see llm_utils
@@ -229,6 +251,7 @@ class SelectionCandidate(StrictModel):
     relevance: int = Field(ge=0, le=100)
     selected: bool
     matched_requirements: list[str] = Field(default_factory=list)
+    covered_requirement_ids: list[str] = Field(default_factory=list)
     reason: str | None = None
 
 
@@ -252,18 +275,35 @@ class EvidenceAssignment(StrictModel):
     matched_requirements: list[str] = Field(min_length=1)
     intended_accomplishment: str = Field(min_length=1)
     inferred_impact: ImpactInference | None
+    target_terms: list[str] = Field(default_factory=list)
 
 
 class EvidencePlan(StrictModel):
     assignments: list[EvidenceAssignment] = Field(min_length=1)
 
 
+class RequirementProxy(StrictModel):
+    """Closest real master evidence for a JD requirement the master lacks."""
+
+    requirement: str = Field(min_length=1)
+    requirement_type: RequirementType
+    category: SkillCategory
+    proximity: Literal["same_family", "same_paradigm", "analogous_workflow"]
+    proxy_terms: list[str] = Field(min_length=1)
+    source_fact_ids: list[str] = Field(min_length=1)
+    transfer_basis: str = Field(min_length=1)
+    relevance: int = Field(ge=0, le=100)
+    list_as_transferable_skill: bool
+
+
+class RequirementProxyPlan(StrictModel):
+    proxies: list[RequirementProxy] = Field(max_length=8)
+
+
 class TransferableSkill(StrictModel):
     keyword: str = Field(min_length=1)
-    requirement_type: Literal["must_have", "nice_to_have", "weighted_keyword"]
-    category: Literal[
-        "tool", "framework", "language", "platform", "methodology", "domain_skill"
-    ]
+    requirement_type: RequirementType
+    category: SkillCategory
     source_fact_ids: list[str] = Field(min_length=1)
     transfer_basis: str = Field(min_length=1)
     relevance: int = Field(ge=0, le=100)

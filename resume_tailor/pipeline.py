@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import inspect
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -22,10 +23,28 @@ from models import (
     JSONResume,
     ProjectRewriteItem,
     ProjectRewriteResponse,
+    RequirementProxyPlan,
     TailoredSkills,
     TransferableSkillPlan,
     WorkRewriteItem,
     WorkRewriteResponse,
+)
+from keyword_coverage import (
+    attach_proxies,
+    forbidden_claim_terms,
+    missing_requirements,
+    placement_findings,
+    priority_proxies,
+    prompt_requirement_map,
+    requirement_map,
+    resume_coverage,
+    sanitize_jd_profile,
+    supported_tech_requirements,
+)
+from llm_utils import (
+    describe_api_error,
+    is_model_unavailable,
+    is_persistent_unavailability,
 )
 from prompts.template_manager import TemplateManager
 
@@ -38,23 +57,30 @@ from .assembly import (
     partition_review_truth_violations,
     scan_bullet_style,
     scan_metric_quality,
+    scan_unsupported_technology,
     transferable_skill_injections,
+    waive_cross_entry_objections,
 )
-from .config import DEFAULT_MODEL, MODEL_PARAMETERS
+from .config import DEFAULT_MODEL, FALLBACK_MODELS, MODEL_PARAMETERS, PLANNING_MODELS
 from .evidence import (
     RESEARCH_THIN_JD_SIGNAL_THRESHOLD,
     ContractError,
     SelectedEvidence,
+    align_inference_provenance,
     choose_selected,
     global_evidence_payload,
     jd_signal_is_thin,
     jd_signal_strength,
     master_fact_index,
     project_evidence,
+    proxy_coverage_gaps,
+    sanitize_target_terms,
     technologies_in_experience,
+    transferable_plan_from_proxies,
     validate_evidence_plan,
     validate_concise_bullet,
     validate_project_item,
+    validate_requirement_proxy_plan,
     validate_skills,
     validate_transferable_skill_plan,
     validate_work_item,
@@ -84,6 +110,7 @@ from .runtime import (
     MAX_SELECTED_PROJECTS,
     MAX_SELECTED_WORK,
     PROJECT_REWRITE_BATCH_SIZE,
+    ModelUnavailableError,
     PacedProvider,
     RatePacer,
     StageFailure,
@@ -102,7 +129,7 @@ _TEMPLATE_STAGES = {
     "select_work": Stage.SELECT_WORK,
     "select_projects": Stage.SELECT_PROJECTS,
     "plan_evidence": Stage.PLAN_EVIDENCE,
-    "plan_skill_bridges": Stage.PLAN_TRANSFERABLE_SKILLS,
+    "plan_requirement_coverage": Stage.MAP_REQUIREMENTS,
     "tailor_skills": Stage.TAILOR_SKILLS,
     "tailor_work": Stage.REWRITE_WORK,
     "tailor_projects": Stage.REWRITE_PROJECTS,
@@ -110,6 +137,41 @@ _TEMPLATE_STAGES = {
     "concise_bullet": Stage.EMERGENCY_CONCISION,
     "audit_concision": Stage.CONCISION_AUDIT,
 }
+
+
+# Reasoning-heavy stages run on the planning chain (stronger models first).
+PLANNING_TEMPLATES = frozenset(
+    {
+        "plan_requirement_coverage",
+        "select_work",
+        "select_projects",
+        "plan_evidence",
+        "holistic_review",
+    }
+)
+_DETERMINISTIC_TEMPLATES = frozenset(
+    {
+        "jd_parse",
+        "plan_requirement_coverage",
+        "select_work",
+        "select_projects",
+        "plan_evidence",
+        "tailor_skills",
+        "holistic_review",
+        "audit_concision",
+    }
+)
+_PLANNING_MAX_OUTPUT_TOKENS = 32768
+# A model that is merely overloaded (503) or slow is retried after this many
+# seconds; a retired model or exhausted quota stays skipped for the run.
+TRANSIENT_COOLDOWN_SECONDS = 90.0
+# Rewrites get one strict attempt (technology-support check on, with feedback)
+# plus two lenient ones, so the stricter first pass never costs the run.
+REWRITE_ATTEMPTS = 3
+
+
+def _dedupe(models: Sequence[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(model for model in models if model))
 
 
 def _provider_supports_grounding(model: str) -> bool:
@@ -283,6 +345,8 @@ class TailorPipeline:
         bridge_skills: bool = False,
         allow_fit_recovery: bool = False,
         research_company: bool = False,
+        planning_models: Sequence[str] | None = None,
+        fallback_models: Sequence[str] | None = None,
     ) -> None:
         self.model = model
         self.bridge_skills = bridge_skills
@@ -298,6 +362,17 @@ class TailorPipeline:
         )
         self.templates = TemplateManager(str(_TEMPLATE_DIR))
         self.options = MODEL_PARAMETERS.get(model, {"temperature": 0.1, "top_p": 0.9})
+        # Model chains apply only to Gemini through the real provider: an
+        # injected provider (tests, custom adapters) stays on ``model`` alone.
+        chains_enabled = provider is None and model.startswith("gemini")
+        if planning_models is None:
+            planning_models = PLANNING_MODELS if chains_enabled else ()
+        if fallback_models is None:
+            fallback_models = FALLBACK_MODELS if chains_enabled else ()
+        self.default_chain = _dedupe([model, *fallback_models])
+        self.planning_chain = _dedupe([*planning_models, *self.default_chain])
+        # model -> (API error text, skip-until monotonic time or None for the run)
+        self._unavailable_models: dict[str, tuple[str, float | None]] = {}
 
     def _messages(self, template_name: str, **context: object) -> list[dict[str, str]]:
         stage = {
@@ -318,38 +393,103 @@ class TailorPipeline:
         messages.append({"role": "user", "content": prompt})
         return messages
 
+    def _chain_for(self, template_name: str) -> tuple[str, ...]:
+        return (
+            self.planning_chain
+            if template_name in PLANNING_TEMPLATES
+            else self.default_chain
+        )
+
+    def _skipped(self, model: str) -> bool:
+        entry = self._unavailable_models.get(model)
+        if entry is None:
+            return False
+        _, until = entry
+        if until is not None and time.monotonic() >= until:
+            del self._unavailable_models[model]
+            return False
+        return True
+
     def _call_once[_Result: BaseModel](
         self,
         template_name: str,
         response_model: type[_Result],
         **context: object,
     ) -> _Result:
-        options = dict(self.options)
-        if template_name in {
-            "jd_parse",
-            "select_work",
-            "select_projects",
-            "plan_evidence",
-            "plan_skill_bridges",
-            "tailor_skills",
-            "holistic_review",
-            "audit_concision",
-        }:
-            options.update({"temperature": 0.0, "top_p": 1.0})
-        return call_llm_with_retry(
-            self.provider,
-            self.model,
-            self._messages(template_name, **context),
-            response_model,
-            options=options,
-            max_retries=0,
-        )  # type: ignore[return-value]
+        """One structured call, walking the stage's model chain on API outages.
 
-    def _retry(self, template_name: str, attempt: int, error: object) -> None:
+        A model that is overloaded, rate-limited, or retired is skipped for the
+        rest of the run. Errors every model shares (bad key, bad request) stop
+        the run immediately; so does exhausting the chain. Both surface the
+        API's own error text.
+        """
+
+        messages = self._messages(template_name, **context)
+        chain = self._chain_for(template_name)
+        failures = [
+            (model, self._unavailable_models[model][0])
+            for model in chain
+            if self._skipped(model)
+        ]
+        for model in chain:
+            if self._skipped(model):
+                continue
+            options = dict(MODEL_PARAMETERS.get(model, self.options))
+            if template_name in _DETERMINISTIC_TEMPLATES:
+                options.update({"temperature": 0.0, "top_p": 1.0})
+            if template_name in PLANNING_TEMPLATES and model != self.model:
+                options["max_output_tokens"] = _PLANNING_MAX_OUTPUT_TOKENS
+            try:
+                result = call_llm_with_retry(
+                    self.provider,
+                    model,
+                    messages,
+                    response_model,
+                    options=options,
+                    max_retries=0,
+                )
+            except LLMExtractionError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - classified below
+                if not is_model_unavailable(exc):
+                    if len(chain) == 1:
+                        raise
+                    raise ModelUnavailableError(
+                        template_name, [(model, describe_api_error(exc))]
+                    ) from exc
+                error = describe_api_error(exc)
+                self._unavailable_models[model] = (
+                    error,
+                    None
+                    if is_persistent_unavailability(exc)
+                    else time.monotonic() + TRANSIENT_COOLDOWN_SECONDS,
+                )
+                failures.append((model, error))
+                remaining = [m for m in chain if not self._skipped(m)]
+                if len(chain) > 1:
+                    self.tracker.warn(
+                        f"{model} unavailable for {template_name} ({error}); "
+                        + (
+                            f"falling back to {remaining[0]}"
+                            if remaining
+                            else "no fallback model left"
+                        )
+                    )
+                if len(chain) == 1:
+                    raise
+                continue
+            if model != self.model:
+                self.tracker.detail(f"{template_name} answered by {model}")
+            return result  # type: ignore[return-value]
+        raise ModelUnavailableError(template_name, failures)
+
+    def _retry(
+        self, template_name: str, attempt: int, error: object, max_attempts: int = 2
+    ) -> None:
         self.tracker.retry(
             _TEMPLATE_STAGES[template_name],
             attempt=attempt,
-            max_attempts=2,
+            max_attempts=max_attempts,
             message=str(error),
         )
 
@@ -376,6 +516,76 @@ class TailorPipeline:
             selected_ids=selected_ids,
             validator=validator,
         )
+
+    def _map_requirements(
+        self,
+        jd_json: str,
+        requirements: list[dict],
+        facts: dict[str, dict],
+        global_evidence_json: str,
+    ) -> tuple[list[dict], RequirementProxyPlan]:
+        """Find the closest real evidence for each JD requirement the master lacks.
+
+        Direct matches are decided in code; the model only classifies gaps.
+        No gaps means no call. A planner that cannot produce a valid map
+        degrades to "no proxies" with a warning instead of failing the run.
+        """
+
+        empty = RequirementProxyPlan(proxies=[])
+        gaps = [
+            item
+            for item in missing_requirements(requirements)
+            if item.get("category") not in {"soft_skill", "responsibility"}
+        ]
+        if not gaps:
+            self.tracker.detail("Every JD requirement is stated in the master")
+            return requirements, empty
+        attempts = 0
+        repaired: list[str] = []
+
+        def validate(value: RequirementProxyPlan) -> None:
+            # Strict first, so the retry gets precise feedback; on the retry,
+            # drop only the unsupported proxies or terms and keep the rest.
+            nonlocal attempts
+            attempts += 1
+            repaired[:] = validate_requirement_proxy_plan(
+                value, requirements, facts, repair=attempts > 1
+            )
+
+        try:
+            plan = self._simple_stage(
+                "plan_requirement_coverage",
+                RequirementProxyPlan,
+                validator=validate,
+                jd_profile_json=jd_json,
+                missing_requirements_json=json.dumps(
+                    [
+                        {
+                            "id": item["id"],
+                            "term": item["term"],
+                            "requirement_type": item["requirement_type"],
+                            "weight": item["weight"],
+                            "category": item.get("category"),
+                        }
+                        for item in gaps
+                    ],
+                    indent=2,
+                ),
+                stated_requirements_json=json.dumps(
+                    [item["term"] for item in requirements if item["status"] == "direct"]
+                ),
+                global_evidence_json=global_evidence_json,
+            )
+        except ModelUnavailableError:
+            raise
+        except StageFailure as exc:
+            self.tracker.warn(
+                f"Requirement gap mapping failed; continuing without proxies: {exc}"
+            )
+            return requirements, empty
+        for note in repaired:
+            self.tracker.warn(f"Dropped unsupported proxy evidence: {note}")
+        return attach_proxies(requirements, plan.proxies), plan
 
     def _parse_jd(self, jd_text: str) -> JDProfile:
         return self._simple_stage("jd_parse", JDProfile, jd_text=jd_text)
@@ -458,6 +668,9 @@ class TailorPipeline:
         cap: int,
         company_stack_json: str | None = None,
         company_signals_json: str | None = None,
+        requirements: Sequence[dict] | None = None,
+        fact_index: dict[str, dict] | None = None,
+        jd: JDProfile | None = None,
     ) -> list[dict]:
         del section
         if not evidence:
@@ -477,6 +690,11 @@ class TailorPipeline:
                     candidates_json=json.dumps(subset, indent=2),
                     company_stack_json=company_stack_json,
                     company_signals_json=company_signals_json,
+                    requirement_map_json=(
+                        json.dumps(prompt_requirement_map(requirements), indent=2)
+                        if requirements is not None
+                        else None
+                    ),
                     feedback=(
                         None
                         if attempt == 1
@@ -507,7 +725,14 @@ class TailorPipeline:
             pending = [source_id for source_id in pending if source_id in unresolved]
             if not pending:
                 try:
-                    return choose_selected(accepted, evidence, cap)
+                    return choose_selected(
+                        accepted,
+                        evidence,
+                        cap,
+                        requirements=requirements,
+                        fact_index=fact_index,
+                        jd=jd,
+                    )
                 except ContractError as exc:
                     errors.append(str(exc))
                     if attempt == 1:
@@ -529,6 +754,9 @@ class TailorPipeline:
         fact_index: dict[str, dict],
         company_stack_json: str | None = None,
         company_signals_json: str | None = None,
+        requirement_map_json: str | None = None,
+        forbidden_terms: Sequence[str] = (),
+        tech_requirements: Sequence[tuple[str, Sequence[str]]] = (),
     ) -> list[WorkRewriteItem]:
         if not sources:
             return []
@@ -537,7 +765,7 @@ class TailorPipeline:
         pending = list(expected)
         last: object = None
         errors: list[str] = []
-        for attempt in (1, 2):
+        for attempt in range(1, REWRITE_ATTEMPTS + 1):
             subset = [expected[source_id] for source_id in pending]
             try:
                 result = self._call_once(
@@ -554,24 +782,29 @@ class TailorPipeline:
                         indent=2,
                     ),
                     transferable_skill_keywords_json=json.dumps(
-                        [item.keyword for item in transferable_skill_plan.skills]
+                        sorted(
+                            {item.keyword for item in transferable_skill_plan.skills}
+                            | set(forbidden_terms)
+                        )
                     ),
                     company_stack_json=company_stack_json,
                     company_signals_json=company_signals_json,
+                    requirement_map_json=requirement_map_json,
                     feedback=(
                         None
                         if attempt == 1
                         else "Rewrite only these missing or invalid source IDs: "
                         + ", ".join(pending)
+                        + (f". Errors: {'; '.join(errors[-3:])}" if errors else "")
                     ),
                 )
                 last = result
             except LLMExtractionError as exc:
                 last = exc.raw_response
                 errors.append(str(exc))
-                if attempt == 2:
+                if attempt == REWRITE_ATTEMPTS:
                     break
-                self._retry("tailor_work", 2, exc)
+                self._retry("tailor_work", attempt + 1, exc, REWRITE_ATTEMPTS)
                 pending = list(expected)
                 accepted.clear()
                 continue
@@ -584,6 +817,10 @@ class TailorPipeline:
                     evidence_plan,
                     fact_index,
                     transferable_skill_plan,
+                    forbidden_terms,
+                    # Strict once (with feedback), advisory afterwards: the
+                    # reviewer sees any remaining hits and fixes them.
+                    tech_requirements if attempt == 1 else (),
                 ),
             )
             if any(error.startswith("unknown source IDs") for error in partial_errors):
@@ -599,11 +836,16 @@ class TailorPipeline:
             pending = [source_id for source_id in pending if source_id in unresolved]
             if not pending:
                 return [accepted[item["source_id"]] for item in sources]
-            if attempt == 1:
+            if attempt < REWRITE_ATTEMPTS:
                 self._retry(
-                    "tailor_work", 2, "; ".join(partial_errors) or "missing entries"
+                    "tailor_work",
+                    attempt + 1,
+                    "; ".join(partial_errors) or "missing entries",
+                    REWRITE_ATTEMPTS,
                 )
-        raise StageFailure("tailor_work", 2, list(expected), last, "; ".join(errors))
+        raise StageFailure(
+            "tailor_work", REWRITE_ATTEMPTS, list(expected), last, "; ".join(errors)
+        )
 
     def _rewrite_project_batch(
         self,
@@ -615,6 +857,9 @@ class TailorPipeline:
         fact_index: dict[str, dict],
         company_stack_json: str | None = None,
         company_signals_json: str | None = None,
+        requirement_map_json: str | None = None,
+        forbidden_terms: Sequence[str] = (),
+        tech_requirements: Sequence[tuple[str, Sequence[str]]] = (),
     ) -> list[ProjectRewriteItem]:
         self.tracker.detail(
             f"Project rewrite batch {batch_number}/{batch_total}", verbose_only=False
@@ -624,7 +869,7 @@ class TailorPipeline:
         pending = list(expected)
         last: object = None
         errors: list[str] = []
-        for attempt in (1, 2):
+        for attempt in range(1, REWRITE_ATTEMPTS + 1):
             subset = [expected[source_id] for source_id in pending]
             try:
                 result = self._call_once(
@@ -633,24 +878,29 @@ class TailorPipeline:
                     jd_profile_json=jd_json,
                     selected_projects_json=json.dumps(subset, indent=2),
                     transferable_skill_keywords_json=json.dumps(
-                        [item.keyword for item in transferable_skill_plan.skills]
+                        sorted(
+                            {item.keyword for item in transferable_skill_plan.skills}
+                            | set(forbidden_terms)
+                        )
                     ),
                     company_stack_json=company_stack_json,
                     company_signals_json=company_signals_json,
+                    requirement_map_json=requirement_map_json,
                     feedback=(
                         None
                         if attempt == 1
                         else "Rewrite only these missing or invalid source IDs: "
                         + ", ".join(pending)
+                        + (f". Errors: {'; '.join(errors[-3:])}" if errors else "")
                     ),
                 )
                 last = result
             except LLMExtractionError as exc:
                 last = exc.raw_response
                 errors.append(str(exc))
-                if attempt == 2:
+                if attempt == REWRITE_ATTEMPTS:
                     break
-                self._retry("tailor_projects", 2, exc)
+                self._retry("tailor_projects", attempt + 1, exc, REWRITE_ATTEMPTS)
                 pending = list(expected)
                 accepted.clear()
                 continue
@@ -658,7 +908,14 @@ class TailorPipeline:
                 result.projects,
                 {source_id: expected[source_id] for source_id in pending},
                 lambda item, source: validate_project_item(
-                    item, source, fact_index, transferable_skill_plan
+                    item,
+                    source,
+                    fact_index,
+                    transferable_skill_plan,
+                    forbidden_terms,
+                    # Strict once (with feedback), advisory afterwards: the
+                    # reviewer sees any remaining hits and fixes them.
+                    tech_requirements if attempt == 1 else (),
                 ),
             )
             if any(error.startswith("unknown source IDs") for error in partial_errors):
@@ -674,15 +931,16 @@ class TailorPipeline:
             pending = [source_id for source_id in pending if source_id in unresolved]
             if not pending:
                 return [accepted[item["source_id"]] for item in sources]
-            if attempt == 1:
+            if attempt < REWRITE_ATTEMPTS:
                 self._retry(
                     "tailor_projects",
-                    2,
+                    attempt + 1,
                     "; ".join(partial_errors) or "missing entries",
+                    REWRITE_ATTEMPTS,
                 )
         raise StageFailure(
             f"tailor_projects.batch_{batch_number}",
-            2,
+            REWRITE_ATTEMPTS,
             list(expected),
             last,
             "; ".join(errors),
@@ -696,6 +954,9 @@ class TailorPipeline:
         fact_index: dict[str, dict],
         company_stack_json: str | None = None,
         company_signals_json: str | None = None,
+        requirement_map_json: str | None = None,
+        forbidden_terms: Sequence[str] = (),
+        tech_requirements: Sequence[tuple[str, Sequence[str]]] = (),
     ) -> list[ProjectRewriteItem]:
         rewritten: list[ProjectRewriteItem] = []
         batch_total = max(
@@ -715,6 +976,9 @@ class TailorPipeline:
                     fact_index,
                     company_stack_json,
                     company_signals_json,
+                    requirement_map_json,
+                    forbidden_terms,
+                    tech_requirements,
                 )
             )
         return rewritten
@@ -729,6 +993,7 @@ class TailorPipeline:
     ) -> int:
         out_dir = Path(out_dir)
         self.tracker.job = job
+        self._unavailable_models = {}
         try:
             with self.tracker.stage(Stage.PREFLIGHT):
                 self.tracker.detail(f"Model: {self.model}")
@@ -738,6 +1003,12 @@ class TailorPipeline:
 
             with self.tracker.stage(Stage.PARSE_JD):
                 jd = self._parse_jd(jd_text)
+                jd, dropped_keywords = sanitize_jd_profile(jd, jd_text)
+                if dropped_keywords:
+                    self.tracker.warn(
+                        "Dropped JD keywords the posting never states: "
+                        + ", ".join(dropped_keywords)
+                    )
                 jd_json = jd.model_dump_json(indent=2)
 
             company_stack_json: str | None = None
@@ -782,6 +1053,46 @@ class TailorPipeline:
                             signals.model_dump_json(indent=2) if signals else None
                         )
 
+            facts = master_fact_index(master)
+            global_evidence_json = json.dumps(global_evidence_payload(master), indent=2)
+            with self.tracker.stage(Stage.MAP_REQUIREMENTS):
+                requirements, proxy_plan = self._map_requirements(
+                    jd_json, requirement_map(jd, facts), facts, global_evidence_json
+                )
+                transferable_skill_plan = TransferableSkillPlan(skills=[])
+                if self.bridge_skills and proxy_plan.proxies:
+                    candidate_plan = transferable_plan_from_proxies(proxy_plan)
+                    try:
+                        validate_transferable_skill_plan(
+                            candidate_plan, jd, master, facts
+                        )
+                        transferable_skill_plan = candidate_plan
+                    except ContractError as exc:
+                        self.tracker.warn(
+                            f"Transferable skills group skipped: {exc}"
+                        )
+                forbidden_terms = forbidden_claim_terms(requirements)
+                tech_requirements = supported_tech_requirements(requirements)
+                priority = priority_proxies(requirements, facts)
+                requirement_map_json = json.dumps(
+                    prompt_requirement_map(requirements), indent=2
+                )
+                counts = {
+                    status: sum(1 for item in requirements if item["status"] == status)
+                    for status in ("direct", "proxy", "missing")
+                }
+                self.tracker.detail(
+                    f"Requirements: {counts['direct']} stated, {counts['proxy']} "
+                    f"bridged by adjacent evidence, {counts['missing']} unsupported"
+                )
+                for item in requirements:
+                    if item["status"] == "proxy":
+                        self.tracker.detail(
+                            f"Gap {item['term']!r} -> closest evidence "
+                            f"{', '.join(item['proxy_terms'])} "
+                            f"({', '.join(item['proxy_fact_ids'])})"
+                        )
+
             all_work = work_evidence(master)
             all_projects = project_evidence(master)
             with self.tracker.stage(Stage.SELECT_WORK):
@@ -794,6 +1105,9 @@ class TailorPipeline:
                         MAX_SELECTED_WORK,
                         company_stack_json,
                         company_signals_json,
+                        requirements=requirements,
+                        fact_index=facts,
+                        jd=jd,
                     )
                 )
             with self.tracker.stage(Stage.SELECT_PROJECTS):
@@ -806,23 +1120,57 @@ class TailorPipeline:
                         MAX_SELECTED_PROJECTS,
                         company_stack_json,
                         company_signals_json,
+                        requirements=requirements,
+                        fact_index=facts,
+                        jd=jd,
                     )
                 )
             selected = SelectedEvidence(work=selected_work, projects=selected_projects)
 
-            facts = master_fact_index(master)
             targets = work_bullet_targets(selected.work)
+            proxy_warnings: list[str] = []
+            dropped_target_terms: list[str] = []
+            plan_attempts = 0
+
+            def validate_plan(value: EvidencePlan) -> None:
+                # Truth and shape errors always retry. Unplaced proxy evidence
+                # retries once with a precise instruction, then degrades to a
+                # warning so a stubborn model cannot fail the whole run.
+                nonlocal plan_attempts
+                plan_attempts += 1
+                align_inference_provenance(value)
+                validate_evidence_plan(value, selected.work, facts)
+                dropped_target_terms[:] = sanitize_target_terms(
+                    value, requirements, forbidden_terms, facts
+                )
+                gaps = proxy_coverage_gaps(value, priority, selected.projects, facts)
+                if gaps and plan_attempts == 1:
+                    raise ContractError(
+                        "evidence plan omits closest evidence for missing "
+                        "requirements: " + " | ".join(gaps)
+                    )
+                proxy_warnings[:] = gaps
+
             with self.tracker.stage(Stage.PLAN_EVIDENCE):
                 evidence_plan = self._simple_stage(
                     "plan_evidence",
                     EvidencePlan,
                     selected_ids=list(targets),
-                    validator=lambda value: validate_evidence_plan(
-                        value, selected.work, facts
-                    ),
+                    validator=validate_plan,
                     jd_profile_json=jd_json,
-                    global_evidence_json=json.dumps(
-                        global_evidence_payload(master), indent=2
+                    global_evidence_json=global_evidence_json,
+                    requirement_map_json=requirement_map_json,
+                    priority_proxies_json=json.dumps(
+                        [
+                            {
+                                "requirement_id": item["id"],
+                                "requirement": item["term"],
+                                "proxy_terms": item["proxy_terms"],
+                                "proxy_fact_ids": item["proxy_fact_ids"],
+                            }
+                            for item in priority
+                        ],
+                        indent=2,
                     ),
                     selected_work_destinations_json=json.dumps(
                         [
@@ -837,35 +1185,29 @@ class TailorPipeline:
                                 "matched_requirements": item.get(
                                     "selection_matched_requirements", []
                                 ),
+                                "covered_requirement_ids": item.get(
+                                    "selection_covered_requirement_ids", []
+                                ),
                             }
                             for item in selected.work
                         ],
                         indent=2,
                     ),
+                    selected_projects_json=json.dumps(
+                        [
+                            {"source_id": item["source_id"], "name": item.get("name")}
+                            for item in selected.projects
+                        ],
+                        indent=2,
+                    ),
                     bullet_targets_json=json.dumps(targets, indent=2),
                 )
-
-            transferable_skill_plan = TransferableSkillPlan(skills=[])
-            if self.bridge_skills:
-                with self.tracker.stage(Stage.PLAN_TRANSFERABLE_SKILLS):
-                    transferable_skill_plan = self._simple_stage(
-                        "plan_skill_bridges",
-                        TransferableSkillPlan,
-                        validator=lambda value: validate_transferable_skill_plan(
-                            value, jd, master, facts
-                        ),
-                        jd_profile_json=jd_json,
-                        global_evidence_json=json.dumps(
-                            global_evidence_payload(master), indent=2
-                        ),
-                        master_skill_keywords_json=json.dumps(
-                            [
-                                keyword
-                                for group in master.skills or []
-                                for keyword in group.keywords or []
-                            ],
-                            indent=2,
-                        ),
+                for message in proxy_warnings:
+                    self.tracker.warn(f"Proxy evidence not placed: {message}")
+                if dropped_target_terms:
+                    self.tracker.detail(
+                        "Ignored unsupported target terms: "
+                        + ", ".join(dropped_target_terms)
                     )
 
             with self.tracker.stage(Stage.TAILOR_SKILLS):
@@ -891,6 +1233,7 @@ class TailorPipeline:
                         transferable_skill_plan_json=(
                             transferable_skill_plan.model_dump_json(indent=2)
                         ),
+                        requirement_map_json=requirement_map_json,
                     )
             with self.tracker.stage(Stage.REWRITE_WORK):
                 work = tuple(
@@ -902,6 +1245,9 @@ class TailorPipeline:
                         facts,
                         company_stack_json,
                         company_signals_json,
+                        requirement_map_json,
+                        forbidden_terms,
+                        tech_requirements,
                     )
                 )
             with self.tracker.stage(Stage.REWRITE_PROJECTS):
@@ -913,6 +1259,9 @@ class TailorPipeline:
                         facts,
                         company_stack_json,
                         company_signals_json,
+                        requirement_map_json,
+                        forbidden_terms,
+                        tech_requirements,
                     )
                 )
             components = PipelineComponents(
@@ -922,10 +1271,18 @@ class TailorPipeline:
                 selected=selected,
                 evidence_plan=evidence_plan,
                 transferable_skill_plan=transferable_skill_plan,
+                forbidden_terms=forbidden_terms,
             )
             with self.tracker.stage(Stage.ASSEMBLE):
                 draft = assemble_scored(master, components)
                 draft_plain = scored_to_plain(draft)
+                draft_coverage = resume_coverage(
+                    draft_plain.model_dump(mode="json"), requirements
+                )
+                self.tracker.detail(
+                    f"Draft keyword coverage {draft_coverage['computed_coverage_pct']}% "
+                    f"(stated requirements: {draft_coverage['supported_coverage_pct']}%)"
+                )
 
             with self.tracker.stage(Stage.HOLISTIC_REVIEW):
                 review = self._simple_stage(
@@ -937,6 +1294,30 @@ class TailorPipeline:
                     evidence_plan_json=evidence_plan.model_dump_json(indent=2),
                     transferable_skill_plan_json=(
                         transferable_skill_plan.model_dump_json(indent=2)
+                    ),
+                    requirement_map_json=requirement_map_json,
+                    computed_keyword_gaps_json=json.dumps(
+                        {
+                            "computed_coverage_pct": draft_coverage[
+                                "computed_coverage_pct"
+                            ],
+                            "stated_in_master_but_missing_from_draft": draft_coverage[
+                                "missing_supported_terms"
+                            ],
+                            "gaps_whose_proxy_evidence_is_missing_from_draft": (
+                                draft_coverage["proxied_terms_without_proxy_on_page"]
+                            ),
+                            "never_claim_in_bullets": list(forbidden_terms),
+                            "bullets_naming_technology_their_facts_lack": (
+                                scan_unsupported_technology(
+                                    draft, facts, tech_requirements
+                                )
+                            ),
+                            "placement_findings": placement_findings(
+                                draft_plain.model_dump(mode="json"), requirements
+                            ),
+                        },
+                        indent=2,
                     ),
                     generated_components_json=json.dumps(
                         {
@@ -979,6 +1360,11 @@ class TailorPipeline:
                     self.tracker.warn(f"Bullet style: {style_message}")
                 for metric_message in scan_metric_quality(final_scored):
                     self.tracker.warn(f"Metric quality: {metric_message}")
+                unsupported_technology = scan_unsupported_technology(
+                    final_scored, facts, tech_requirements
+                )
+                for message in unsupported_technology:
+                    self.tracker.warn(f"Unsupported technology: {message}")
                 report_payload = review.model_dump(mode="json")
                 report_payload["evidence_plan"] = evidence_plan.model_dump(mode="json")
                 report_payload["source_facts"] = facts
@@ -990,9 +1376,44 @@ class TailorPipeline:
                 report_payload["transferable_skill_injections"] = (
                     transferable_skill_injections(transferable_skill_plan)
                 )
+                report_payload["jd_profile"] = jd.model_dump(mode="json")
+                report_payload["requirement_map"] = requirements
+                report_payload["requirement_proxies"] = proxy_plan.model_dump(
+                    mode="json"
+                )["proxies"]
+                report_payload["unplaced_proxy_evidence"] = proxy_warnings
+                report_payload["unsupported_technology_mentions"] = (
+                    unsupported_technology
+                )
+                final_dump = scored_to_plain(final_scored).model_dump(mode="json")
+                keyword_coverage = resume_coverage(final_dump, requirements)
+                report_payload["keyword_coverage"] = keyword_coverage
+                report_payload["placement_findings"] = placement_findings(
+                    final_dump, requirements
+                )
+                self.tracker.detail(
+                    "Final keyword coverage "
+                    f"{keyword_coverage['computed_coverage_pct']}% "
+                    f"(stated requirements: {keyword_coverage['supported_coverage_pct']}%)"
+                )
+                for finding in report_payload["placement_findings"]:
+                    self.tracker.warn(f"Keyword placement: {finding}")
                 unresolved_violations, resolved_violations = (
                     partition_review_truth_violations(review, final_scored)
                 )
+                unresolved_violations, waived_violations = (
+                    waive_cross_entry_objections(
+                        unresolved_violations, final_scored, evidence_plan, facts
+                    )
+                )
+                for violation in waived_violations:
+                    self.tracker.warn(
+                        "Reviewer objected to planned cross-entry attribution "
+                        f"(policy allows it): {violation.claim[:90]!r}"
+                    )
+                report_payload["waived_cross_entry_violations"] = [
+                    item.model_dump(mode="json") for item in waived_violations
+                ]
                 report_payload["truth_violations"] = [
                     item.model_dump(mode="json") for item in unresolved_violations
                 ]

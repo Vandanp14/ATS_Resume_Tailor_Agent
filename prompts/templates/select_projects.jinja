@@ -12,6 +12,12 @@ redundant projects when stronger evidence exists.
 {{ jd_profile_json }}
 <<<END_TARGET_JOB_PROFILE>>>
 
+{% if requirement_map_json %}
+<<<JD_REQUIREMENT_MAP>>>
+{{ requirement_map_json }}
+<<<END_JD_REQUIREMENT_MAP>>>
+{% endif %}
+
 <<<CANDIDATE_PROJECT_EVIDENCE>>>
 {{ candidates_json }}
 <<<END_CANDIDATE_PROJECT_EVIDENCE>>>
@@ -19,6 +25,22 @@ redundant projects when stronger evidence exists.
 Return every source_id exactly once. When at least two candidates are supplied,
 set selected=true for exactly two projects; otherwise select every supplied
 project. Do not rewrite descriptions or bullets.
+
+How to use JD_REQUIREMENT_MAP (when present):
+- Each requirement has an `id` (R1, R2, ...) and a `status`: `direct` = the
+  master states it; `proxy` = the master lacks it but `proxy_fact_ids` hold the
+  closest real evidence (named by `proxy_terms`); `missing` = no evidence.
+- `covered_requirement_ids` lists every requirement ID this candidate's own
+  facts evidence, directly or through a listed proxy fact. Use only IDs from the
+  map. Code combines these IDs with relevance to pick the final set, so a
+  complementary set that covers more weighted requirements beats several
+  entries proving the same one.
+- A candidate holding a proxy fact for a must-have gap is valuable even when
+  its title is less related: it is the only honest evidence for that gap.
+
+`relevance` anchors (integer 0-100): 90+ = title and evidence match the target
+role and cover a must-have; 70-89 = strong evidence for several requirements;
+40-69 = partial or supporting evidence; below 40 = little bearing on this job.
 
 Return ONLY:
 {
@@ -28,6 +50,7 @@ Return ONLY:
       "relevance": 0,
       "selected": true,
       "matched_requirements": ["supported JD requirement"],
+      "covered_requirement_ids": ["R1"],
       "reason": "short evidence-based reason"
     }
   ]

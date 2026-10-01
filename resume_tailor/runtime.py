@@ -60,6 +60,40 @@ class StageFailure(RuntimeError):
         }
 
 
+class ModelUnavailableError(StageFailure):
+    """Every model in a stage's chain failed at the API; the run is cancelled.
+
+    ``failures`` holds (model, API error text) in the order tried, so the user
+    sees exactly what Gemini returned instead of a generic failure.
+    """
+
+    def __init__(self, stage: str, failures: Sequence[tuple[str, str]]) -> None:
+        self.failures = list(failures)
+        summary = "; ".join(f"{model} -> {error}" for model, error in self.failures)
+        super().__init__(
+            stage,
+            len(self.failures),
+            [],
+            None,
+            "Gemini API unavailable for every configured model; tailoring "
+            f"stopped. {summary}",
+        )
+
+    @property
+    def quota_exhausted(self) -> bool:
+        return bool(self.failures) and all(
+            "429" in error or "resource_exhausted" in error.lower()
+            for _, error in self.failures
+        )
+
+    def diagnostic(self) -> dict[str, object]:
+        payload = super().diagnostic()
+        payload["model_failures"] = [
+            {"model": model, "error": error} for model, error in self.failures
+        ]
+        return payload
+
+
 class RatePacer:
     def __init__(
         self, min_interval: float, tracker: ProgressTracker | None = None

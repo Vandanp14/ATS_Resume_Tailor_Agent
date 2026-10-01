@@ -15,7 +15,7 @@ def test_pipeline_templates_are_registered_and_summary_is_gone():
         "select_work",
         "select_projects",
         "plan_evidence",
-        "plan_skill_bridges",
+        "plan_requirement_coverage",
         "tailor_skills",
         "tailor_work",
         "tailor_projects",
@@ -38,15 +38,15 @@ def test_planner_receives_global_evidence_destinations_and_targets():
     assert "ANY work role, project, or skill group" in prompt
 
 
-def test_transferable_skill_prompt_is_bounded_and_truth_preserving():
-    prompt = (ROOT / "plan_skill_bridges.jinja").read_text()
+def test_requirement_coverage_prompt_is_bounded_and_truth_preserving():
+    prompt = (ROOT / "plan_requirement_coverage.jinja").read_text()
     assert "GLOBAL_MASTER_EVIDENCE" in prompt
-    assert "MASTER_SKILL_KEYWORDS" in prompt
-    assert "at most four" in prompt
-    assert '"skills": []' in prompt
-    assert "never propose years of experience" in prompt.lower()
-    assert "never claim that the candidate previously used" in prompt.lower()
-    assert "Figma" in prompt
+    assert "MISSING_REQUIREMENTS" in prompt
+    assert "at most eight" in prompt
+    assert '{"proxies": []}' in prompt
+    assert "never grants permission to claim" in prompt
+    assert "Clojure" in prompt and "Elixir" in prompt
+    assert "Never put a MISSING_REQUIREMENTS term inside `proxy_terms`" in prompt
 
 
 def test_work_and_project_prompts_require_star_contracts_and_counts():

@@ -8,10 +8,10 @@ const STAGE_NAMES = [
   "Parse job description",
   "Research company tech stack",
   "Research company hiring signals",
+  "Map requirement coverage",
   "Select work",
   "Select projects",
   "Plan evidence",
-  "Plan transferable skills",
   "Tailor skills",
   "Rewrite work",
   "Rewrite projects",
@@ -23,7 +23,6 @@ const STAGE_NAMES = [
 ];
 const RESEARCH_STACK_INDEX = 2;
 const RESEARCH_SIGNALS_INDEX = 3;
-const BRIDGE_INDEX = 7;
 const TAB_NAMES = ["progress", "preview", "review", "files"];
 
 const $ = (id) => document.getElementById(id);
@@ -119,7 +118,6 @@ function stateLabel(value) {
 
 function stageStatus(stageName, job) {
   const index = STAGE_NAMES.indexOf(stageName);
-  if (index === BRIDGE_INDEX && job.options && !job.options.bridge_skills) return "skipped";
   if (
     (index === RESEARCH_STACK_INDEX || index === RESEARCH_SIGNALS_INDEX) &&
     job.options &&

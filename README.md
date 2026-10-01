@@ -22,18 +22,39 @@ output/<jd-name>/
 
 The orchestration is intentionally linear:
 
-1. Parse the job description.
-2. Rank and select work roles and projects.
-3. Build a global evidence plan for three selected work destinations with
-   `4/3/3` bullet targets.
-4. Tailor at most five master-listed skill groups.
-5. Rewrite work into allocation-bound STAR bullets.
-6. Rewrite exactly two selected projects with two STAR bullets each.
-7. Assemble a work-first draft with no professional-summary block.
-8. Run one holistic semantic review over the draft and complete evidence plan.
-9. Apply only section edits that preserve provenance, STAR fields, and counts.
-10. Render and deterministically fit the PDF to one page without trimming the
+1. Parse the job description; drop any weighted keyword the posting never
+   states.
+2. Map requirement coverage. Code matches every JD requirement literally
+   (with true-synonym aliases such as Postgres/PostgreSQL) against the master:
+   `direct`, or `missing`. For missing technical requirements, one model call
+   finds the closest real evidence (`proxy`): a missing Elixir maps to the
+   Clojure project, a missing Kafka maps to RabbitMQ work. Proxy terms must
+   appear in the cited facts.
+3. Rank work roles and projects. The final set is picked in code: model
+   relevance, a bonus for titles matching the target role, and the weighted
+   requirements each entry newly covers, directly or through proxy evidence.
+4. Build a global evidence plan for three selected work destinations with
+   `4/3/3` bullet targets. The highest-priority gap proxies must reach a
+   bullet (cross-entry, e.g. Clojure project work under a software role) or a
+   selected project, and each assignment carries the exact JD `target_terms`
+   its own facts support.
+5. Tailor at most five master-listed skill groups.
+6. Rewrite work into allocation-bound STAR bullets. Bullets may never name a
+   missing JD technology, never justify a gap ("mirroring ... architectures"),
+   and, on the first attempt, never name a JD technology their own facts lack.
+7. Rewrite exactly two selected projects with two STAR bullets each.
+8. Assemble a work-first draft with no professional-summary block.
+9. Run one holistic semantic review over the draft, the complete evidence plan,
+   and code-computed keyword gaps.
+10. Apply only section edits that preserve provenance, STAR fields, and counts.
+11. Render and deterministically fit the PDF to one page without trimming the
     required `4/3/3` work or `2×2` project bullets.
+
+`match_report.json` records the requirement map, each proxy, measured keyword
+coverage (`computed_coverage_pct` over all requirements, `supported_coverage_pct`
+over requirements the master states), and placement findings.
+`scripts/coverage_report.py` re-measures every output without LLM calls, for
+regression checks after prompt changes.
 
 The model never returns contact data, education, employers, titles, dates,
 project names, URLs, or project technology lists. `pipeline_core.py` copies
@@ -71,9 +92,20 @@ cp .env.example .env
 ```
 
 Set `GEMINI_API_KEY` and `DEFAULT_MODEL` in `.env`. Gemini uses the supported
-`google-genai` typed client with structured JSON schemas and a 30-second
-request timeout. A Gemini model never falls back to Ollama if configuration is
-missing or invalid.
+`google-genai` typed client with structured JSON schemas and a
+`GEMINI_TIMEOUT_MS` request timeout (default 120 s). A Gemini model never falls
+back to Ollama if configuration is missing or invalid.
+
+Model chains: reasoning-heavy stages (requirement mapping, selection, evidence
+planning, holistic review) try `PLANNING_MODELS` first
+(default `gemini-3.8-flash,gemini-3.5-flash`), then `DEFAULT_MODEL`, then
+`FALLBACK_MODELS` (default `gemini-3.5-flash-lite`); other stages start at
+`DEFAULT_MODEL`. A model that answers 503/500/timeout is skipped for 90 s; a
+retired (404) or quota-exhausted (429) model is skipped for the rest of the
+run. Auth errors (401/403) stop immediately. When every model in a stage's
+chain fails, tailoring stops and the error lists exactly what the Gemini API
+returned for each model; a batch stops too instead of failing every remaining
+job the same way.
 
 Install Tectonic for PDF generation:
 
@@ -128,10 +160,12 @@ Redirected output and CI automatically receive stable plain-text lines without
 ANSI control sequences. SDK request chatter is hidden at the default verbosity;
 warnings and errors remain visible.
 
-Use `--bridge-skills` to run an additional evidence-backed gap analysis. Missing
-JD skill keywords may be added only under `Transferable / Adjacent Tools`, never
-to work or project claims. Every addition and its supporting master fact IDs are
-recorded in `match_report.json`; the default command does not run this stage.
+Use `--bridge-skills` to also list up to four missing JD tools in a labeled
+`Transferable / Adjacent Tools` skills group, taken from the requirement map's
+validated proxies. They never appear in work or project claims. Every addition
+and its supporting master fact IDs are recorded in `match_report.json`. Gap
+mapping itself always runs; without the flag it only steers selection and
+bullets toward the closest real evidence.
 
 Use `--research-company` on job descriptions that are heavy on responsibilities
 and culture but light on explicit tech-stack keywords. After `jd_parse`, the

@@ -9,7 +9,9 @@ from pipeline_core import (
     partition_review_truth_violations,
     scan_bullet_style,
     scan_metric_quality,
+    scan_unsupported_technology,
     transferable_skill_injections,
+    waive_cross_entry_objections,
 )
 
 __all__ = [
@@ -21,5 +23,7 @@ __all__ = [
     "partition_review_truth_violations",
     "scan_bullet_style",
     "scan_metric_quality",
+    "scan_unsupported_technology",
     "transferable_skill_injections",
+    "waive_cross_entry_objections",
 ]

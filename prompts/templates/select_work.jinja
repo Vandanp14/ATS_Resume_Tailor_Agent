@@ -11,6 +11,12 @@ roles against one another and select the strongest complementary evidence.
 {{ jd_profile_json }}
 <<<END_TARGET_JOB_PROFILE>>>
 
+{% if requirement_map_json %}
+<<<JD_REQUIREMENT_MAP>>>
+{{ requirement_map_json }}
+<<<END_JD_REQUIREMENT_MAP>>>
+{% endif %}
+
 <<<CANDIDATE_WORK_EVIDENCE>>>
 {{ candidates_json }}
 <<<END_CANDIDATE_WORK_EVIDENCE>>>
@@ -20,6 +26,24 @@ set selected=true for exactly three roles; otherwise select every supplied role.
 Selection is based on target fit, evidence strength,
 technical depth, recency, and non-redundant coverage. Do not rewrite bullets.
 
+How to use JD_REQUIREMENT_MAP (when present):
+- Each requirement has an `id` (R1, R2, ...) and a `status`: `direct` = the
+  master states it; `proxy` = the master lacks it but `proxy_fact_ids` hold the
+  closest real evidence (named by `proxy_terms`); `missing` = no evidence.
+- `covered_requirement_ids` lists every requirement ID this candidate's own
+  facts evidence, directly or through a listed proxy fact. Use only IDs from the
+  map. Code combines these IDs with relevance to pick the final set, so a
+  complementary set that covers more weighted requirements beats several
+  entries proving the same one.
+- A role whose title matches the target job (see `role` and `title_aliases`)
+  is strong evidence on its own: keep title-matching roles. Proxy facts that
+  live in other roles or projects do not require selecting those entries; the
+  evidence planner may move them into a selected role's bullets.
+
+`relevance` anchors (integer 0-100): 90+ = title and evidence match the target
+role and cover a must-have; 70-89 = strong evidence for several requirements;
+40-69 = partial or supporting evidence; below 40 = little bearing on this job.
+
 Return ONLY:
 {
   "candidates": [
@@ -28,6 +52,7 @@ Return ONLY:
       "relevance": 0,
       "selected": true,
       "matched_requirements": ["supported JD requirement"],
+      "covered_requirement_ids": ["R1"],
       "reason": "short evidence-based reason"
     }
   ]

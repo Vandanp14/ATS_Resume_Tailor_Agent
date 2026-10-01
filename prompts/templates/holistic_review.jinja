@@ -28,6 +28,18 @@ and inferred metrics, duplication, ATS effectiveness, and readability.
 {{ transferable_skill_plan_json }}
 <<<END_TRANSFERABLE_SKILL_PLAN>>>
 
+{% if requirement_map_json %}
+<<<JD_REQUIREMENT_MAP>>>
+{{ requirement_map_json }}
+<<<END_JD_REQUIREMENT_MAP>>>
+{% endif %}
+
+{% if computed_keyword_gaps_json %}
+<<<COMPUTED_KEYWORD_GAPS>>>
+{{ computed_keyword_gaps_json }}
+<<<END_COMPUTED_KEYWORD_GAPS>>>
+{% endif %}
+
 <<<GENERATED_COMPONENTS_WITH_STAR_METADATA>>>
 {{ generated_components_json }}
 <<<END_GENERATED_COMPONENTS_WITH_STAR_METADATA>>>
@@ -35,6 +47,23 @@ and inferred metrics, duplication, ATS effectiveness, and readability.
 <<<SELECTION_METADATA>>>
 {{ selection_metadata_json }}
 <<<END_SELECTION_METADATA>>>
+
+COMPUTED_KEYWORD_GAPS was measured by code with literal ATS matching and is
+authoritative; do not re-derive coverage. Use it this way:
+- `stated_in_master_but_missing_from_draft`: the candidate has this evidence
+  but the draft never says it. Fix these first with section edits, using the
+  exact spelling, inside bullets whose source facts support them.
+- `gaps_whose_proxy_evidence_is_missing_from_draft`: the closest real evidence
+  for a missing requirement never reached the page. Name the proxy technology
+  where its fact is already allocated.
+- `never_claim_in_bullets`: technologies the candidate has not used. They must
+  not appear in any work or project text; any occurrence is a truth violation.
+- `bullets_naming_technology_their_facts_lack`: replace the named technology
+  with the one the bullet's source facts actually state (e.g. "SQL", not
+  "PostgreSQL") through a section edit.
+- `placement_findings`: fix where possible without breaking counts or
+  provenance.
+Report `coverage_pct` equal to the computed figure unless your edits change it.
 
 Return coverage, unresolved truth violations, recommendations, and optional
 complete replacements for named sections. Evaluate the resume as if every

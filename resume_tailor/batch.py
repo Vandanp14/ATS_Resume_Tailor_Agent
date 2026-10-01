@@ -16,7 +16,13 @@ from .progress import (
     ProgressEventKind,
     ProgressReporter,
 )
-from .runtime import QUOTA_EXIT_CODE, StageFailure, done_satisfies, load_master
+from .runtime import (
+    QUOTA_EXIT_CODE,
+    ModelUnavailableError,
+    StageFailure,
+    done_satisfies,
+    load_master,
+)
 
 
 try:  # compatibility with environments that omit the Google SDK
@@ -28,6 +34,8 @@ except Exception:  # pragma: no cover
 
 
 def is_quota_error(exc: Exception) -> bool:
+    if isinstance(exc, ModelUnavailableError):
+        return exc.quota_exhausted
     if isinstance(exc, ResourceExhausted):
         return True
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
@@ -176,6 +184,23 @@ def run_batch(
                     _summary_event(batch_started, completed_paths, skipped, len(failed))
                 )
                 return QUOTA_EXIT_CODE
+            if isinstance(exc, ModelUnavailableError):
+                # Every configured model is down; later jobs would fail the
+                # same way, so stop and report what the API returned.
+                remaining = [item.stem for item in jobs[index - 1 :]]
+                failed.extend(remaining)
+                reporter.emit(
+                    ProgressEvent(
+                        ProgressEventKind.JOB_FAILED,
+                        job=job,
+                        message=f"{exc} Batch stopped. Remaining: "
+                        + ", ".join(remaining),
+                    )
+                )
+                reporter.emit(
+                    _summary_event(batch_started, completed_paths, skipped, len(failed))
+                )
+                return 1
             failed.append(jd_path.stem)
             reporter.emit(
                 ProgressEvent(

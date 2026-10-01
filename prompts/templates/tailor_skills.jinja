@@ -18,6 +18,12 @@ group a JD-driven relevance score.
 {{ experience_technologies_json }}
 <<<END_TECHNOLOGIES_NAMED_IN_EXPERIENCE>>>
 
+{% if requirement_map_json %}
+<<<JD_REQUIREMENT_MAP>>>
+{{ requirement_map_json }}
+<<<END_JD_REQUIREMENT_MAP>>>
+{% endif %}
+
 <<<VALIDATED_TRANSFERABLE_SKILL_PLAN>>>
 {{ transferable_skill_plan_json }}
 <<<END_VALIDATED_TRANSFERABLE_SKILL_PLAN>>>
@@ -61,6 +67,13 @@ Return ONLY a JSON object with this structure:
   values for groups the job does not care about. Order groups from most to least
   relevant.
 - `keywords` must never be empty for a group; drop the group instead.
+- Use JD_REQUIREMENT_MAP to order: inside each group, keywords matching a
+  `direct` requirement come first (highest weight first). Every `direct`
+  must-have that exists in MASTER_SKILLS or TECHNOLOGIES_NAMED_IN_EXPERIENCE
+  must appear somewhere in the returned groups.
+- For each `proxy` requirement, its `proxy_terms` that are master skills (for
+  example Clojure standing in for a missing Elixir) belong near the front of
+  their group: they are the candidate's honest answer to that gap.
 - Return no more than five groups, ordered from highest to lowest relevance.
 
 ## Worked example

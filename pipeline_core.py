@@ -20,17 +20,27 @@ from models import (
     JSONResume,
     ProjectRewriteItem,
     ProjectRewriteResponse,
+    RequirementProxyPlan,
     ScoredBullet,
     ScoredProject,
     ScoredSkill,
     ScoredWork,
     STARBullet,
     TailoredSkills,
+    TransferableSkill,
     TransferableSkillPlan,
     TRANSFERABLE_SKILL_GROUP,
     TruthViolation,
     WorkRewriteItem,
     WorkRewriteResponse,
+)
+from keyword_coverage import (
+    assignment_entry_ids,
+    candidate_requirement_cover,
+    find_terms,
+    mentions,
+    normalize_term,
+    title_matches,
 )
 from render import ScoredResume
 
@@ -91,6 +101,8 @@ class PipelineComponents:
     transferable_skill_plan: TransferableSkillPlan = field(
         default_factory=lambda: TransferableSkillPlan(skills=[])
     )
+    # JD technologies the master never states; no bullet may claim them.
+    forbidden_terms: tuple[str, ...] = ()
 
 
 _T = TypeVar("_T")
@@ -393,26 +405,104 @@ def validate_selection(
     return returned
 
 
+SELECTED_FLAG_BONUS = 15
+TITLE_MATCH_BONUS = 20
+COVERAGE_GAIN_SCALE = 80
+
+
 def choose_selected(
-    candidates: Mapping[str, object], evidence: Sequence[dict], cap: int
+    candidates: Mapping[str, object],
+    evidence: Sequence[dict],
+    cap: int,
+    requirements: Sequence[dict] | None = None,
+    fact_index: Mapping[str, dict] | None = None,
+    jd: JDProfile | None = None,
 ) -> list[dict]:
+    """Pick the selected entries.
+
+    Without a requirement map this enforces the model's own ``selected`` flags.
+    With one, the set is chosen in code: a greedy pass that scores each
+    candidate by model relevance, the model's selected flag, a title match
+    against the target role, and the weighted JD requirements it would newly
+    cover (directly or through validated proxy evidence). Complementary
+    coverage therefore beats several entries proving the same requirement.
+    """
+
     order = {item["source_id"]: index for index, item in enumerate(evidence)}
-    chosen = [candidate for candidate in candidates.values() if candidate.selected]
-    chosen.sort(key=lambda item: (-item.relevance, order[item.source_id]))
-    required = min(cap, len(evidence))
-    if len(chosen) != required:
-        raise ContractError(
-            f"selector must choose exactly {required} of {len(evidence)} candidates; "
-            f"received {len(chosen)}"
-        )
     by_id = {item["source_id"]: item for item in evidence}
+    required = min(cap, len(evidence))
+    if requirements is None:
+        chosen = [candidate for candidate in candidates.values() if candidate.selected]
+        chosen.sort(key=lambda item: (-item.relevance, order[item.source_id]))
+        if len(chosen) != required:
+            raise ContractError(
+                f"selector must choose exactly {required} of {len(evidence)} "
+                f"candidates; received {len(chosen)}"
+            )
+        return [
+            {
+                **by_id[candidate.source_id],
+                "selection_relevance": candidate.relevance,
+                "selection_matched_requirements": candidate.matched_requirements,
+            }
+            for candidate in chosen
+        ]
+
+    importance = {item["id"]: item.get("importance", item["weight"]) for item in requirements}
+    total = sum(importance.values()) or 1
+    deterministic = candidate_requirement_cover(requirements, fact_index or {})
+    cover: dict[str, set[str]] = {}
+    base: dict[str, float] = {}
+    title_bonus: dict[str, int] = {}
+    for source_id, candidate in candidates.items():
+        cover[source_id] = deterministic.get(source_id, set()) | (
+            set(candidate.covered_requirement_ids) & importance.keys()
+        )
+        title_bonus[source_id] = (
+            TITLE_MATCH_BONUS
+            if jd is not None and title_matches(by_id[source_id].get("position"), jd)
+            else 0
+        )
+        base[source_id] = (
+            candidate.relevance
+            + (SELECTED_FLAG_BONUS if candidate.selected else 0)
+            + title_bonus[source_id]
+        )
+    covered: set[str] = set()
+    remaining = set(candidates)
+    picked: list[str] = []
+    while remaining and len(picked) < required:
+
+        def score(source_id: str) -> tuple[float, int]:
+            gain = sum(importance[rid] for rid in cover[source_id] - covered)
+            return (
+                base[source_id] + COVERAGE_GAIN_SCALE * gain / total,
+                -order[source_id],
+            )
+
+        best = max(remaining, key=score)
+        picked.append(best)
+        covered |= cover[best]
+        remaining.discard(best)
+    if len(picked) != required:
+        raise ContractError(
+            f"selector returned {len(candidates)} candidates; {required} required"
+        )
+    picked.sort(
+        key=lambda source_id: (
+            -(candidates[source_id].relevance + title_bonus[source_id]),
+            order[source_id],
+        )
+    )
     return [
         {
-            **by_id[candidate.source_id],
-            "selection_relevance": candidate.relevance,
-            "selection_matched_requirements": candidate.matched_requirements,
+            **by_id[source_id],
+            "selection_relevance": candidates[source_id].relevance,
+            "selection_matched_requirements": candidates[source_id].matched_requirements,
+            "selection_covered_requirement_ids": sorted(cover[source_id]),
+            "selection_title_match": bool(title_bonus[source_id]),
         }
-        for candidate in chosen
+        for source_id in picked
     ]
 
 
@@ -619,15 +709,107 @@ def _validate_star_bullet(
             )
 
 
+# Phrases that justify a skill gap inside a bullet instead of stating work.
+# "Applied Java, aligning with modern JVM environments" tells the reader the
+# writer was reaching for a keyword the candidate lacks.
+_GAP_JUSTIFICATION_RE = re.compile(
+    r"\b(?:mirroring|aligning with|aligned with|matching|reflecting|similar to|"
+    r"analogous to|akin to|comparable to|transferable to)\b[^.;]{0,40}?"
+    r"\b(?:architectures?|paradigms?|patterns|environments?|ecosystems?|"
+    r"languages?|stacks?|principles)\b"
+    r"|\b(?:and|or) (?:related|similar|other|adjacent) [\w-]+(?: [\w-]+)? "
+    r"(?:languages|frameworks|tools|platforms|technologies)\b",
+    re.I,
+)
+
+
+def _bullet_evidence_text(
+    source_ids: Iterable[str], fact_index: Mapping[str, dict]
+) -> str:
+    """Cited fact text plus the technology lists of the cited entries.
+
+    A project's technologies apply to every bullet about that project, so a
+    bullet citing only a project highlight may still name its listed stack.
+    """
+
+    source_ids = [fact_id for fact_id in source_ids if fact_id in fact_index]
+    entries = {fact_index[fact_id]["entry_id"] for fact_id in source_ids}
+    texts = [fact_index[fact_id]["text"] for fact_id in source_ids]
+    texts.extend(
+        fact["text"]
+        for fact in fact_index.values()
+        if fact["kind"] == "technology" and fact["entry_id"] in entries
+    )
+    return "\n".join(texts)
+
+
+def _reject_forbidden_terms(
+    item: WorkRewriteItem | ProjectRewriteItem,
+    forbidden_terms: Sequence[str],
+    summary: str | None,
+    tech_requirements: Sequence[tuple[str, Sequence[str]]] = (),
+    fact_index: Mapping[str, dict] | None = None,
+) -> None:
+    """Reject technology claims a bullet's evidence does not support.
+
+    A missing JD technology may live only in the labeled transferable group,
+    and a stated JD technology may appear in a bullet only when that bullet's
+    own source facts mention it ("SQL" evidence never becomes "PostgreSQL").
+    """
+
+    texts = [summary or ""]
+    for bullet in item.bullets:
+        texts.extend(
+            (bullet.text, bullet.situation_task, bullet.action, bullet.result)
+        )
+    justified = sorted(
+        {match.group(0).lower() for text in texts for match in _GAP_JUSTIFICATION_RE.finditer(text)}
+    )
+    if justified:
+        raise ContractError(
+            f"{item.source_id} justifies a skill gap inside a bullet {justified}. "
+            "State the real work, technology, and result only; never explain how "
+            "it resembles the job's requirement"
+        )
+    found = sorted({term for text in texts for term in find_terms(text, forbidden_terms)})
+    if found:
+        raise ContractError(
+            f"{item.source_id} claims technologies absent from the master: {found}. "
+            "Name the real adjacent technology from the evidence instead; the "
+            "missing JD term may appear only in the transferable skills group"
+        )
+    if not tech_requirements or fact_index is None:
+        return
+    unsupported: list[str] = []
+    for index, bullet in enumerate(item.bullets):
+        cited = _bullet_evidence_text(bullet.source_ids, fact_index)
+        bullet_text = " ".join(
+            (bullet.text, bullet.situation_task, bullet.action, bullet.result)
+        )
+        for term, variants in tech_requirements:
+            if mentions(bullet_text, variants) and not mentions(cited, variants):
+                unsupported.append(f"bullet {index}: {term}")
+    if unsupported:
+        raise ContractError(
+            f"{item.source_id} names technologies its source facts do not mention "
+            f"{unsupported}. Use only the technology the cited facts name"
+        )
+
+
 def validate_work_item(
     item: WorkRewriteItem,
     source: dict,
     plan: EvidencePlan,
     fact_index: Mapping[str, dict],
     transferable_plan: TransferableSkillPlan | None = None,
+    forbidden_terms: Sequence[str] = (),
+    tech_requirements: Sequence[tuple[str, Sequence[str]]] = (),
 ) -> None:
     if item.source_id != source["source_id"]:
         raise ContractError(f"unknown work source_id: {item.source_id}")
+    _reject_forbidden_terms(
+        item, forbidden_terms, item.summary, tech_requirements, fact_index
+    )
     assignments = _assignments_by_destination(plan).get(item.source_id, {})
     if len(item.bullets) != len(assignments):
         raise ContractError(
@@ -672,9 +854,14 @@ def validate_project_item(
     source: dict,
     fact_index: Mapping[str, dict],
     transferable_plan: TransferableSkillPlan | None = None,
+    forbidden_terms: Sequence[str] = (),
+    tech_requirements: Sequence[tuple[str, Sequence[str]]] = (),
 ) -> None:
     if item.source_id != source["source_id"]:
         raise ContractError(f"unknown project source_id: {item.source_id}")
+    _reject_forbidden_terms(
+        item, forbidden_terms, item.description, tech_requirements, fact_index
+    )
     if len(item.bullets) != PROJECT_BULLET_COUNT:
         raise ContractError(
             f"{item.source_id} requires {PROJECT_BULLET_COUNT} bullets; "
@@ -699,6 +886,8 @@ def validate_work_response(
     plan: EvidencePlan,
     fact_index: Mapping[str, dict],
     transferable_plan: TransferableSkillPlan | None = None,
+    forbidden_terms: Sequence[str] = (),
+    tech_requirements: Sequence[tuple[str, Sequence[str]]] = (),
 ) -> dict[str, WorkRewriteItem]:
     expected = {source["source_id"]: source for source in sources}
     returned, duplicates = merge_unique_by_source(
@@ -721,6 +910,8 @@ def validate_work_response(
                 plan,
                 fact_index,
                 transferable_plan,
+                forbidden_terms,
+                tech_requirements,
             )
         except ContractError as exc:
             errors.append(str(exc))
@@ -734,6 +925,8 @@ def validate_project_response(
     sources: Sequence[dict],
     fact_index: Mapping[str, dict],
     transferable_plan: TransferableSkillPlan | None = None,
+    forbidden_terms: Sequence[str] = (),
+    tech_requirements: Sequence[tuple[str, Sequence[str]]] = (),
 ) -> dict[str, ProjectRewriteItem]:
     expected = {source["source_id"]: source for source in sources}
     returned, duplicates = merge_unique_by_source(
@@ -755,6 +948,8 @@ def validate_project_response(
                 expected[source_id],
                 fact_index,
                 transferable_plan,
+                forbidden_terms,
+                tech_requirements,
             )
         except ContractError as exc:
             errors.append(str(exc))
@@ -825,6 +1020,254 @@ def validate_transferable_skill_plan(
             errors.append(f"{item.keyword} requirement_type_mismatch=weighted_keyword")
     if errors:
         raise ContractError("transferable skill plan invalid: " + "; ".join(errors))
+
+
+_KEYWORD_FACT_KINDS = frozenset({"skill", "technology"})
+
+
+def is_keyword_fact(fact: Mapping | None) -> bool:
+    return bool(fact) and fact.get("kind") in _KEYWORD_FACT_KINDS
+
+
+def _enrich_proxy_facts(proxy: object, fact_index: Mapping[str, dict]) -> None:
+    """Attach bullet-capable facts behind keyword-only proxy evidence.
+
+    A project technology ("Clojure") or skill keyword cannot carry a STAR
+    bullet. For a technology fact, the project's description and top
+    highlight are the work done with it; for any keyword, highlights that name
+    a proxy term are added. At most three facts are added.
+    """
+
+    cited = list(proxy.source_fact_ids)
+    if any(not is_keyword_fact(fact_index.get(fact_id)) for fact_id in cited):
+        return
+    added: list[str] = []
+
+    def add(fact_id: str) -> None:
+        if fact_id not in cited and fact_id not in added and len(added) < 3:
+            added.append(fact_id)
+
+    for fact_id, fact in fact_index.items():
+        if not is_keyword_fact(fact) and mentions(fact["text"], proxy.proxy_terms):
+            add(fact_id)
+    for fact_id in cited:
+        fact = fact_index[fact_id]
+        if fact["kind"] != "technology":
+            continue
+        entry = fact["entry_id"]
+        for suffix in (".description", ".highlights[0]"):
+            if f"{entry}{suffix}" in fact_index:
+                add(f"{entry}{suffix}")
+    proxy.source_fact_ids = cited + added
+
+
+def validate_requirement_proxy_plan(
+    plan: RequirementProxyPlan,
+    requirements: Sequence[dict],
+    fact_index: Mapping[str, dict],
+    repair: bool = False,
+) -> list[str]:
+    """Validate adjacent-evidence proxies and canonicalize them to the JD map.
+
+    Canonicalization (exact JD spelling and requirement type) is applied in
+    place so a weak model's casing drift is repaired instead of retried. Truth
+    problems are a proxy for a requirement the master already states, a
+    nonexistent fact, or a proxy term its cited facts never mention. They raise
+    by default; with ``repair`` the offending terms or proxies are removed in
+    place instead, and the returned notes say what was dropped.
+    """
+
+    by_term = {normalize_term(item["term"]): item for item in requirements}
+    missing_terms = {
+        normalize_term(item["term"]) for item in requirements if item["status"] == "missing"
+    }
+    errors: list[str] = []
+    kept = []
+    seen: set[str] = set()
+    for proxy in plan.proxies:
+        problems: list[str] = []
+        key = normalize_term(proxy.requirement)
+        requirement = by_term.get(key)
+        if requirement is None:
+            errors.append(f"{proxy.requirement!r} is not a target-profile requirement")
+            continue
+        if key not in missing_terms:
+            errors.append(
+                f"{proxy.requirement!r} is already stated in the master; proxies are "
+                "only for requirements the master lacks"
+            )
+            continue
+        if key in seen:
+            errors.append(f"duplicate proxy for {proxy.requirement!r}")
+            continue
+        proxy.requirement = requirement["term"]
+        proxy.requirement_type = requirement["requirement_type"]
+        if _NON_SKILL_REQUIREMENT_RE.search(proxy.requirement):
+            errors.append(f"non_skill_requirement={proxy.requirement}")
+            continue
+        unknown = set(proxy.source_fact_ids) - set(fact_index)
+        if unknown:
+            problems.append(f"nonexistent_sources={sorted(unknown)}")
+            proxy.source_fact_ids = [
+                fact_id for fact_id in dict.fromkeys(proxy.source_fact_ids)
+                if fact_id in fact_index
+            ]
+        elif duplicates := _duplicate_values(proxy.source_fact_ids):
+            problems.append(f"duplicate_sources={duplicates}")
+            proxy.source_fact_ids = list(dict.fromkeys(proxy.source_fact_ids))
+        cited_text = "\n".join(
+            fact_index[fact_id]["text"] for fact_id in proxy.source_fact_ids
+        )
+        unsupported = [
+            term for term in proxy.proxy_terms if not mentions(cited_text, (term,))
+        ]
+        if unsupported:
+            problems.append(
+                f"proxy_terms {unsupported} do not appear in the cited facts "
+                f"{proxy.source_fact_ids}; cite the facts that name them"
+            )
+        leaked = [
+            term for term in proxy.proxy_terms if normalize_term(term) in missing_terms
+        ]
+        if leaked:
+            problems.append(
+                f"proxy_terms {leaked} are themselves missing from the master"
+            )
+        proxy.proxy_terms = [
+            term
+            for term in proxy.proxy_terms
+            if term not in unsupported and term not in leaked
+        ]
+        if problems:
+            errors.append(f"{proxy.requirement} " + "; ".join(problems))
+        if proxy.proxy_terms and proxy.source_fact_ids:
+            _enrich_proxy_facts(proxy, fact_index)
+            seen.add(key)
+            kept.append(proxy)
+    if errors and not repair:
+        raise ContractError("requirement proxy plan invalid: " + "; ".join(errors))
+    plan.proxies = kept
+    return errors
+
+
+def transferable_plan_from_proxies(
+    plan: RequirementProxyPlan, limit: int = 4
+) -> TransferableSkillPlan:
+    chosen = sorted(
+        (proxy for proxy in plan.proxies if proxy.list_as_transferable_skill),
+        key=lambda proxy: -proxy.relevance,
+    )[:limit]
+    return TransferableSkillPlan(
+        skills=[
+            TransferableSkill(
+                keyword=proxy.requirement,
+                requirement_type=proxy.requirement_type,
+                category=proxy.category,
+                source_fact_ids=list(proxy.source_fact_ids),
+                transfer_basis=proxy.transfer_basis,
+                relevance=proxy.relevance,
+            )
+            for proxy in chosen
+        ]
+    )
+
+
+def sanitize_target_terms(
+    plan: EvidencePlan,
+    requirements: Sequence[dict],
+    forbidden_terms: Sequence[str],
+    fact_index: Mapping[str, dict],
+) -> list[str]:
+    """Keep only target terms the assignment's own facts support.
+
+    Allowed terms are the JD's own spellings of requirements the master states,
+    plus validated proxy terms, and each must be mentioned (in any equivalent
+    spelling) by one of the assignment's cited facts: "PostgreSQL" is not a
+    target for a fact that only says "SQL". Target terms are hints, so every
+    bad term, including a technology the master never states, is dropped and
+    returned as a note; the bullet validators enforce the truth itself.
+    """
+
+    allowed: dict[str, str] = {}
+    variants_for: dict[str, list[str]] = {}
+    for item in requirements:
+        if item["status"] == "direct":
+            allowed[normalize_term(item["term"])] = item["term"]
+            variants_for[item["term"]] = list(item.get("variants") or [item["term"]])
+            for variant in item.get("variants", []):
+                allowed.setdefault(normalize_term(variant), item["term"])
+        for term in item.get("proxy_terms", []):
+            allowed.setdefault(normalize_term(term), term)
+            variants_for.setdefault(term, [term])
+    forbidden = {normalize_term(term) for term in forbidden_terms}
+    dropped: list[str] = []
+    for assignment in plan.assignments:
+        kept: list[str] = []
+        for term in assignment.target_terms:
+            key = normalize_term(term)
+            if key in forbidden:
+                dropped.append(f"{assignment.assignment_id}:{term} (never used)")
+            elif key in allowed:
+                canonical = allowed[key]
+                cited = "\n".join(
+                    fact_index[fact_id]["text"]
+                    for fact_id in assignment.source_fact_ids
+                    if fact_id in fact_index
+                )
+                if not mentions(cited, variants_for[canonical]):
+                    dropped.append(f"{assignment.assignment_id}:{term} (unsupported)")
+                elif canonical not in kept:
+                    kept.append(canonical)
+            else:
+                dropped.append(f"{assignment.assignment_id}:{term}")
+        assignment.target_terms = kept
+    return dropped
+
+
+def align_inference_provenance(plan: EvidencePlan) -> None:
+    """Copy each assignment's destination and facts onto its inferred impact.
+
+    The inference is nested inside its assignment, so differing IDs are
+    bookkeeping drift from the model, not a provenance claim worth a retry.
+    """
+
+    for assignment in plan.assignments:
+        inference = assignment.inferred_impact
+        if inference is not None:
+            inference.destination_work_id = assignment.destination_work_id
+            inference.source_fact_ids = list(assignment.source_fact_ids)
+
+
+def proxy_coverage_gaps(
+    plan: EvidencePlan,
+    priority: Sequence[dict],
+    selected_projects: Sequence[dict],
+    fact_index: Mapping[str, dict],
+) -> list[str]:
+    """Priority proxies whose evidence reaches neither a work bullet nor a project."""
+
+    project_ids = {item["source_id"] for item in selected_projects}
+    gaps: list[str] = []
+    for item in priority:
+        proxy_facts = set(item.get("proxy_fact_ids", []))
+        if all(is_keyword_fact(fact_index.get(fact_id)) for fact_id in proxy_facts):
+            # A bare skill keyword cannot carry a STAR bullet; the skills
+            # section already surfaces it.
+            continue
+        in_bullet = any(
+            proxy_facts & set(assignment.source_fact_ids)
+            for assignment in plan.assignments
+        )
+        in_project = bool(assignment_entry_ids(proxy_facts, fact_index) & project_ids)
+        if not (in_bullet or in_project):
+            gaps.append(
+                f"{item['term']} ({item['requirement_type']}) is missing from the "
+                f"master, and its closest evidence {sorted(proxy_facts)} "
+                f"({', '.join(item.get('proxy_terms', []))}) is in no assignment. "
+                "Replace the destination's least relevant assignment with one built "
+                "on that evidence, naming the real technology."
+            )
+    return gaps
 
 
 def validate_skills(
@@ -916,6 +1359,7 @@ def assemble_scored(
             components.evidence_plan,
             facts,
             components.transferable_skill_plan,
+            components.forbidden_terms,
         )
         work.append(
             ScoredWork.model_validate(
@@ -948,7 +1392,11 @@ def assemble_scored(
         if source is None:
             raise ContractError(f"unknown project source_id: {rewrite.source_id}")
         validate_project_item(
-            rewrite, source, facts, components.transferable_skill_plan
+            rewrite,
+            source,
+            facts,
+            components.transferable_skill_plan,
+            components.forbidden_terms,
         )
         projects.append(
             ScoredProject.model_validate(
@@ -1152,6 +1600,7 @@ def apply_review_edits(
                 updated.evidence_plan,
                 facts,
                 updated.transferable_skill_plan,
+                updated.forbidden_terms,
             )
             ordered = tuple(mapped[item["source_id"]] for item in updated.selected.work)
             updated = replace(updated, work=ordered)
@@ -1164,6 +1613,7 @@ def apply_review_edits(
                 updated.selected.projects,
                 facts,
                 updated.transferable_skill_plan,
+                updated.forbidden_terms,
             )
             ordered = tuple(
                 mapped[item["source_id"]] for item in updated.selected.projects
@@ -1217,6 +1667,46 @@ def partition_review_truth_violations(
         )
         (unresolved if remains else resolved).append(violation)
     return unresolved, resolved
+
+
+_ATTRIBUTION_OBJECTION_RE = re.compile(
+    r"\battribut|\bbelongs? to\b|\bnot (?:from|for|part of) (?:the|this)\b|"
+    r"\bare (?:for|from) a (?:project|different)\b|\bdifferent (?:role|employer|entry)\b",
+    re.I,
+)
+
+
+def waive_cross_entry_objections(
+    violations: Sequence[TruthViolation],
+    final_resume: ScoredResume,
+    plan: EvidencePlan,
+    fact_index: Mapping[str, dict],
+) -> tuple[list[TruthViolation], list[TruthViolation]]:
+    """Split out reviewer findings that only object to planned cross-entry moves.
+
+    Cross-entry attribution is pipeline policy, so a finding whose reason is
+    attribution and whose quoted claim sits in a bullet built from a
+    cross-entry assignment is waived (and reported), not allowed to block.
+    """
+
+    cross_ids = {item["assignment_id"] for item in cross_entry_attributions(plan, fact_index)}
+    cross_texts = [
+        " ".join(bullet.text.split()).casefold()
+        for item in final_resume.work or []
+        for bullet in item.highlights or []
+        if bullet.evidence_assignment_id in cross_ids
+    ]
+    kept: list[TruthViolation] = []
+    waived: list[TruthViolation] = []
+    for violation in violations:
+        claim = " ".join(violation.claim.split()).casefold()
+        if _ATTRIBUTION_OBJECTION_RE.search(violation.reason) and any(
+            claim in text for text in cross_texts
+        ):
+            waived.append(violation)
+        else:
+            kept.append(violation)
+    return kept, waived
 
 
 BANNED_OPENER_PHRASES = (
@@ -1319,6 +1809,31 @@ def scan_bullet_style(final_resume: ScoredResume) -> list[str]:
                 f"{section} ends {result_clauses} bullets with a trailing "
                 "participial result clause (', enabling ...'); vary the structure"
             )
+    return findings
+
+
+def scan_unsupported_technology(
+    final_resume: ScoredResume,
+    fact_index: Mapping[str, dict],
+    tech_requirements: Sequence[tuple[str, Sequence[str]]],
+) -> list[str]:
+    """Warn-only: bullets naming a JD technology their source facts never name."""
+
+    findings: list[str] = []
+    for section, entries in (
+        ("Work", final_resume.work or []),
+        ("Projects", final_resume.projects or []),
+    ):
+        for item_index, item in enumerate(entries):
+            for bullet_index, bullet in enumerate(item.highlights or []):
+                cited = _bullet_evidence_text(bullet.source_ids, fact_index)
+                for term, variants in tech_requirements:
+                    if mentions(bullet.text, variants) and not mentions(cited, variants):
+                        findings.append(
+                            f"{section}[{item_index}] bullet {bullet_index + 1} names "
+                            f"{term!r}, which its source facts never mention: "
+                            f"{bullet.text[:90]!r}"
+                        )
     return findings
 
 

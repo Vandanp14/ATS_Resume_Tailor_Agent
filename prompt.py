@@ -35,7 +35,15 @@ MODEL_PARAMETERS = {
     "gemini-2.5-flash": {"temperature": 0.1, "top_p": 0.9},
     "gemini-2.5-flash-lite": {"temperature": 0.1, "top_p": 0.9},
     "gemini-3.5-flash": {"temperature": 0.1, "top_p": 0.9},
+    "gemini-3.5-flash-lite": {"temperature": 0.1, "top_p": 0.9},
     "gemini-3.1-flash-lite": {"temperature": 0.1, "top_p": 0.9},
+    "gemini-3.1-pro-preview": {"temperature": 0.1, "top_p": 0.9},
+    "gemini-3-flash-preview": {"temperature": 0.1, "top_p": 0.9},
+    "gemini-3.6-flash": {"temperature": 0.1, "top_p": 0.9},
+    "gemini-3.7-flash": {"temperature": 0.1, "top_p": 0.9},
+    "gemini-3.8-flash": {"temperature": 0.1, "top_p": 0.9},
+    "gemini-flash-latest": {"temperature": 0.1, "top_p": 0.9},
+    "gemini-flash-lite-latest": {"temperature": 0.1, "top_p": 0.9},
 }
 
 # Model provider mapping
@@ -55,8 +63,33 @@ MODEL_PROVIDER_MAPPING = {
     "gemini-2.5-flash-lite": ModelProvider.GEMINI,
     "gemini-2.5-pro": ModelProvider.GEMINI,
     "gemini-3.5-flash": ModelProvider.GEMINI,
+    "gemini-3.5-flash-lite": ModelProvider.GEMINI,
     "gemini-3.1-flash-lite": ModelProvider.GEMINI,
+    "gemini-3.1-pro-preview": ModelProvider.GEMINI,
+    "gemini-3-flash-preview": ModelProvider.GEMINI,
+    "gemini-3.6-flash": ModelProvider.GEMINI,
+    "gemini-3.7-flash": ModelProvider.GEMINI,
+    "gemini-3.8-flash": ModelProvider.GEMINI,
+    "gemini-flash-latest": ModelProvider.GEMINI,
+    "gemini-flash-lite-latest": ModelProvider.GEMINI,
 }
+
+
+def _model_list(name: str, default: str) -> tuple[str, ...]:
+    raw = os.getenv(name, default)
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+# Reasoning-heavy stages (requirement coverage, selection, evidence planning,
+# holistic review) try these models first, in order, before DEFAULT_MODEL.
+# Set PLANNING_MODELS= (empty) to run every stage on DEFAULT_MODEL.
+PLANNING_MODELS = _model_list("PLANNING_MODELS", "gemini-3.8-flash,gemini-3.5-flash")
+# Tried after DEFAULT_MODEL when it is overloaded, rate-limited, or retired.
+FALLBACK_MODELS = _model_list("FALLBACK_MODELS", "gemini-3.5-flash-lite")
+
+# Per-request Gemini timeout. Planning prompts carry the whole master fact bank
+# and thinking models can take well over 30 s on them.
+GEMINI_TIMEOUT_MS = int(os.getenv("GEMINI_TIMEOUT_MS", "120000"))
 
 # Get API keys from environment
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")

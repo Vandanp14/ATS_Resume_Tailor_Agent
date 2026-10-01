@@ -12,7 +12,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ValidationError
 
 from models import ModelProvider
-from prompt import GEMINI_API_KEY, MODEL_PROVIDER_MAPPING
+from prompt import GEMINI_API_KEY, GEMINI_TIMEOUT_MS, MODEL_PROVIDER_MAPPING
 
 
 class ChatProvider(Protocol):
@@ -208,6 +208,58 @@ class GeminiProvider:
         raise AssertionError("unreachable")
 
 
+_UNAVAILABLE_CODES = {400, 404, 429, 500, 502, 503, 504}
+_UNAVAILABLE_TOKENS = (
+    "resource_exhausted",
+    "unavailable",
+    "high demand",
+    "overloaded",
+    "deadline exceeded",
+    "timed out",
+    "timeout",
+    "not_found",
+    "no longer available",
+)
+_PERSISTENT_CODES = {404, 429}
+
+
+def is_model_unavailable(exc: BaseException) -> bool:
+    """True for API failures another model may not share.
+
+    Covers overload (503), per-model quota (429), server errors, retired
+    models (404), and model-specific request rejections (400, e.g. a schema
+    feature one model lacks). Auth errors (401/403) are excluded: those fail
+    identically on every model and must stop the run at once.
+    """
+
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if isinstance(code, int):
+        return code in _UNAVAILABLE_CODES
+    if isinstance(exc, (LLMExtractionError, json.JSONDecodeError, KeyError, TypeError)):
+        return False
+    message = str(exc).lower()
+    return any(token in message for token in _UNAVAILABLE_TOKENS)
+
+
+def is_persistent_unavailability(exc: BaseException) -> bool:
+    """Retired model (404) or exhausted quota (429): it will not recover this run."""
+
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    message = str(exc).lower()
+    return code in _PERSISTENT_CODES or "resource_exhausted" in message
+
+
+def describe_api_error(exc: BaseException) -> str:
+    """Short, user-facing summary of what the provider API returned."""
+
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    status = getattr(exc, "status", None)
+    message = getattr(exc, "message", None) or str(exc)
+    message = " ".join(str(message).split())[:220]
+    prefix = " ".join(str(part) for part in (code, status) if part)
+    return f"{prefix}: {message}" if prefix else message
+
+
 def initialize_llm_provider(
     model_name: str,
     progress_callback: Callable[[str], None] | None = None,
@@ -226,6 +278,7 @@ def initialize_llm_provider(
             raise RuntimeError("Gemini selected but GEMINI_API_KEY is not configured.")
         return GeminiProvider(
             GEMINI_API_KEY,
+            timeout_ms=GEMINI_TIMEOUT_MS,
             progress_callback=progress_callback,
             attempt_callback=attempt_callback,
             usage_callback=usage_callback,

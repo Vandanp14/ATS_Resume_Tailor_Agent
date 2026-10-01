@@ -8,19 +8,36 @@ POSTING, not a resume — capture what the employer is asking for.
 Return ONLY a JSON object with this structure:
 {
   "role": "The job title the posting is hiring for (e.g. 'Backend Engineer')",
+  "title_aliases": ["Other titles that describe the same job, e.g. 'Software Engineer', 'Software Developer'"],
   "seniority": "One of junior/mid/senior/staff/lead if stated or clearly implied, else null",
   "domain": "The business/technical domain if stated (e.g. 'fintech payments'), else null",
   "company_name": "The hiring company's own name if the posting states it, else null",
   "must_have_skills": ["Hard requirements the candidate must have"],
   "nice_to_have_skills": ["Preferred/bonus skills that are not required"],
+  "responsibilities": ["Short verb phrases for what the hire will do, e.g. 'design REST APIs'"],
   "keywords": [
-    {"term": "An ATS keyword or phrase from the posting", "weight": "integer 1-5, 5 = most critical"}
+    {
+      "term": "An ATS keyword or phrase, spelled exactly as the posting spells it",
+      "weight": "integer 1-5 (rubric below)",
+      "aliases": ["Other spellings of the same thing, e.g. 'Postgres' for 'PostgreSQL'"],
+      "category": "language | framework | tool | platform | methodology | domain_skill | soft_skill | responsibility | other",
+      "evidence_span": "A short verbatim quote from the posting containing the term"
+    }
   ]
 }
 
 **RULES:**
-- `weight` MUST be an integer from 1 to 5 (5 = the posting stresses it most; 1 = mentioned in passing). Never 0, never above 5.
+- `weight` rubric (integer 1-5, never 0, never above 5):
+  - 5 = in the job title, or in a required/"must have" list, or repeated 3+ times
+  - 4 = required elsewhere in the posting, or repeated twice
+  - 3 = a core responsibility or a named part of the stack
+  - 2 = preferred / nice to have / bonus
+  - 1 = mentioned once in passing (company blurb, "exposure to")
 - Put a skill in `must_have_skills` only when the posting frames it as required ("must have", "required", "X+ years of"). Preferred/"nice to have"/"bonus" skills go in `nice_to_have_skills`.
+- Every must-have and nice-to-have skill also appears in `keywords` with the same spelling.
+- `term` keeps the posting's exact spelling and casing ("PostgreSQL", not "postgres"); ATS matching is literal. Put other spellings in `aliases` only when they mean exactly the same thing. Never put a different tool in `aliases`.
+- `evidence_span` must be copied verbatim from the posting. A keyword you cannot quote does not exist — leave it out.
+- `title_aliases` lists 1-4 common titles for the same job at the same level; never a different job family.
 - `seniority` and `domain` are `null` when the posting does not state them — never guess a placeholder like "N/A" or "unknown".
 - `company_name` is the actual hiring company the posting names for itself — never a parent brand, client, or platform the posting only mentions in passing. `null` when no company name is stated.
 - Extract keywords the way an ATS would: concrete technologies, methodologies, and responsibilities actually named in the posting. Do not invent keywords the posting never uses.
@@ -39,19 +56,23 @@ including CI/CD.
 Correct output (note `seniority` is `null` — the posting never states a level; "3+ years" is not by itself a seniority label):
 {
   "role": "Backend Engineer",
+  "title_aliases": ["Software Engineer", "Backend Developer"],
   "seniority": null,
   "domain": "payments",
   "company_name": "Acme Payments",
   "must_have_skills": ["Python", "PostgreSQL", "REST APIs", "AWS"],
   "nice_to_have_skills": ["Kubernetes", "Go"],
+  "responsibilities": ["build and scale distributed services", "own services end to end", "maintain CI/CD"],
   "keywords": [
-    {"term": "distributed systems", "weight": 5},
-    {"term": "payment processing", "weight": 5},
-    {"term": "PostgreSQL", "weight": 4},
-    {"term": "REST APIs", "weight": 4},
-    {"term": "AWS", "weight": 4},
-    {"term": "CI/CD", "weight": 3},
-    {"term": "Kubernetes", "weight": 2}
+    {"term": "Python", "weight": 5, "aliases": [], "category": "language", "evidence_span": "3+ years of Python"},
+    {"term": "distributed services", "weight": 4, "aliases": ["distributed systems"], "category": "domain_skill", "evidence_span": "build and scale distributed services"},
+    {"term": "PostgreSQL", "weight": 5, "aliases": ["Postgres"], "category": "tool", "evidence_span": "strong PostgreSQL"},
+    {"term": "REST APIs", "weight": 5, "aliases": ["RESTful APIs"], "category": "methodology", "evidence_span": "designing REST APIs on AWS"},
+    {"term": "AWS", "weight": 5, "aliases": ["Amazon Web Services"], "category": "platform", "evidence_span": "REST APIs on AWS"},
+    {"term": "payments", "weight": 3, "aliases": [], "category": "domain_skill", "evidence_span": "join our payments team"},
+    {"term": "CI/CD", "weight": 3, "aliases": [], "category": "methodology", "evidence_span": "including CI/CD"},
+    {"term": "Kubernetes", "weight": 2, "aliases": ["K8s"], "category": "platform", "evidence_span": "Bonus points for Kubernetes or Go"},
+    {"term": "Go", "weight": 2, "aliases": ["Golang"], "category": "language", "evidence_span": "Bonus points for Kubernetes or Go"}
   ]
 }
 
