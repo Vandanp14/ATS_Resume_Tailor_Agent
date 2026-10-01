@@ -533,3 +533,57 @@ def test_gap_proxy_reaches_the_plan_or_is_reported(monkeypatch, tmp_path, cite_p
         assert len(plan_calls) == 2
         assert "Kotlin" in plan_calls[1][2]["feedback"]
         assert report["unplaced_proxy_evidence"]
+
+
+def test_web_scheduled_provider_gets_the_model_chain():
+    from resume_tailor.web.scheduler import ScheduledProvider
+
+    provider = ScheduledProvider(MagicMock(), MagicMock(), provider_tracks_attempts=True)
+    pipeline = tailor.TailorPipeline(
+        model="gemini-3.1-flash-lite",
+        call_interval=0,
+        provider=provider,
+        planning_models=["gemini-3.8-flash"],
+        fallback_models=["gemini-3.5-flash-lite"],
+    )
+    assert pipeline.default_chain == ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite")
+    default = tailor.TailorPipeline(
+        model="gemini-3.1-flash-lite", call_interval=0, provider=provider
+    )
+    assert len(default.planning_chain) > 1
+
+
+def test_all_models_busy_waits_and_retries_instead_of_stopping(monkeypatch):
+    provider = MagicMock()
+    calls = []
+
+    def chat(model, messages, options=None, **kwargs):
+        calls.append(model)
+        if len(calls) <= 2:  # the whole two-model chain is overloaded once
+            raise ApiError(503, "UNAVAILABLE")
+        return _ok_plan_response()
+
+    provider.chat.side_effect = chat
+    sleeps = []
+    monkeypatch.setattr(pipeline_module.time, "sleep", sleeps.append)
+    pipeline = chain_pipeline(provider)
+    result = pipeline._call_once("tailor_skills", RequirementProxyPlan)
+    assert result.proxies == []
+    assert sleeps == [pipeline_module.CHAIN_RETRY_DELAYS_SECONDS[0]]
+    assert calls == [
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+    ]
+
+
+def test_persistently_busy_chain_stops_after_all_rounds(monkeypatch):
+    provider = MagicMock()
+    provider.chat.side_effect = ApiError(503, "UNAVAILABLE")
+    sleeps = []
+    monkeypatch.setattr(pipeline_module.time, "sleep", sleeps.append)
+    pipeline = chain_pipeline(provider)
+    with pytest.raises(ModelUnavailableError, match="503 UNAVAILABLE"):
+        pipeline._call_once("tailor_skills", RequirementProxyPlan)
+    assert sleeps == list(pipeline_module.CHAIN_RETRY_DELAYS_SECONDS)
+    assert provider.chat.call_count == 2 * (len(sleeps) + 1)

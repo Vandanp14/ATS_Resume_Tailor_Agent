@@ -287,6 +287,10 @@ def inactive_tracker(provider_name: str) -> TrackerSnapshot:
 class ScheduledProvider:
     """Lazy ChatProvider wrapper around the process-wide scheduler."""
 
+    # Wraps the real Gemini client, so the pipeline may route each call to
+    # any model in its fallback chain.
+    supports_model_chain = True
+
     def __init__(
         self,
         scheduler: GeminiScheduler,

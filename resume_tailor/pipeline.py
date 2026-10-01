@@ -168,6 +168,9 @@ TRANSIENT_COOLDOWN_SECONDS = 90.0
 # Rewrites get one strict attempt (technology-support check on, with feedback)
 # plus two lenient ones, so the stricter first pass never costs the run.
 REWRITE_ATTEMPTS = 3
+# When every model in a chain is only overloaded or slow, wait and run the
+# whole chain again instead of stopping the job.
+CHAIN_RETRY_DELAYS_SECONDS = (30.0, 60.0)
 
 
 def _dedupe(models: Sequence[str]) -> tuple[str, ...]:
@@ -362,9 +365,13 @@ class TailorPipeline:
         )
         self.templates = TemplateManager(str(_TEMPLATE_DIR))
         self.options = MODEL_PARAMETERS.get(model, {"temperature": 0.1, "top_p": 0.9})
-        # Model chains apply only to Gemini through the real provider: an
-        # injected provider (tests, custom adapters) stays on ``model`` alone.
-        chains_enabled = provider is None and model.startswith("gemini")
+        # Model chains apply only to Gemini through the real client (built here,
+        # or wrapped by a provider that declares ``supports_model_chain``, like
+        # the web scheduler). Other injected providers stay on ``model`` alone.
+        real_client = provider is None or (
+            getattr(type(provider), "supports_model_chain", False) is True
+        )
+        chains_enabled = real_client and model.startswith("gemini")
         if planning_models is None:
             planning_models = PLANNING_MODELS if chains_enabled else ()
         if fallback_models is None:
@@ -426,61 +433,79 @@ class TailorPipeline:
 
         messages = self._messages(template_name, **context)
         chain = self._chain_for(template_name)
-        failures = [
-            (model, self._unavailable_models[model][0])
-            for model in chain
-            if self._skipped(model)
-        ]
-        for model in chain:
-            if self._skipped(model):
-                continue
-            options = dict(MODEL_PARAMETERS.get(model, self.options))
-            if template_name in _DETERMINISTIC_TEMPLATES:
-                options.update({"temperature": 0.0, "top_p": 1.0})
-            if template_name in PLANNING_TEMPLATES and model != self.model:
-                options["max_output_tokens"] = _PLANNING_MAX_OUTPUT_TOKENS
-            try:
-                result = call_llm_with_retry(
-                    self.provider,
-                    model,
-                    messages,
-                    response_model,
-                    options=options,
-                    max_retries=0,
-                )
-            except LLMExtractionError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - classified below
-                if not is_model_unavailable(exc):
+        rounds = len(CHAIN_RETRY_DELAYS_SECONDS) + 1 if len(chain) > 1 else 1
+        failures: list[tuple[str, str]] = []
+        for round_number in range(1, rounds + 1):
+            failures = [
+                (model, self._unavailable_models[model][0])
+                for model in chain
+                if self._skipped(model)
+            ]
+            for model in chain:
+                if self._skipped(model):
+                    continue
+                options = dict(MODEL_PARAMETERS.get(model, self.options))
+                if template_name in _DETERMINISTIC_TEMPLATES:
+                    options.update({"temperature": 0.0, "top_p": 1.0})
+                if template_name in PLANNING_TEMPLATES and model != self.model:
+                    options["max_output_tokens"] = _PLANNING_MAX_OUTPUT_TOKENS
+                try:
+                    result = call_llm_with_retry(
+                        self.provider,
+                        model,
+                        messages,
+                        response_model,
+                        options=options,
+                        max_retries=0,
+                    )
+                except LLMExtractionError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - classified below
+                    if not is_model_unavailable(exc):
+                        if len(chain) == 1:
+                            raise
+                        raise ModelUnavailableError(
+                            template_name, [(model, describe_api_error(exc))]
+                        ) from exc
                     if len(chain) == 1:
                         raise
-                    raise ModelUnavailableError(
-                        template_name, [(model, describe_api_error(exc))]
-                    ) from exc
-                error = describe_api_error(exc)
-                self._unavailable_models[model] = (
-                    error,
-                    None
-                    if is_persistent_unavailability(exc)
-                    else time.monotonic() + TRANSIENT_COOLDOWN_SECONDS,
-                )
-                failures.append((model, error))
-                remaining = [m for m in chain if not self._skipped(m)]
-                if len(chain) > 1:
+                    error = describe_api_error(exc)
+                    self._unavailable_models[model] = (
+                        error,
+                        None
+                        if is_persistent_unavailability(exc)
+                        else time.monotonic() + TRANSIENT_COOLDOWN_SECONDS,
+                    )
+                    failures.append((model, error))
+                    remaining = [m for m in chain if not self._skipped(m)]
                     self.tracker.warn(
                         f"{model} unavailable for {template_name} ({error}); "
                         + (
                             f"falling back to {remaining[0]}"
                             if remaining
-                            else "no fallback model left"
+                            else "no fallback model left this round"
                         )
                     )
-                if len(chain) == 1:
-                    raise
-                continue
-            if model != self.model:
-                self.tracker.detail(f"{template_name} answered by {model}")
-            return result  # type: ignore[return-value]
+                    continue
+                if model != self.model:
+                    self.tracker.detail(f"{template_name} answered by {model}")
+                return result  # type: ignore[return-value]
+            transient = [
+                model
+                for model in chain
+                if model in self._unavailable_models
+                and self._unavailable_models[model][1] is not None
+            ]
+            if round_number == rounds or not transient:
+                break
+            delay = CHAIN_RETRY_DELAYS_SECONDS[round_number - 1]
+            self.tracker.warn(
+                f"Every model is busy for {template_name}; waiting {delay:.0f}s "
+                f"and retrying the chain (round {round_number + 1}/{rounds})"
+            )
+            time.sleep(delay)
+            for model in transient:
+                self._unavailable_models.pop(model, None)
         raise ModelUnavailableError(template_name, failures)
 
     def _retry(
