@@ -33,6 +33,8 @@ from .models import (
     DEFAULT_MAX_REQUESTS_PER_DAY,
     CreateJobRequest,
     CreateJobResponse,
+    BulletReviewRequest,
+    BulletReviewResponse,
     FitRecoveryRequest,
     FitRecoveryResponse,
     JobDetail,
@@ -471,6 +473,37 @@ def create_app(
             raise HTTPException(422, "Idempotency-Key must be a UUID.")
         try:
             response, _replayed = registry.enqueue_recovery(job, body, key)
+        except RecoveryRequestError as exc:
+            raise HTTPException(exc.status, exc.detail) from exc
+        return JSONResponse(
+            status_code=202,
+            content=response.model_dump(mode="json"),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/jobs/{job_id}/bullet-review", response_model=BulletReviewResponse)
+    async def get_bullet_review(job: Job = Depends(job_or_404)) -> BulletReviewResponse:
+        try:
+            return registry.bullet_review(job)
+        except RecoveryRequestError as exc:
+            raise HTTPException(exc.status, exc.detail) from exc
+
+    @app.post(
+        "/api/jobs/{job_id}/bullet-review",
+        status_code=202,
+        response_model=RecoverySubmissionResponse,
+    )
+    async def submit_bullet_review(
+        body: BulletReviewRequest,
+        job: Job = Depends(job_or_404),
+        idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    ) -> JSONResponse:
+        try:
+            key = str(uuid.UUID(idempotency_key))
+        except ValueError:
+            raise HTTPException(422, "Idempotency-Key must be a UUID.")
+        try:
+            response, _replayed = registry.enqueue_bullet_review(job, body, key)
         except RecoveryRequestError as exc:
             raise HTTPException(exc.status, exc.detail) from exc
         return JSONResponse(

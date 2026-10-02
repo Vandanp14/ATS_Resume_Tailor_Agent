@@ -956,6 +956,323 @@ def validate_work_response(
     return returned
 
 
+# -- Salvage: finish a rewrite deterministically instead of failing the run ----
+
+# Textual issues a user may knowingly accept ("Keep as written"); structural
+# ones (missing bullet, bad provenance, broken impact bookkeeping) may not.
+_TEXTUAL_ISSUE_PREFIXES = ("Names ", "Explains ")
+
+
+def _clean_after_removal(text: str) -> str:
+    """Tidy punctuation and joiners left behind after cutting a phrase out."""
+
+    for pattern, replacement in (
+        (r"\(\s*\)", ""),
+        (r"\s+(?:and|or|&)\s+(?=[,.;:)]|$)", ""),
+        (r"\b(and|or)\s+(?:and|or)\b", r"\1"),
+        (r"\b(using|with|in|via|on)\s+(?:and|or)\s+", r"\1 "),
+        (r"\b(?:using|with|in|via|on)\s+(?=[,.;:)]|$)", ""),
+        (r"\b(\w[\w.+#-]*), (and|or) (\w[\w.+#-]*)([.;]|$)", r"\1 \2 \3\4"),
+        (r",\s*(?=[,.;:)]|$)", ""),
+        (r"\s{2,}", " "),
+        (r"\s+([,.;:)])", r"\1"),
+    ):
+        text = re.sub(pattern, replacement, text)
+    text = text.strip(" ,;:")
+    if text and text[-1] not in ".!?":
+        text += "."
+    return text[:1].upper() + text[1:]
+
+
+def _remove_phrases(text: str, forbidden_terms: Sequence[str]) -> str:
+    # Cut a gap-justification clause together with its leading comma.
+    text = re.sub(
+        r",?\s*(?:" + _GAP_JUSTIFICATION_RE.pattern + r")[^,.;]*",
+        "",
+        text,
+        flags=re.I,
+    )
+    for term in find_terms(text, forbidden_terms):
+        text = re.sub(
+            r"(?:\s*,\s*|\s+(?:and|or|&)\s+)?(?<![A-Za-z0-9+#.\-])"
+            + re.escape(term)
+            + r"(?![A-Za-z0-9+#\-])",
+            "",
+            text,
+            count=0,
+        )
+    return _clean_after_removal(text)
+
+
+def _bullet_issues(
+    bullet: STARBullet,
+    fact_index: Mapping[str, dict],
+    assignment: EvidenceAssignment | None,
+    forbidden_terms: Sequence[str],
+    local_fact_ids: set[str] | None = None,
+) -> list[str]:
+    """Human-readable problems with one bullet; textual ones first."""
+
+    issues: list[str] = []
+    texts = " ".join((bullet.text, bullet.situation_task, bullet.action, bullet.result))
+    for term in find_terms(texts, forbidden_terms):
+        issues.append(f"Names '{term}', which your master resume never states.")
+    if match := _GAP_JUSTIFICATION_RE.search(texts):
+        issues.append(f"Explains a skill gap instead of stating work: '{match.group(0)}'.")
+    if local_fact_ids is not None and (stray := set(bullet.source_ids) - local_fact_ids):
+        issues.append(f"Cites facts from outside this project: {sorted(stray)}.")
+    try:
+        _validate_star_bullet(bullet, fact_index, assignment, "bullet")
+    except ContractError as exc:
+        issues.append(str(exc).removeprefix("bullet ").capitalize())
+    return issues
+
+
+def _fact_bullet(
+    fact_ids: Sequence[str], fact_index: Mapping[str, dict], relevance: int
+) -> STARBullet:
+    """A bullet written verbatim from master facts: true by construction."""
+
+    known = [fact_id for fact_id in fact_ids if fact_id in fact_index]
+    prose = [f for f in known if fact_index[f]["kind"] not in {"skill", "technology"}]
+    chosen = (prose or known)[:1]
+    text = _clean_after_removal(fact_index[chosen[0]]["text"]) if chosen else "."
+    verified = bool(_NUMBER_RE.search(text))
+    return STARBullet(
+        evidence_assignment_id=None,
+        situation_task=text,
+        action=text,
+        result=text,
+        text=text,
+        relevance=relevance,
+        source_ids=chosen,
+        impact_type="verified" if verified else "qualitative",
+        impact_claim=text,
+    )
+
+
+def _review_flag(
+    *,
+    section: str,
+    source_id: str,
+    label: str,
+    issues: Sequence[str],
+    original: STARBullet | None,
+    safe: STARBullet,
+    assignment_id: str | None,
+    safe_kind: str,
+) -> dict:
+    textual_only = bool(issues) and all(
+        issue.startswith(_TEXTUAL_ISSUE_PREFIXES) for issue in issues
+    )
+    return {
+        "section": section,
+        "source_id": source_id,
+        "label": label,
+        "assignment_id": assignment_id,
+        "issues": list(issues),
+        "original_text": original.text if original else None,
+        "safe_text": safe.text,
+        "safe_kind": safe_kind,
+        "can_keep": original is not None and textual_only,
+        "source_fact_ids": list(safe.source_ids),
+    }
+
+
+def _safe_variant(
+    bullet: STARBullet,
+    fact_index: Mapping[str, dict],
+    assignment: EvidenceAssignment | None,
+    forbidden_terms: Sequence[str],
+    local_fact_ids: set[str] | None,
+) -> STARBullet | None:
+    """The same bullet with flagged terms or filler cut out, if that is valid."""
+
+    fields = {
+        name: _remove_phrases(getattr(bullet, name), forbidden_terms)
+        for name in ("text", "situation_task", "action", "result")
+    }
+    if fields["text"] == bullet.text or len(fields["text"].split()) < 6:
+        return None
+    candidate = bullet.model_copy(update=fields)
+    if _bullet_issues(candidate, fact_index, assignment, forbidden_terms, local_fact_ids):
+        return None
+    return candidate
+
+
+def bullet_text_problems(
+    text: str,
+    facts_text: str,
+    forbidden_terms: Sequence[str],
+    tech_requirements: Sequence[tuple[str, Sequence[str]]] = (),
+    allowed_numbers_text: str = "",
+) -> list[str]:
+    """Truth problems in a single regenerated bullet, checked against its facts."""
+
+    problems: list[str] = []
+    if found := find_terms(text, forbidden_terms):
+        problems.append(f"names technologies the master never states: {found}")
+    if match := _GAP_JUSTIFICATION_RE.search(text):
+        problems.append(f"explains a skill gap: {match.group(0)!r}")
+    unsupported = [
+        term
+        for term, variants in tech_requirements
+        if mentions(text, variants) and not mentions(facts_text, variants)
+    ]
+    if unsupported:
+        problems.append(f"names technologies its facts never mention: {unsupported}")
+    invented = _number_tokens(text) - _number_tokens(f"{facts_text} {allowed_numbers_text}")
+    if invented:
+        problems.append(f"states numbers its facts never give: {sorted(invented)}")
+    words = len(text.split())
+    if not 8 <= words <= 45:
+        problems.append(f"must be 8-45 words; got {words}")
+    return problems
+
+
+def salvage_work_item(
+    candidate: WorkRewriteItem | None,
+    source: dict,
+    plan: EvidencePlan,
+    fact_index: Mapping[str, dict],
+    forbidden_terms: Sequence[str] = (),
+) -> tuple[WorkRewriteItem, list[dict]]:
+    """Build a valid rewrite for one role from the model's last attempt.
+
+    Valid bullets are kept. A flawed bullet becomes its safe variant (the
+    flagged term or phrase cut out) or, failing that, a bullet written from
+    its allocated master fact. Every replacement is returned as a review flag
+    so the user can choose. The plan's inferred impact is dropped for an
+    assignment whose bullet falls back to verbatim fact text.
+    """
+
+    source_id = source["source_id"]
+    label = " · ".join(v for v in (source.get("position"), source.get("name")) if v)
+    assignments = list(_assignments_by_destination(plan).get(source_id, {}).values())
+    if candidate is not None:
+        repair_allocation_provenance(candidate, plan)
+    written: dict[str, STARBullet] = {}
+    for bullet in candidate.bullets if candidate else []:
+        written.setdefault(bullet.evidence_assignment_id or "", bullet)
+    bullets: list[STARBullet] = []
+    flags: list[dict] = []
+    for assignment in assignments:
+        bullet = written.get(assignment.assignment_id)
+        issues = (
+            _bullet_issues(bullet, fact_index, assignment, forbidden_terms)
+            if bullet
+            else ["The model did not write this bullet."]
+        )
+        if not issues:
+            bullets.append(bullet)
+            continue
+        safe = (
+            _safe_variant(bullet, fact_index, assignment, forbidden_terms, None)
+            if bullet
+            else None
+        )
+        safe_kind = "edited"
+        if safe is None:
+            safe_kind = "source_fact"
+            assignment.inferred_impact = None
+            safe = _fact_bullet(
+                assignment.source_fact_ids, fact_index, bullet.relevance if bullet else 50
+            ).model_copy(update={"evidence_assignment_id": assignment.assignment_id})
+        bullets.append(safe)
+        flags.append(
+            _review_flag(
+                section="work",
+                source_id=source_id,
+                label=label,
+                issues=issues,
+                original=bullet,
+                safe=safe,
+                assignment_id=assignment.assignment_id,
+                safe_kind=safe_kind,
+            )
+        )
+    summary = candidate.summary if candidate else None
+    if summary and (find_terms(summary, forbidden_terms) or _GAP_JUSTIFICATION_RE.search(summary)):
+        summary = None
+    item = WorkRewriteItem(
+        source_id=source_id,
+        summary=summary,
+        relevance=candidate.relevance if candidate else int(source.get("selection_relevance") or 50),
+        bullets=bullets,
+    )
+    validate_work_item(item, source, plan, fact_index, None, forbidden_terms)
+    return item, flags
+
+
+def salvage_project_item(
+    candidate: ProjectRewriteItem | None,
+    source: dict,
+    fact_index: Mapping[str, dict],
+    forbidden_terms: Sequence[str] = (),
+) -> tuple[ProjectRewriteItem, list[dict]]:
+    """Project counterpart of :func:`salvage_work_item` (two local bullets)."""
+
+    source_id = source["source_id"]
+    label = source.get("name") or source_id
+    local = _project_provenance(source)
+    kept: list[STARBullet] = []
+    flags: list[dict] = []
+    for bullet in candidate.bullets if candidate else []:
+        if len(kept) == PROJECT_BULLET_COUNT:
+            break
+        bullet = bullet.model_copy(update={"evidence_assignment_id": None})
+        issues = _bullet_issues(bullet, fact_index, None, forbidden_terms, local)
+        if not issues:
+            kept.append(bullet)
+            continue
+        safe = _safe_variant(bullet, fact_index, None, forbidden_terms, local)
+        safe_kind = "edited"
+        if safe is None:
+            safe_kind = "source_fact"
+            unused = [f for f in bullet.source_ids if f in local] or sorted(local)
+            safe = _fact_bullet(unused, fact_index, bullet.relevance)
+        kept.append(safe)
+        flags.append(
+            _review_flag(
+                section="projects", source_id=source_id, label=label, issues=issues,
+                original=bullet, safe=safe, assignment_id=None, safe_kind=safe_kind,
+            )
+        )
+    facts_by_kind = source.get("source_facts") or {}
+    highlight_ids = [
+        fact["source_id"] for fact in facts_by_kind.get("highlights", [])
+    ] + ([facts_by_kind["description"]["source_id"]] if facts_by_kind.get("description") else [])
+    used = {f for bullet in kept for f in bullet.source_ids}
+    for fact_id in highlight_ids:
+        if len(kept) == PROJECT_BULLET_COUNT:
+            break
+        if fact_id in used:
+            continue
+        safe = _fact_bullet([fact_id], fact_index, 50)
+        kept.append(safe)
+        used.add(fact_id)
+        flags.append(
+            _review_flag(
+                section="projects", source_id=source_id, label=label,
+                issues=["The model did not write this bullet."], original=None,
+                safe=safe, assignment_id=None, safe_kind="source_fact",
+            )
+        )
+    description = candidate.description if candidate else source.get("description")
+    if description and (
+        find_terms(description, forbidden_terms) or _GAP_JUSTIFICATION_RE.search(description)
+    ):
+        description = source.get("description")
+    item = ProjectRewriteItem(
+        source_id=source_id,
+        description=description,
+        relevance=candidate.relevance if candidate else int(source.get("selection_relevance") or 50),
+        bullets=kept,
+    )
+    validate_project_item(item, source, fact_index, None, forbidden_terms)
+    return item, flags
+
+
 def validate_project_response(
     response: ProjectRewriteResponse,
     sources: Sequence[dict],

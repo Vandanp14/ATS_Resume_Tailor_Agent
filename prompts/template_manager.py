@@ -55,6 +55,7 @@ class TemplateManager:
             "research_company_signals": "research_company_signals.jinja",
             "plan_evidence": "plan_evidence.jinja",
             "plan_requirement_coverage": "plan_requirement_coverage.jinja",
+            "regenerate_bullet": "regenerate_bullet.jinja",
             "tailor_skills": "tailor_skills.jinja",
             "tailor_work": "tailor_work.jinja",
             "tailor_projects": "tailor_projects.jinja",

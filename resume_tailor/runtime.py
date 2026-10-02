@@ -22,6 +22,7 @@ MAX_SELECTED_PROJECTS = 2
 PROJECT_REWRITE_BATCH_SIZE = 5
 FINAL_ARTIFACTS = (
     ".fit_recovery.json",
+    ".bullet_review.json",
     ".done",
     "tailored.json",
     "match_report.json",

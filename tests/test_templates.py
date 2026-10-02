@@ -16,6 +16,7 @@ def test_pipeline_templates_are_registered_and_summary_is_gone():
         "select_projects",
         "plan_evidence",
         "plan_requirement_coverage",
+        "regenerate_bullet",
         "tailor_skills",
         "tailor_work",
         "tailor_projects",

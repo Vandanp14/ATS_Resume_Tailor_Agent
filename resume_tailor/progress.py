@@ -33,6 +33,7 @@ class Stage(StrEnum):
     RENDER = "Render and fit one page"
     EMERGENCY_CONCISION = "Emergency bullet concision"
     CONCISION_AUDIT = "Audit emergency concision"
+    BULLET_REVIEW = "Apply bullet review"
     WRITE_ARTIFACTS = "Write artifacts"
 
 

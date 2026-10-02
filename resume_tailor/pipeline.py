@@ -67,6 +67,7 @@ from .evidence import (
     ContractError,
     SelectedEvidence,
     align_inference_provenance,
+    bullet_text_problems,
     choose_selected,
     global_evidence_payload,
     jd_signal_is_thin,
@@ -74,6 +75,8 @@ from .evidence import (
     master_fact_index,
     proxy_coverage_gaps,
     repair_allocation_provenance,
+    salvage_project_item,
+    salvage_work_item,
     sanitize_target_terms,
     technologies_in_experience,
     transferable_plan_from_proxies,
@@ -93,6 +96,7 @@ from .llm import (
     initialize_llm_provider,
 )
 from .progress import JobContext, ProgressReporter, ProgressTracker, Stage
+from .bullet_review import live_flags, persist_bullet_review
 from .fit_recovery import (
     FitRecoveryRequired,
     persist_fit_recovery,
@@ -135,6 +139,7 @@ _TEMPLATE_STAGES = {
     "holistic_review": Stage.HOLISTIC_REVIEW,
     "concise_bullet": Stage.EMERGENCY_CONCISION,
     "audit_concision": Stage.CONCISION_AUDIT,
+    "regenerate_bullet": Stage.BULLET_REVIEW,
 }
 
 
@@ -386,6 +391,7 @@ class TailorPipeline:
         )
         # model -> (API error text, skip-until monotonic time or None for the run)
         self._unavailable_models: dict[str, tuple[str, float | None]] = {}
+        self._bullet_flags: list[dict] = []
 
     def _messages(self, template_name: str, **context: object) -> list[dict[str, str]]:
         stage = {
@@ -412,6 +418,45 @@ class TailorPipeline:
             if template_name in PLANNING_TEMPLATES
             else self.default_chain
         )
+
+    def _salvage(
+        self,
+        stage_name: str,
+        sources: Sequence[dict],
+        accepted: dict[str, Any],
+        pending: Sequence[str],
+        errors: Sequence[str],
+        last: object,
+        salvage: Any,
+    ) -> list[Any]:
+        """Finish entries the model never got valid instead of failing the run.
+
+        Each flawed bullet becomes a safe version and a review flag; the web
+        app later lets the user keep, accept, or regenerate it.
+        """
+
+        try:
+            for source in sources:
+                source_id = source["source_id"]
+                if source_id not in pending:
+                    continue
+                item, flags = salvage(source)
+                accepted[source_id] = item
+                self._bullet_flags.extend(flags)
+                for flag in flags:
+                    self.tracker.warn(
+                        f"Needs review: {flag['label']}: {flag['issues'][0]} "
+                        f"Using safe version: {flag['safe_text'][:90]!r}"
+                    )
+        except ContractError as exc:
+            raise StageFailure(
+                stage_name,
+                REWRITE_ATTEMPTS,
+                list(pending),
+                last,
+                "; ".join([*errors, f"salvage failed: {exc}"]),
+            ) from exc
+        return [accepted[source["source_id"]] for source in sources]
 
     def _repaired(self, notes: Sequence[str]) -> None:
         for note in notes:
@@ -627,6 +672,45 @@ class TailorPipeline:
             self.tracker.warn(f"Dropped unsupported proxy evidence: {note}")
         return attach_proxies(requirements, plan.proxies), plan
 
+    def regenerate_review_bullet(self, flag: Any, bundle: Any) -> str | None:
+        """Rewrite one flagged bullet from its own facts; None keeps the safe text."""
+
+        facts_text = "\n".join(flag.source_facts)
+        tech = [(str(term), list(variants)) for term, variants in bundle.tech_requirements]
+
+        def validate(result: BulletConcision) -> None:
+            result.text = " ".join(result.text.split())
+            problems = bullet_text_problems(
+                result.text,
+                facts_text,
+                bundle.forbidden_terms,
+                tech,
+                allowed_numbers_text=flag.safe_text,
+            )
+            if problems:
+                raise ContractError("regenerated bullet " + "; ".join(problems))
+
+        try:
+            result = self._simple_stage(
+                "regenerate_bullet",
+                BulletConcision,
+                selected_ids=[flag.flag_id],
+                validator=validate,
+                jd_profile_json=bundle.jd_profile_json,
+                label=flag.label,
+                source_facts_json=json.dumps(flag.source_facts, indent=2),
+                issues_json=json.dumps(flag.issues, indent=2),
+                original_text=flag.original_text or "(the model wrote no bullet)",
+                forbidden_terms_json=json.dumps(bundle.forbidden_terms),
+            )
+        except StageFailure as exc:
+            self.tracker.warn(
+                f"Could not regenerate the bullet for {flag.label}; keeping the "
+                f"safe version ({exc})"
+            )
+            return None
+        return result.text
+
     def _parse_jd(self, jd_text: str) -> JDProfile:
         return self._simple_stage("jd_parse", JDProfile, jd_text=jd_text)
 
@@ -802,6 +886,7 @@ class TailorPipeline:
             return []
         expected = {item["source_id"]: item for item in sources}
         accepted: dict[str, WorkRewriteItem] = {}
+        last_items: dict[str, WorkRewriteItem] = {}
         pending = list(expected)
         last: object = None
         errors: list[str] = []
@@ -839,6 +924,9 @@ class TailorPipeline:
                     ),
                 )
                 last = result
+                for item in result.work:
+                    if item.source_id in expected:
+                        last_items[item.source_id] = item
             except LLMExtractionError as exc:
                 last = exc.raw_response
                 errors.append(str(exc))
@@ -866,14 +954,9 @@ class TailorPipeline:
                     tech_requirements if attempt == 1 else (),
                 ),
             )
-            if any(error.startswith("unknown source IDs") for error in partial_errors):
-                raise StageFailure(
-                    "tailor_work",
-                    attempt,
-                    list(expected),
-                    result,
-                    "; ".join(partial_errors),
-                )
+            for error in partial_errors:
+                if error.startswith("unknown source IDs"):
+                    self.tracker.detail(f"Ignored entries for unselected roles: {error}")
             accepted.update(partial)
             errors.extend(partial_errors)
             pending = [source_id for source_id in pending if source_id in unresolved]
@@ -886,8 +969,20 @@ class TailorPipeline:
                     "; ".join(partial_errors) or "missing entries",
                     REWRITE_ATTEMPTS,
                 )
-        raise StageFailure(
-            "tailor_work", REWRITE_ATTEMPTS, list(expected), last, "; ".join(errors)
+        return self._salvage(
+            "tailor_work",
+            sources,
+            accepted,
+            pending,
+            errors,
+            last,
+            lambda source: salvage_work_item(
+                last_items.get(source["source_id"]),
+                source,
+                evidence_plan,
+                fact_index,
+                forbidden_terms,
+            ),
         )
 
     def _rewrite_project_batch(
@@ -909,6 +1004,7 @@ class TailorPipeline:
         )
         expected = {item["source_id"]: item for item in sources}
         accepted: dict[str, ProjectRewriteItem] = {}
+        last_items: dict[str, ProjectRewriteItem] = {}
         pending = list(expected)
         last: object = None
         errors: list[str] = []
@@ -938,6 +1034,9 @@ class TailorPipeline:
                     ),
                 )
                 last = result
+                for item in result.projects:
+                    if item.source_id in expected:
+                        last_items[item.source_id] = item
             except LLMExtractionError as exc:
                 last = exc.raw_response
                 errors.append(str(exc))
@@ -961,14 +1060,11 @@ class TailorPipeline:
                     tech_requirements if attempt == 1 else (),
                 ),
             )
-            if any(error.startswith("unknown source IDs") for error in partial_errors):
-                raise StageFailure(
-                    f"tailor_projects.batch_{batch_number}",
-                    attempt,
-                    list(expected),
-                    result,
-                    "; ".join(partial_errors),
-                )
+            for error in partial_errors:
+                if error.startswith("unknown source IDs"):
+                    self.tracker.detail(
+                        f"Ignored entries for unselected projects: {error}"
+                    )
             accepted.update(partial)
             errors.extend(partial_errors)
             pending = [source_id for source_id in pending if source_id in unresolved]
@@ -981,12 +1077,19 @@ class TailorPipeline:
                     "; ".join(partial_errors) or "missing entries",
                     REWRITE_ATTEMPTS,
                 )
-        raise StageFailure(
+        return self._salvage(
             f"tailor_projects.batch_{batch_number}",
-            REWRITE_ATTEMPTS,
-            list(expected),
+            sources,
+            accepted,
+            pending,
+            errors,
             last,
-            "; ".join(errors),
+            lambda source: salvage_project_item(
+                last_items.get(source["source_id"]),
+                source,
+                fact_index,
+                forbidden_terms,
+            ),
         )
 
     def _rewrite_projects(
@@ -1037,6 +1140,7 @@ class TailorPipeline:
         out_dir = Path(out_dir)
         self.tracker.job = job
         self._unavailable_models = {}
+        self._bullet_flags = []
         try:
             with self.tracker.stage(Stage.PREFLIGHT):
                 self.tracker.detail(f"Model: {self.model}")
@@ -1470,6 +1574,28 @@ class TailorPipeline:
                 return 1
             for message in rejected_edits:
                 self.tracker.warn(f"Reviewer edit rejected: {message}")
+
+            flagged = live_flags(final_scored, self._bullet_flags)
+            report_payload["auto_safe_fixes"] = flagged
+            if flagged and self.allow_fit_recovery:
+                # Web runs pause here so the user decides each flagged bullet;
+                # CLI runs keep the safe versions and list them in the report.
+                report_payload["pipeline_status"] = "review_required"
+                persist_bullet_review(
+                    out_dir,
+                    final_scored,
+                    flagged,
+                    pending_report=report_payload,
+                    no_pdf=no_pdf,
+                    jd_profile_json=jd_json,
+                    forbidden_terms=forbidden_terms,
+                    tech_requirements=tech_requirements,
+                    fact_index=facts,
+                )
+                self.tracker.detail(
+                    f"{len(flagged)} bullet(s) need your review before rendering"
+                )
+                return 2
 
             with self.tracker.stage(Stage.RENDER):
                 if no_pdf:

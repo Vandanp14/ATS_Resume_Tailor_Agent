@@ -116,6 +116,7 @@ class PersistedJob(BaseModel):
     request_fingerprint: str | None = None
     pdf_library_name: str | None = None
     export_warning: str | None = None
+    action_kind: Literal["fit_recovery", "bullet_review"] | None = None
 
 
 class QueuePayload(BaseModel):
@@ -139,9 +140,12 @@ class RecoveryQueuePayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    operation: Literal["fit_recovery"] = "fit_recovery"
+    operation: Literal["fit_recovery", "bullet_review"] = "fit_recovery"
     revision: int = Field(ge=1)
     candidate_ids: list[str] = Field(min_length=1, max_length=100)
+    decisions: dict[str, Literal["keep", "safe", "regenerate"]] = Field(
+        default_factory=dict
+    )
     created_at: str = Field(default_factory=utc_now_iso)
     idempotency_key: str
     request_fingerprint: str
@@ -207,6 +211,47 @@ class FitRecoveryResponse(BaseModel):
         if not set(self.recommended_candidate_ids).issubset(issued):
             raise ValueError("Recommended candidate IDs must be issued candidates.")
         return self
+
+
+class BulletReviewRequest(BaseModel):
+    """Validated user choices for ``POST .../bullet-review``."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    revision: int = Field(ge=1)
+    decisions: dict[str, Literal["keep", "safe", "regenerate"]] = Field(
+        min_length=1, max_length=100
+    )
+
+    @field_validator("decisions")
+    @classmethod
+    def _flag_ids_are_bounded(cls, values: dict[str, str]) -> dict[str, str]:
+        if any(not key or len(key) > 200 for key in values):
+            raise ValueError("Review item IDs must be 1-200 characters.")
+        return values
+
+
+class BulletReviewItem(BaseModel):
+    """One flagged bullet as shown to the browser; no private state."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    flag_id: str
+    section: str
+    label: str
+    issues: list[str]
+    original_text: str | None = None
+    safe_text: str
+    safe_kind: str
+    can_keep: bool
+    source_facts: list[str] = Field(default_factory=list)
+
+
+class BulletReviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    revision: int = Field(ge=1)
+    items: list[BulletReviewItem] = Field(min_length=1)
 
 
 class RecoverySubmissionResponse(BaseModel):
@@ -351,6 +396,7 @@ class JobEntry(BaseModel):
     artifacts: list[str] = Field(default_factory=list)
     pdf_library_name: str | None = None
     export_warning: str | None = None
+    action_kind: str | None = None
     active: bool = False
 
 
@@ -395,6 +441,12 @@ def job_fingerprint(request: CreateJobRequest, options: JobOptions) -> str:
         options.research_company,
         options.no_pdf,
     )
+    return uuid.uuid5(uuid.NAMESPACE_URL, repr(seed)).hex
+
+
+def job_fingerprint_for_review(request: BulletReviewRequest) -> str:
+    """Stable identity for an idempotent bullet-review submission."""
+    seed = ("bullet_review", request.revision, tuple(sorted(request.decisions.items())))
     return uuid.uuid5(uuid.NAMESPACE_URL, repr(seed)).hex
 
 

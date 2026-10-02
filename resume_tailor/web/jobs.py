@@ -33,6 +33,9 @@ from .models import (
     QUEUE_DIR_NAME,
     QUEUE_STATE_FILE,
     CreateJobRequest,
+    BulletReviewItem,
+    BulletReviewRequest,
+    BulletReviewResponse,
     FitRecoveryRequest,
     FitRecoveryResponse,
     JobEntry,
@@ -51,6 +54,7 @@ from .models import (
     TrackerSnapshot,
     job_fingerprint,
     job_fingerprint_for_recovery,
+    job_fingerprint_for_review,
     new_job_id,
     pdf_library_name,
     utc_now_iso,
@@ -103,6 +107,32 @@ def load_recovery_response(directory: Path) -> FitRecoveryResponse:
     if not set(response.recommended_candidate_ids).issubset(issued):
         raise ValueError("Recovery bundle recommends an unknown candidate ID.")
     return response
+
+
+def load_bullet_review_response(directory: Path) -> BulletReviewResponse:
+    """Load the core's private review bundle and expose only browser-safe fields."""
+    from ..bullet_review import BULLET_REVIEW_FILENAME, load_bullet_review
+
+    if (directory / BULLET_REVIEW_FILENAME).is_symlink():
+        raise ValueError("Review bundle must not be a symbolic link.")
+    bundle = load_bullet_review(directory)
+    return BulletReviewResponse(
+        revision=bundle.revision,
+        items=[
+            BulletReviewItem(
+                flag_id=flag.flag_id,
+                section=flag.section,
+                label=flag.label,
+                issues=list(flag.issues),
+                original_text=flag.original_text,
+                safe_text=flag.safe_text,
+                safe_kind=flag.safe_kind,
+                can_keep=flag.can_keep,
+                source_facts=list(flag.source_facts),
+            )
+            for flag in bundle.flags
+        ],
+    )
 
 
 def _say(exc: BaseException) -> str:
@@ -474,6 +504,21 @@ class QueueRegistry:
             except ValueError:
                 return None
 
+    def bullet_review(self, job: Job) -> BulletReviewResponse:
+        if job.persisted.state != JobState.ACTION_REQUIRED:
+            raise RecoveryRequestError(409, "This job is not waiting for a bullet review.")
+        try:
+            return load_bullet_review_response(job.directory)
+        except Exception as exc:
+            LOGGER.warning(
+                "Could not load bullet review for job %s: %s",
+                job.persisted.job_id,
+                _say(exc),
+            )
+            raise RecoveryRequestError(
+                409, "Review items are unavailable; reload the job before retrying."
+            ) from exc
+
     def recovery(self, job: Job) -> FitRecoveryResponse:
         if job.persisted.state != JobState.ACTION_REQUIRED:
             raise RecoveryRequestError(
@@ -560,7 +605,82 @@ class QueueRegistry:
         idempotency_key: str,
     ) -> tuple[RecoverySubmissionResponse, bool]:
         """Validate and queue one recovery pass; returns ``(response, replayed)``."""
-        fingerprint = job_fingerprint_for_recovery(request)
+
+        def build() -> RecoveryQueuePayload:
+            recovery = load_recovery_response(job.directory)
+            if request.revision != recovery.revision:
+                raise RecoveryRequestError(
+                    409,
+                    "These fit-recovery options are stale; reload and review the latest revision.",
+                )
+            issued = {candidate.candidate_id for candidate in recovery.candidates}
+            if set(request.candidate_ids) - issued:
+                raise RecoveryRequestError(
+                    422,
+                    "One or more candidate IDs were not issued for this recovery revision.",
+                )
+            return RecoveryQueuePayload(
+                revision=request.revision,
+                candidate_ids=request.candidate_ids,
+                idempotency_key=idempotency_key,
+                request_fingerprint=job_fingerprint_for_recovery(request),
+            )
+
+        return self._enqueue_user_action(
+            job,
+            idempotency_key,
+            job_fingerprint_for_recovery(request),
+            build,
+            "User-approved removals queued.",
+        )
+
+    def enqueue_bullet_review(
+        self,
+        job: Job,
+        request: BulletReviewRequest,
+        idempotency_key: str,
+    ) -> tuple[RecoverySubmissionResponse, bool]:
+        """Validate and queue the user's per-bullet review choices."""
+        fingerprint = job_fingerprint_for_review(request)
+
+        def build() -> RecoveryQueuePayload:
+            review = load_bullet_review_response(job.directory)
+            if request.revision != review.revision:
+                raise RecoveryRequestError(
+                    409, "These review items are stale; reload the job."
+                )
+            items = {item.flag_id: item for item in review.items}
+            if set(request.decisions) - set(items):
+                raise RecoveryRequestError(
+                    422, "One or more review items were not issued for this job."
+                )
+            for flag_id, choice in request.decisions.items():
+                if choice == "keep" and not items[flag_id].can_keep:
+                    raise RecoveryRequestError(
+                        422, f"'{items[flag_id].label}' cannot be kept as written."
+                    )
+            return RecoveryQueuePayload(
+                operation="bullet_review",
+                revision=request.revision,
+                candidate_ids=sorted(request.decisions),
+                decisions=dict(request.decisions),
+                idempotency_key=idempotency_key,
+                request_fingerprint=fingerprint,
+            )
+
+        return self._enqueue_user_action(
+            job, idempotency_key, fingerprint, build, "Bullet review choices queued."
+        )
+
+    def _enqueue_user_action(
+        self,
+        job: Job,
+        idempotency_key: str,
+        fingerprint: str,
+        build: Callable[[], RecoveryQueuePayload],
+        queued_message: str,
+    ) -> tuple[RecoverySubmissionResponse, bool]:
+        """Shared idempotent queueing for a paused job's user decision."""
         with self._cond:
             store = self._load_recovery_idempotency(job)
             existing = next(
@@ -571,15 +691,15 @@ class QueueRegistry:
                 if existing.request_fingerprint != fingerprint:
                     raise RecoveryRequestError(
                         422,
-                        "Idempotency-Key was used with a different recovery request.",
+                        "Idempotency-Key was used with a different request.",
                     )
                 if existing.status == "in_progress":
                     raise RecoveryRequestError(
-                        409, "An identical recovery request is already in progress."
+                        409, "An identical request is already in progress."
                     )
                 if existing.response_body is None:
                     raise RecoveryRequestError(
-                        409, "The saved recovery response is unavailable."
+                        409, "The saved response is unavailable."
                     )
                 return (
                     RecoverySubmissionResponse.model_validate(existing.response_body),
@@ -587,27 +707,9 @@ class QueueRegistry:
                 )
             if job.persisted.state != JobState.ACTION_REQUIRED:
                 raise RecoveryRequestError(
-                    409, "This job is not waiting for a fit-recovery choice."
+                    409, "This job is not waiting for your decision."
                 )
-            recovery = load_recovery_response(job.directory)
-            if request.revision != recovery.revision:
-                raise RecoveryRequestError(
-                    409,
-                    "These fit-recovery options are stale; reload and review the latest revision.",
-                )
-            issued = {candidate.candidate_id for candidate in recovery.candidates}
-            unknown = sorted(set(request.candidate_ids) - issued)
-            if unknown:
-                raise RecoveryRequestError(
-                    422,
-                    "One or more candidate IDs were not issued for this recovery revision.",
-                )
-            payload = RecoveryQueuePayload(
-                revision=request.revision,
-                candidate_ids=request.candidate_ids,
-                idempotency_key=idempotency_key,
-                request_fingerprint=fingerprint,
-            )
+            payload = build()
             job.payload = payload
             job.persisted = job.persisted.model_copy(
                 update={
@@ -615,6 +717,7 @@ class QueueRegistry:
                     "finished_at": None,
                     "current_stage": None,
                     "message": None,
+                    "action_kind": None,
                 }
             )
             self._persist_payload(job)
@@ -633,9 +736,7 @@ class QueueRegistry:
                 )
             )
             self._persist_recovery_idempotency(job, store)
-            job.reporter.write_job_boundary(
-                "job_recovery_queued", message="User-approved removals queued."
-            )
+            job.reporter.write_job_boundary("job_recovery_queued", message=queued_message)
             self._cond.notify_all()
         self._publish_queue_changed()
         return response, False
@@ -720,6 +821,7 @@ class QueueRegistry:
             artifacts=self.artifacts(job),
             pdf_library_name=persisted.pdf_library_name,
             export_warning=persisted.export_warning,
+            action_kind=persisted.action_kind,
             active=self._active == persisted.job_id,
         )
 
@@ -818,14 +920,49 @@ class QueueRegistry:
 
         return apply_fit_recovery(directory, candidate_ids)
 
+    def _apply_bullet_review(self, job: Job, payload: RecoveryQueuePayload) -> int:
+        from ..bullet_review import apply_bullet_review
+
+        regenerate = None
+        if "regenerate" in payload.decisions.values():
+            pipeline = self.pipeline_factory(
+                model=self.model,
+                call_interval=self.call_interval,
+                provider=self.provider,
+                reporter=job.reporter,
+                allow_fit_recovery=True,
+            )
+            pipeline.tracker.job = JobContext(
+                name=job.persisted.job_id, output_dir=job.directory
+            )
+            regenerate = pipeline.regenerate_review_bullet
+        return apply_bullet_review(
+            job.directory,
+            payload.decisions,
+            regenerate=regenerate,
+            progress=lambda message: job.reporter.write_job_boundary(
+                "job_recovery_started", message=message
+            ),
+        )
+
     def _run_recovery(
         self, job: Job, payload: RecoveryQueuePayload, started: float
     ) -> None:
+        reviewing = payload.operation == "bullet_review"
         job.reporter.write_job_boundary(
-            "job_recovery_started", message="Applying user-approved removals."
+            "job_recovery_started",
+            message=(
+                "Applying your bullet review choices."
+                if reviewing
+                else "Applying user-approved removals."
+            ),
         )
         try:
-            exit_code = self.recovery_handler(job.directory, payload.candidate_ids)
+            exit_code = (
+                self._apply_bullet_review(job, payload)
+                if reviewing
+                else self.recovery_handler(job.directory, payload.candidate_ids)
+            )
             if exit_code == 0:
                 if not job.persisted.options.no_pdf:
                     self._copy_to_pdf_library(job)
@@ -836,7 +973,7 @@ class QueueRegistry:
                 self._finish(
                     job,
                     JobState.FAILED,
-                    "Fit recovery did not produce a valid result.",
+                    "Applying your choices did not produce a valid result.",
                     started,
                 )
         except Exception as exc:
@@ -849,12 +986,27 @@ class QueueRegistry:
                 pass
 
     def _transition_to_action_required(self, job: Job, started: float) -> bool:
-        try:
-            load_recovery_response(job.directory)
-        except Exception:
-            return False
+        from ..bullet_review import BULLET_REVIEW_FILENAME
+
+        if (job.directory / BULLET_REVIEW_FILENAME).is_file():
+            try:
+                review = load_bullet_review_response(job.directory)
+            except Exception:
+                return False
+            kind = "bullet_review"
+            count = len(review.items)
+            message = (
+                f"{count} bullet{'s' if count != 1 else ''} need your decision "
+                "before the resume is rendered."
+            )
+        else:
+            try:
+                load_recovery_response(job.directory)
+            except Exception:
+                return False
+            kind = "fit_recovery"
+            message = "The resume still spans two pages. Review suggested content removals."
         elapsed = round(time.monotonic() - started, 2)
-        message = "The resume still spans two pages. Review suggested content removals."
         job.reporter.write_job_boundary(
             "job_action_required", message=message, elapsed=elapsed
         )
@@ -864,6 +1016,7 @@ class QueueRegistry:
                 "finished_at": utc_now_iso(),
                 "message": message,
                 "current_stage": None,
+                "action_kind": kind,
             }
         )
         self._persist_job(job)

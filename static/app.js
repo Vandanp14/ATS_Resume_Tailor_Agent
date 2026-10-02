@@ -37,6 +37,7 @@ const state = {
   detailAbort: null,
   seenEvents: new Set(),
   logFilter: "all",
+  bulletReview: null,
   logRendered: { jobId: null, filter: "all", count: 0 },
   queueStatus: "loading",
   queueError: "",
@@ -465,13 +466,13 @@ function renderDetail(job) {
   badge.className = `status-pill ${job.state}`;
   badge.textContent = stateLabel(job.state);
 
-  const stage = job.current_stage || (job.state === "queued" ? "Waiting to start" : job.state === "completed" ? "Tailoring complete" : job.state === "failed" ? "Run stopped" : job.state === "action_required" ? "Action needed: one-page fit" : "Preparing");
+  const stage = job.current_stage || (job.state === "queued" ? "Waiting to start" : job.state === "completed" ? "Tailoring complete" : job.state === "failed" ? "Run stopped" : job.state === "action_required" ? (job.action_kind === "bullet_review" ? "Action needed: review bullets" : "Action needed: one-page fit") : "Preparing");
   $("detail-stage-text").textContent = stage;
   $("detail-body").dataset.live = String(job.state === "running");
   $("detail-elapsed").textContent = job.started_at ? formatElapsed(job.started_at, job.finished_at) : "—";
   $("detail-position").textContent = job.queue_position ? `#${job.queue_position}` : job.active ? "Active" : "—";
   $("detail-output").textContent = job.artifacts && job.artifacts.length ? `${job.artifacts.length} ${job.artifacts.length === 1 ? "file" : "files"}` : ["failed", "cancelled"].includes(job.state) ? "None" : "Pending";
-  $("detail-message").hidden = !job.message;
+  $("detail-message").hidden = !job.message || job.state === "action_required";
   clear($("detail-message"));
   if (job.message) $("detail-message").appendChild(el("span", "run-alert-text", job.message));
   $("detail-message").title = job.message ? "Full message in the Activity log" : "";
@@ -508,7 +509,10 @@ function recoveryPayload(body) {
 
 function renderRecoveryCard(job) {
   const card = $("fit-recovery-card");
-  const visible = job.state === "action_required";
+  const reviewing = job.state === "action_required" && job.action_kind === "bullet_review";
+  $("bullet-review-card").hidden = !reviewing;
+  if (reviewing) $("bullet-review-card-summary").textContent = job.message || "Choose what to use for each flagged bullet.";
+  const visible = job.state === "action_required" && !reviewing;
   card.hidden = !visible;
   if (!visible) return;
 
@@ -761,6 +765,112 @@ async function submitRecovery(event) {
   } finally {
     state.recovery.submitting = false;
     $("apply-removals-btn").textContent = "Remove selected and render";
+  }
+}
+
+/* Bullet review: per-bullet keep / safe / regenerate choices. */
+
+const REVIEW_CHOICES = [
+  { value: "safe", title: "Use safe version", note: (item) => (item.safe_kind === "edited" ? "Flagged wording removed." : "Written from your master resume.") },
+  { value: "keep", title: "Keep as written", note: () => "Only if this is true for you." },
+  { value: "regenerate", title: "Regenerate this bullet", note: () => "One model call, rebuilt only from its source facts." },
+];
+
+function reviewItem(item, index) {
+  const fieldset = el("fieldset", "review-item");
+  const legend = el("legend");
+  legend.append(el("span", "review-item-index tabnum", String(index + 1)), document.createTextNode(item.label));
+  fieldset.appendChild(legend);
+  const issues = el("ul", "review-issues");
+  for (const issue of item.issues) issues.appendChild(el("li", null, issue));
+  fieldset.appendChild(issues);
+  for (const choice of REVIEW_CHOICES) {
+    const disabled = choice.value === "keep" && (!item.can_keep || !item.original_text);
+    const label = el("label", `review-choice${disabled ? " disabled" : ""}`);
+    const input = el("input");
+    input.type = "radio";
+    input.name = `review-${item.flag_id}`;
+    input.value = choice.value;
+    input.checked = choice.value === "safe";
+    input.disabled = disabled;
+    label.appendChild(input);
+    const body = el("span", "review-choice-body");
+    body.appendChild(el("strong", null, choice.title));
+    body.appendChild(el("small", null, disabled ? (item.original_text ? "Not available: this draft has a structural problem." : "Not available: the model wrote no bullet.") : choice.note(item)));
+    const quote = choice.value === "safe" ? item.safe_text : choice.value === "keep" ? item.original_text : "";
+    if (quote) body.appendChild(el("q", "review-quote", quote));
+    label.appendChild(body);
+    fieldset.appendChild(label);
+  }
+  if (item.source_facts && item.source_facts.length) {
+    const facts = el("details", "review-facts");
+    facts.appendChild(el("summary", null, "Source facts"));
+    const list = el("ul");
+    for (const fact of item.source_facts) list.appendChild(el("li", null, fact));
+    facts.appendChild(list);
+    fieldset.appendChild(facts);
+  }
+  return fieldset;
+}
+
+async function openBulletReview() {
+  const job = state.currentDetail;
+  if (!job) return;
+  const dialog = $("bullet-review-dialog");
+  state.bulletReview = { jobId: job.job_id, data: null, key: crypto.randomUUID(), submitting: false };
+  clear($("bullet-review-items"));
+  $("bullet-review-status").textContent = "";
+  $("bullet-review-status").classList.remove("error");
+  $("bullet-review-error").hidden = true;
+  $("bullet-review-loading").hidden = false;
+  $("apply-bullet-review").disabled = true;
+  if (!dialog.open) dialog.showModal();
+  try {
+    const data = await fetchJson(`/api/jobs/${job.job_id}/bullet-review`);
+    if (state.bulletReview.jobId !== job.job_id) return;
+    state.bulletReview.data = data;
+    data.items.forEach((item, index) => $("bullet-review-items").appendChild(reviewItem(item, index)));
+    $("apply-bullet-review").disabled = false;
+  } catch (error) {
+    $("bullet-review-error-copy").textContent = String(error.message || error);
+    $("bullet-review-error").hidden = false;
+  } finally {
+    $("bullet-review-loading").hidden = true;
+  }
+}
+
+async function submitBulletReview(event) {
+  event.preventDefault();
+  const review = state.bulletReview;
+  if (!review || !review.data || review.submitting) return;
+  const decisions = {};
+  for (const item of review.data.items) {
+    const checked = document.querySelector(`input[name="review-${CSS.escape(item.flag_id)}"]:checked`);
+    decisions[item.flag_id] = checked ? checked.value : "safe";
+  }
+  review.submitting = true;
+  const button = $("apply-bullet-review");
+  const status = $("bullet-review-status");
+  button.disabled = true;
+  button.textContent = "Continuing…";
+  status.classList.remove("error");
+  status.textContent = Object.values(decisions).includes("regenerate") ? "Regenerating the chosen bullets, then rendering…" : "Applying your choices and rendering…";
+  try {
+    await fetchJson(`/api/jobs/${review.jobId}/bullet-review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": review.key },
+      body: JSON.stringify({ revision: review.data.revision, decisions }),
+    });
+    $("bullet-review-dialog").close();
+    loadJobData().catch(() => {});
+    if (state.selectedId === review.jobId) fetchDetail(review.jobId);
+  } catch (error) {
+    status.classList.add("error");
+    status.textContent = `Your choices were not saved. ${String(error.message || error)}`;
+    button.disabled = false;
+  } finally {
+    review.submitting = false;
+    button.textContent = "Continue tailoring";
   }
 }
 
@@ -1402,6 +1512,11 @@ function bindEvents() {
   $("cancel-job-dialog").addEventListener("click", closeJobDialog);
   $("job-form").addEventListener("submit", submitJob);
   $("review-removals-btn").addEventListener("click", openRecoveryDialog);
+  $("open-bullet-review-btn").addEventListener("click", openBulletReview);
+  $("retry-bullet-review").addEventListener("click", openBulletReview);
+  $("close-bullet-review").addEventListener("click", () => $("bullet-review-dialog").close());
+  $("cancel-bullet-review").addEventListener("click", () => $("bullet-review-dialog").close());
+  $("bullet-review-form").addEventListener("submit", submitBulletReview);
   $("close-recovery-dialog").addEventListener("click", closeRecoveryDialog);
   $("cancel-recovery-dialog").addEventListener("click", closeRecoveryDialog);
   $("fit-recovery-form").addEventListener("submit", submitRecovery);

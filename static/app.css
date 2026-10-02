@@ -1019,3 +1019,49 @@
     .log-pane { block-size: 60dvh; }
   }
 }
+
+/* ---- Bullet review dialog ---- */
+@layer workspace {
+  .review-items { display: grid; gap: 10px; margin-block-start: 14px; }
+  .review-item { min-inline-size: 0; display: grid; gap: 6px; border: 1px solid var(--border-subtle); border-radius: var(--radius-card); background: var(--surface-1); padding: 10px 12px 12px; animation: panel-in 220ms var(--ease-out) both; }
+  .review-item:nth-child(2) { animation-delay: 40ms; }
+  .review-item:nth-child(3) { animation-delay: 80ms; }
+  .review-item:nth-child(n + 4) { animation-delay: 120ms; }
+  .review-item legend { display: flex; align-items: center; gap: 8px; padding-inline: 4px; color: var(--text-1); font-size: 13px; font-weight: 750; }
+  .review-item-index { min-inline-size: 20px; block-size: 20px; display: inline-grid; place-items: center; border-radius: 6px; background: var(--surface-3); color: var(--text-2); font-size: 11px; }
+  .review-issues { display: grid; gap: 3px; margin-block-end: 2px; list-style: none; }
+  .review-issues li { border-radius: 8px; background: var(--warning-soft); padding: 6px 9px; color: var(--warning); font-size: 12px; overflow-wrap: anywhere; }
+  .review-choice { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; border: 1px solid transparent; border-radius: 10px; padding: 8px 9px; cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease; }
+  .review-choice:hover { background: var(--surface-2); }
+  .review-choice:has(input:checked) { border-color: rgba(49, 94, 204, 0.35); background: var(--accent-soft); }
+  .review-choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .review-choice.disabled { cursor: not-allowed; opacity: 0.55; }
+  .review-choice input { inline-size: 16px; block-size: 16px; margin-block-start: 2px; accent-color: var(--accent); }
+  .review-choice-body { min-inline-size: 0; display: grid; gap: 2px; }
+  .review-choice-body strong { font-size: 12.5px; }
+  .review-choice-body small { color: var(--text-3); font-size: 11px; }
+  .review-quote { margin-block-start: 4px; border-inline-start: 2px solid var(--border-strong); padding-inline-start: 9px; color: var(--text-2); font-size: 12px; line-height: 1.5; quotes: none; overflow-wrap: anywhere; }
+  .review-choice:has(input:checked) .review-quote { border-inline-start-color: var(--accent); color: var(--text-1); }
+  .review-facts { margin-block-start: 2px; color: var(--text-3); font-size: 11.5px; }
+  .review-facts summary { cursor: pointer; padding: 4px 9px; font-weight: 650; }
+  .review-facts ul { display: grid; gap: 4px; padding: 4px 9px 2px 26px; }
+  .review-card { border-color: rgba(49, 94, 204, 0.3); background: var(--accent-soft); box-shadow: none; }
+  .review-card .eyebrow { color: var(--accent-strong); }
+  .review-card p:last-child { color: var(--accent-strong); }
+  .review-card .button.warning-action { background: var(--accent); }
+  .review-card .button.warning-action:hover { background: var(--accent-strong); }
+}
+
+/* Dialog placement: ui.css (Tailwind) declares layer order first, which puts
+   this file's reset layer after components and zeroes dialog margins. */
+@layer workspace {
+  .recovery-dialog { margin: auto; }
+  .new-job-dialog { margin: 0 0 0 auto; }
+  .recovery-dialog[open], .new-job-dialog[open] { animation: dialog-in 220ms var(--ease-out); }
+  .recovery-dialog::backdrop, .new-job-dialog::backdrop { animation: backdrop-in 220ms ease-out; }
+  @keyframes dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.99); } }
+  @keyframes backdrop-in { from { opacity: 0; } }
+  @media (max-width: 48rem) {
+    .recovery-dialog, .new-job-dialog { margin: 0; }
+  }
+}

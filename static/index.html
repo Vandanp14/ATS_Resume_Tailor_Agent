@@ -184,6 +184,15 @@
           <button class="button warning-action" id="review-removals-btn" type="button">Review removal options</button>
         </section>
 
+        <section class="fit-recovery-card review-card" id="bullet-review-card" aria-labelledby="bullet-review-card-title" hidden>
+          <div class="fit-recovery-card-copy">
+            <p class="eyebrow">Before rendering</p>
+            <h2 id="bullet-review-card-title">Some bullets need your call</h2>
+            <p id="bullet-review-card-summary">The model could not get these bullets right. Choose what to use for each.</p>
+          </div>
+          <button class="button warning-action" id="open-bullet-review-btn" type="button">Review bullets</button>
+        </section>
+
         <div class="detail-tabs" role="tablist" aria-label="Job details">
           <button type="button" role="tab" id="tab-progress" aria-selected="true" aria-controls="panel-progress" tabindex="0">Progress</button>
           <button type="button" role="tab" id="tab-preview" aria-selected="false" aria-controls="panel-preview" tabindex="-1">Resume preview</button>
@@ -351,6 +360,35 @@
         <footer class="dialog-footer recovery-dialog-footer">
           <button class="button secondary" id="cancel-recovery-dialog" type="button">Cancel</button>
           <button class="button primary" id="apply-removals-btn" type="submit">Remove selected and render</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog class="recovery-dialog" id="bullet-review-dialog" aria-labelledby="bullet-review-title" aria-describedby="bullet-review-description">
+    <div class="recovery-dialog-shell">
+      <header class="dialog-header recovery-dialog-header">
+        <div>
+          <p class="eyebrow">Needs review</p>
+          <h2 id="bullet-review-title">Choose how each bullet reads</h2>
+        </div>
+        <button class="icon-button" id="close-bullet-review" type="button" aria-label="Close bullet review"><span aria-hidden="true">×</span></button>
+      </header>
+      <form id="bullet-review-form" novalidate>
+        <div class="recovery-dialog-body">
+          <p class="recovery-intro" id="bullet-review-description">These bullets broke a truth check after every retry. The safe version is already selected; keep the model’s wording only if it is true for you.</p>
+          <div class="recovery-loading skeleton-stack" id="bullet-review-loading" aria-label="Loading review items" hidden><span></span><span></span></div>
+          <div class="recovery-load-error" id="bullet-review-error" role="alert" hidden>
+            <strong>Review items could not be loaded</strong>
+            <p id="bullet-review-error-copy"></p>
+            <button class="button secondary compact" id="retry-bullet-review" type="button">Try again</button>
+          </div>
+          <div class="review-items" id="bullet-review-items"></div>
+          <p class="form-status recovery-submit-status" id="bullet-review-status" role="status" aria-live="polite"></p>
+        </div>
+        <footer class="dialog-footer recovery-dialog-footer">
+          <button class="button secondary" id="cancel-bullet-review" type="button">Cancel</button>
+          <button class="button primary" id="apply-bullet-review" type="submit">Continue tailoring</button>
         </footer>
       </form>
     </div>
