@@ -162,6 +162,10 @@ class GeminiProvider:
         ]
         grounding = bool(kwargs.get("grounding"))
         schema = kwargs.get("format")
+        # Callers with a fallback model pass transport_attempts=1 and a shorter
+        # timeout_ms so a hanging or overloaded model is abandoned quickly.
+        attempts = max(1, int((options or {}).get("transport_attempts", 3)))
+        timeout_ms = (options or {}).get("timeout_ms")
         if isinstance(schema, type) and issubclass(schema, BaseModel):
             schema = schema.model_json_schema()
         config = types.GenerateContentConfig(
@@ -177,8 +181,16 @@ class GeminiProvider:
             ),
             response_json_schema=None if grounding else schema,
             tools=[types.Tool(google_search=types.GoogleSearch())] if grounding else None,
+            http_options=(
+                types.HttpOptions(
+                    timeout=int(timeout_ms),
+                    retry_options=types.HttpRetryOptions(attempts=1),
+                )
+                if timeout_ms
+                else None
+            ),
         )
-        for attempt in range(3):
+        for attempt in range(attempts):
             try:
                 attempt_id = self._attempt_callback() if self._attempt_callback else None
                 response = self.client.models.generate_content(
@@ -192,7 +204,7 @@ class GeminiProvider:
                     raise ValueError("Gemini returned no text content")
                 return {"message": {"role": "assistant", "content": response.text}}
             except Exception as exc:
-                if attempt == 2 or not self._retryable(exc):
+                if attempt == attempts - 1 or not self._retryable(exc):
                     raise
                 retry_after = self._retry_after(exc)
                 delay = (
@@ -202,7 +214,8 @@ class GeminiProvider:
                 )
                 if self._progress_callback:
                     self._progress_callback(
-                        f"Gemini transport retry {attempt + 2}/3 after {delay:.1f}s: {exc}"
+                        f"Gemini transport retry {attempt + 2}/{attempts} after "
+                        f"{delay:.1f}s: {exc}"
                     )
                 time.sleep(delay)
         raise AssertionError("unreachable")

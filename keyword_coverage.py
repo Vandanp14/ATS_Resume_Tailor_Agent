@@ -223,8 +223,12 @@ def _variant_pattern(variant: str) -> re.Pattern[str]:
         if variant[-1:].isalpha() and variant.casefold() not in _CASE_SENSITIVE_WORDS
         else ""
     )
-    flags = 0 if variant.casefold() in _CASE_SENSITIVE_WORDS or len(variant) <= 2 else re.I
-    return re.compile(rf"(?<![A-Za-z0-9+#]){body}{plural}(?![A-Za-z0-9+#])", flags)
+    sensitive = variant.casefold() in _CASE_SENSITIVE_WORDS or len(variant) <= 2
+    # Short ambiguous names also refuse a hyphen neighbor: "Go-live" is not Go.
+    edge = r"A-Za-z0-9+#\-" if sensitive else r"A-Za-z0-9+#"
+    return re.compile(
+        rf"(?<![{edge}]){body}{plural}(?![{edge}])", 0 if sensitive else re.I
+    )
 
 
 _PATTERN_CACHE: dict[str, re.Pattern[str]] = {}

@@ -74,6 +74,7 @@ from .evidence import (
     master_fact_index,
     project_evidence,
     proxy_coverage_gaps,
+    repair_allocation_provenance,
     sanitize_target_terms,
     technologies_in_experience,
     transferable_plan_from_proxies,
@@ -171,6 +172,10 @@ REWRITE_ATTEMPTS = 3
 # When every model in a chain is only overloaded or slow, wait and run the
 # whole chain again instead of stopping the job.
 CHAIN_RETRY_DELAYS_SECONDS = (30.0, 60.0)
+# With a fallback available, a model gets one transport try, and an optional
+# stronger planning model gets a shorter timeout than the default model: a
+# hanging model (Google can take minutes to answer 504) must not stall a stage.
+PLANNING_MODEL_TIMEOUT_MS = 60_000
 
 
 def _dedupe(models: Sequence[str]) -> tuple[str, ...]:
@@ -378,6 +383,9 @@ class TailorPipeline:
             fallback_models = FALLBACK_MODELS if chains_enabled else ()
         self.default_chain = _dedupe([model, *fallback_models])
         self.planning_chain = _dedupe([*planning_models, *self.default_chain])
+        self.planning_only_models = frozenset(self.planning_chain) - frozenset(
+            self.default_chain
+        )
         # model -> (API error text, skip-until monotonic time or None for the run)
         self._unavailable_models: dict[str, tuple[str, float | None]] = {}
 
@@ -406,6 +414,10 @@ class TailorPipeline:
             if template_name in PLANNING_TEMPLATES
             else self.default_chain
         )
+
+    def _repaired(self, notes: Sequence[str]) -> None:
+        for note in notes:
+            self.tracker.detail(f"Repaired provenance: {note}")
 
     def _skipped(self, model: str) -> bool:
         entry = self._unavailable_models.get(model)
@@ -449,6 +461,11 @@ class TailorPipeline:
                     options.update({"temperature": 0.0, "top_p": 1.0})
                 if template_name in PLANNING_TEMPLATES and model != self.model:
                     options["max_output_tokens"] = _PLANNING_MAX_OUTPUT_TOKENS
+                if len(chain) > 1:
+                    options["transport_attempts"] = 1
+                    if model in self.planning_only_models:
+                        options["timeout_ms"] = PLANNING_MODEL_TIMEOUT_MS
+                    self.tracker.detail(f"{template_name}: calling {model}")
                 try:
                     result = call_llm_with_retry(
                         self.provider,
@@ -836,7 +853,10 @@ class TailorPipeline:
             partial, unresolved, partial_errors = self._partial_entries(
                 result.work,
                 {source_id: expected[source_id] for source_id in pending},
-                lambda item, source: validate_work_item(
+                lambda item, source: self._repaired(
+                    repair_allocation_provenance(item, evidence_plan)
+                )
+                or validate_work_item(
                     item,
                     source,
                     evidence_plan,

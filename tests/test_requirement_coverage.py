@@ -587,3 +587,61 @@ def test_persistently_busy_chain_stops_after_all_rounds(monkeypatch):
         pipeline._call_once("tailor_skills", RequirementProxyPlan)
     assert sleeps == list(pipeline_module.CHAIN_RETRY_DELAYS_SECONDS)
     assert provider.chat.call_count == 2 * (len(sleeps) + 1)
+
+
+def test_chained_calls_fail_fast_with_short_timeout_for_planning_models():
+    provider = MagicMock()
+    seen = []
+
+    def chat(model, messages, options=None, **kwargs):
+        seen.append((model, options.get("transport_attempts"), options.get("timeout_ms")))
+        return _ok_plan_response()
+
+    provider.chat.side_effect = chat
+    pipeline = chain_pipeline(provider)
+    pipeline._call_once("plan_requirement_coverage", RequirementProxyPlan)
+    pipeline._call_once("tailor_skills", RequirementProxyPlan)
+    assert seen == [
+        ("gemini-3.8-flash", 1, pipeline_module.PLANNING_MODEL_TIMEOUT_MS),
+        ("gemini-3.1-flash-lite", 1, None),
+    ]
+
+
+def test_gemini_provider_honors_single_transport_attempt(monkeypatch):
+    from google import genai
+    import llm_utils
+
+    client = MagicMock()
+    client.models.generate_content.side_effect = ApiError(503, "UNAVAILABLE")
+    monkeypatch.setattr(genai, "Client", MagicMock(return_value=client))
+    provider = llm_utils.GeminiProvider("key")
+    with pytest.raises(ApiError):
+        provider.chat(
+            "gemini-3.8-flash",
+            [{"role": "user", "content": "x"}],
+            options={"transport_attempts": 1, "timeout_ms": 60_000},
+        )
+    assert client.models.generate_content.call_count == 1
+    config = client.models.generate_content.call_args.kwargs["config"]
+    assert config.http_options.timeout == 60_000
+
+
+def test_stray_citations_are_pinned_to_the_allocation():
+    from pipeline_core import repair_allocation_provenance
+
+    resume = master()
+    selected = selected_evidence(resume)
+    plan = evidence_plan(selected)
+    facts = master_fact_index(resume)
+    items = [work_item(source, plan) for source in selected.work]
+    bullet = items[1].bullets[0]
+    bullet.source_ids = bullet.source_ids + ["work[2].highlights[1]"]
+    notes = repair_allocation_provenance(items[1], plan)
+    assert notes and "work[2].highlights[1]" in notes[0]
+    assert "work[2].highlights[1]" not in bullet.source_ids
+    validate_work_response(WorkRewriteResponse(work=items), selected.work, plan, facts)
+
+
+def test_short_language_names_ignore_hyphenated_words():
+    assert not mentions("Owned the Go-live checklist", ["Go"])
+    assert mentions("Wrote services in Go.", ["Go"])

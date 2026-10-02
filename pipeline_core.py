@@ -796,6 +796,38 @@ def _reject_forbidden_terms(
         )
 
 
+def repair_allocation_provenance(
+    item: WorkRewriteItem, plan: EvidencePlan
+) -> list[str]:
+    """Pin each bullet's source_ids to its own evidence allocation.
+
+    A weak model often cites a real master fact the planner did not assign to
+    that bullet. That is bookkeeping, not a new claim, so the stray IDs are
+    dropped (falling back to the full allocation when none remain) instead of
+    failing the rewrite. Returns one note per repaired bullet.
+    """
+
+    assignments = _assignments_by_destination(plan).get(item.source_id, {})
+    notes: list[str] = []
+    for index, bullet in enumerate(item.bullets):
+        assignment = assignments.get(bullet.evidence_assignment_id or "")
+        if assignment is None:
+            continue
+        allowed = set(assignment.source_fact_ids)
+        stray = [fact_id for fact_id in bullet.source_ids if fact_id not in allowed]
+        if not stray:
+            continue
+        kept = list(
+            dict.fromkeys(f for f in bullet.source_ids if f in allowed)
+        ) or list(assignment.source_fact_ids)
+        bullet.source_ids = kept
+        notes.append(
+            f"{item.source_id} bullet {index}: dropped citations outside "
+            f"{assignment.assignment_id} {stray}"
+        )
+    return notes
+
+
 def validate_work_item(
     item: WorkRewriteItem,
     source: dict,
