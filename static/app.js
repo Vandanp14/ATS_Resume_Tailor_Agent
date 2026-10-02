@@ -36,6 +36,8 @@ const state = {
   currentDetail: null,
   detailAbort: null,
   seenEvents: new Set(),
+  logFilter: "all",
+  logRendered: { jobId: null, filter: "all", count: 0 },
   queueStatus: "loading",
   queueError: "",
   detailStatus: "empty",
@@ -464,17 +466,20 @@ function renderDetail(job) {
   badge.textContent = stateLabel(job.state);
 
   const stage = job.current_stage || (job.state === "queued" ? "Waiting to start" : job.state === "completed" ? "Tailoring complete" : job.state === "failed" ? "Run stopped" : job.state === "action_required" ? "Action needed: one-page fit" : "Preparing");
-  $("detail-stage").textContent = stage;
+  $("detail-stage-text").textContent = stage;
+  $("detail-body").dataset.live = String(job.state === "running");
   $("detail-elapsed").textContent = job.started_at ? formatElapsed(job.started_at, job.finished_at) : "—";
   $("detail-position").textContent = job.queue_position ? `#${job.queue_position}` : job.active ? "Active" : "—";
-  $("detail-output").textContent = job.artifacts && job.artifacts.length ? `${job.artifacts.length} ${job.artifacts.length === 1 ? "file" : "files"}` : "Pending";
+  $("detail-output").textContent = job.artifacts && job.artifacts.length ? `${job.artifacts.length} ${job.artifacts.length === 1 ? "file" : "files"}` : ["failed", "cancelled"].includes(job.state) ? "None" : "Pending";
   $("detail-message").hidden = !job.message;
-  $("detail-message").textContent = job.message || "";
+  clear($("detail-message"));
+  if (job.message) $("detail-message").appendChild(el("span", "run-alert-text", job.message));
+  $("detail-message").title = job.message ? "Full message in the Activity log" : "";
   $("detail-export-warning").hidden = !job.export_warning;
   $("detail-export-warning").textContent = job.export_warning || "";
   renderRecoveryCard(job);
   renderStages(job);
-  renderVerbose(job);
+  renderLog(job);
   renderPreview(job);
   renderFiles(job);
   if (state.reviewJobId !== job.job_id) {
@@ -759,40 +764,146 @@ async function submitRecovery(event) {
   }
 }
 
+function stageTimeline(job) {
+  /* Per-stage start/end times and issue counts, derived from the event stream. */
+  const timeline = new Map();
+  for (const event of state.events.get(job.job_id) || []) {
+    if (!event.stage) continue;
+    const entry = timeline.get(event.stage) || { started: null, finished: null, issues: 0 };
+    if (event.kind === "stage_started") entry.started = event.created_at;
+    if (event.kind === "stage_completed") entry.finished = event.created_at;
+    if (event.kind === "stage_retry" || event.kind === "stage_warning") entry.issues += 1;
+    timeline.set(event.stage, entry);
+  }
+  return timeline;
+}
+
 function renderStages(job) {
   const list = $("stage-list");
   clear(list);
+  const timeline = stageTimeline(job);
   let completed = 0;
   let applicable = 0;
   for (const name of STAGE_NAMES) {
     const status = stageStatus(name, job);
+    const failed = job.state === "failed" && status === "active";
     if (status !== "skipped") applicable += 1;
     if (status === "done") completed += 1;
-    const item = el("li", `stage-item ${status}`);
-    item.appendChild(el("span", "stage-marker", "✓"));
-    item.appendChild(el("strong", null, name));
-    item.appendChild(el("small", null, status === "active" ? "Active" : status === "done" ? "Done" : status === "skipped" ? "Not used" : ""));
+    const item = el("li", `stage-item ${failed ? "failed" : status}`);
+    item.appendChild(el("span", "stage-marker", failed ? "!" : "✓"));
+    item.appendChild(el("span", "stage-name", name));
+    const entry = timeline.get(name);
+    if (entry && entry.issues) {
+      const issues = el("span", "stage-issues tabnum", String(entry.issues));
+      issues.title = `${entry.issues} retr${entry.issues === 1 ? "y or warning" : "ies or warnings"}`;
+      item.appendChild(issues);
+    }
+    let meta = status === "skipped" ? "Not used" : "";
+    if (entry && entry.started && (status === "done" || status === "active")) {
+      meta = formatElapsed(entry.started, status === "done" ? entry.finished : failed ? job.finished_at : null);
+    }
+    item.appendChild(el("span", "stage-meta tabnum", meta));
     list.appendChild(item);
   }
-  $("progress-summary").textContent = `${completed} of ${applicable} complete`;
+  $("progress-summary").textContent = `${completed} of ${applicable}`;
+  const done = job.state === "completed" ? applicable : completed;
+  $("progress-bar").style.inlineSize = `${applicable ? Math.round((done / applicable) * 100) : 0}%`;
+  $("progress-bar").dataset.state = job.state;
 }
 
-function renderVerbose(job) {
-  const host = $("verbose-detail");
-  clear(host);
-  const notes = (state.events.get(job.job_id) || []).filter((event) => !["stage_started", "stage_completed"].includes(event.kind));
-  if (!notes.length) return;
-  const details = el("details", "verbose");
-  details.appendChild(el("summary", null, "Retries, warnings, and technical details"));
-  const body = el("div", "verbose-body");
-  const lines = notes.map((note) => {
-    const prefix = note.stage ? `${note.stage}: ` : "";
-    const attempt = note.attempt ? ` (attempt ${note.attempt})` : "";
-    return `${prefix}${note.message || note.kind}${attempt}`;
-  });
-  body.textContent = lines.join("\n");
-  details.appendChild(body);
-  host.appendChild(details);
+const LOG_LEVELS = {
+  stage_completed: "success",
+  stage_detail: "muted",
+  stage_retry: "retry",
+  stage_warning: "warning",
+};
+
+function logEntries(job) {
+  /* Stage starts live in the pipeline pane; the log keeps outcomes and detail. */
+  const entries = [];
+  const started = new Map();
+  for (const event of state.events.get(job.job_id) || []) {
+    if (event.kind === "stage_started" && event.stage) started.set(event.stage, event.created_at);
+    const level = LOG_LEVELS[event.kind];
+    if (!level) continue;
+    let text = event.message || "";
+    if (event.kind === "stage_completed") {
+      text = started.has(event.stage) ? `Completed · ${formatElapsed(started.get(event.stage), event.created_at)}` : "Completed";
+    }
+    if (event.kind === "stage_retry") {
+      const attempt = event.attempt && event.max_attempts ? `Attempt ${event.attempt}/${event.max_attempts}` : "Retrying";
+      text = text ? `${attempt} · ${text}` : attempt;
+    }
+    entries.push({ level, time: event.created_at, stage: event.stage || "", text });
+  }
+  if (job.state === "failed" && job.message) {
+    entries.push({ level: "error", time: job.finished_at, stage: job.current_stage || "", text: job.message });
+  }
+  return entries;
+}
+
+function formatClock(value) {
+  const time = parseTime(value);
+  if (!time) return "";
+  return new Date(time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+}
+
+function renderLog(job) {
+  const scroller = $("log-scroll");
+  const list = $("log-list");
+  const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
+  const entries = logEntries(job);
+  const issues = entries.filter((entry) => ["retry", "warning", "error"].includes(entry.level));
+  $("log-issue-count").textContent = String(issues.length);
+  const visible = state.logFilter === "issues" ? issues : entries;
+  const previous = state.logRendered.jobId === job.job_id ? state.logRendered.count : 0;
+  const sameView = state.logRendered.jobId === job.job_id && state.logRendered.filter === state.logFilter;
+  if (!sameView || visible.length < previous) clear(list);
+  const startIndex = sameView && visible.length >= previous ? previous : 0;
+  for (const [index, entry] of visible.entries()) {
+    if (index < startIndex) continue;
+    const row = el("li", `log-line ${entry.level}`);
+    if (sameView && previous) row.classList.add("is-new");
+    row.appendChild(el("time", "log-time tabnum", formatClock(entry.time)));
+    row.appendChild(el("span", "log-level", entry.level === "muted" ? "info" : entry.level));
+    const body = el("span", "log-text");
+    if (entry.stage) body.appendChild(el("b", null, entry.stage));
+    body.appendChild(document.createTextNode(entry.text));
+    row.appendChild(body);
+    list.appendChild(row);
+  }
+  state.logRendered = { jobId: job.job_id, filter: state.logFilter, count: visible.length };
+  $("log-empty").hidden = visible.length > 0;
+  $("log-empty").textContent = state.logFilter === "issues" ? "No retries, warnings, or errors." : "Activity appears here once the run starts.";
+  if (atBottom || !sameView) {
+    scroller.scrollTop = scroller.scrollHeight;
+    $("log-jump").hidden = true;
+  } else if (visible.length > previous) {
+    $("log-jump").hidden = false;
+  }
+}
+
+function setLogFilter(filter) {
+  state.logFilter = filter;
+  for (const button of document.querySelectorAll("[data-log-filter]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.logFilter === filter));
+  }
+  if (state.currentDetail) renderLog(state.currentDetail);
+}
+
+async function copyLog() {
+  if (!state.currentDetail) return;
+  const text = logEntries(state.currentDetail)
+    .map((entry) => `${formatClock(entry.time)} ${entry.level.toUpperCase()} ${entry.stage ? `[${entry.stage}] ` : ""}${entry.text}`)
+    .join("\n");
+  const button = $("log-copy");
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = "Copied";
+  } catch {
+    button.textContent = "Copy failed";
+  }
+  setTimeout(() => { button.textContent = "Copy"; }, 1600);
 }
 
 function renderPreview(job) {
@@ -1206,8 +1317,8 @@ function applyEvent(event) {
   if (event.job_id === state.selectedId && job) {
     state.currentDetail = job;
     renderStages(job);
-    renderVerbose(job);
-    $("detail-stage").textContent = job.current_stage || "Processing";
+    renderLog(job);
+    $("detail-stage-text").textContent = job.current_stage || "Processing";
   }
 }
 
@@ -1241,6 +1352,19 @@ function showMobileView(name) {
 }
 
 function bindEvents() {
+  for (const button of document.querySelectorAll("[data-log-filter]")) {
+    button.addEventListener("click", () => setLogFilter(button.dataset.logFilter));
+  }
+  $("log-copy").addEventListener("click", copyLog);
+  $("log-jump").addEventListener("click", () => {
+    const scroller = $("log-scroll");
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    $("log-jump").hidden = true;
+  });
+  $("log-scroll").addEventListener("scroll", () => {
+    const scroller = $("log-scroll");
+    if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24) $("log-jump").hidden = true;
+  }, { passive: true });
   $("suggest-details").addEventListener("click", () => {
     const text = formFields.jd.value;
     const company = text.match(/^\s*(?:company|employer)\s*:\s*(.{1,80})$/im);
@@ -1316,7 +1440,10 @@ function startTicker() {
   window.setInterval(() => {
     renderTracker();
     const job = state.currentDetail;
-    if (job && job.state === "running") $("detail-elapsed").textContent = formatElapsed(job.started_at, job.finished_at);
+    if (job && job.state === "running") {
+      $("detail-elapsed").textContent = formatElapsed(job.started_at, job.finished_at);
+      if (state.activeTab === "progress") renderStages(job);
+    }
   }, 1000);
 }
 

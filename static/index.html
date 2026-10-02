@@ -163,8 +163,7 @@
         <section class="job-overview" aria-label="Job status overview">
           <div class="overview-primary">
             <span class="overview-label">Current status</span>
-            <strong id="detail-stage">Waiting to start</strong>
-            <span id="detail-message" hidden></span>
+            <strong id="detail-stage"><span class="live-dot" aria-hidden="true"></span><span id="detail-stage-text">Waiting to start</span></strong>
           </div>
           <dl class="overview-metrics">
             <div><dt>Elapsed</dt><dd class="tabnum" id="detail-elapsed">—</dd></div>
@@ -173,6 +172,7 @@
           </dl>
         </section>
 
+        <div class="run-alert" id="detail-message" role="alert" hidden></div>
         <div class="notice warning" id="detail-export-warning" role="status" hidden></div>
 
         <section class="fit-recovery-card" id="fit-recovery-card" aria-labelledby="fit-recovery-card-title" hidden>
@@ -192,12 +192,34 @@
         </div>
 
         <section class="tab-panel progress-panel" id="panel-progress" role="tabpanel" aria-labelledby="tab-progress" tabindex="0">
-          <div class="panel-heading">
-            <div><p class="eyebrow">Pipeline</p><h2>Tailoring progress</h2></div>
-            <span class="progress-summary" id="progress-summary">0 of 14 complete</span>
+          <div class="progress-layout">
+            <section class="pane stage-pane" aria-labelledby="stages-title">
+              <header class="pane-head">
+                <h2 id="stages-title">Pipeline</h2>
+                <span class="pane-meta tabnum" id="progress-summary">0 of 14</span>
+              </header>
+              <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
+              <ol class="stage-list" id="stage-list"></ol>
+            </section>
+
+            <section class="pane log-pane" aria-labelledby="log-title">
+              <header class="pane-head">
+                <h2 id="log-title">Activity</h2>
+                <div class="log-tools">
+                  <div class="log-filter" role="group" aria-label="Filter activity">
+                    <button type="button" data-log-filter="all" aria-pressed="true">All</button>
+                    <button type="button" data-log-filter="issues" aria-pressed="false">Issues <span class="tabnum" id="log-issue-count">0</span></button>
+                  </div>
+                  <button class="text-button" id="log-copy" type="button">Copy</button>
+                </div>
+              </header>
+              <div class="log-scroll" id="log-scroll" tabindex="0" aria-label="Activity log">
+                <ol class="log-list" id="log-list" role="log" aria-live="polite"></ol>
+                <p class="log-empty" id="log-empty">Activity appears here once the run starts.</p>
+              </div>
+              <button class="log-jump" id="log-jump" type="button" hidden>Jump to latest</button>
+            </section>
           </div>
-          <ol class="stage-list" id="stage-list"></ol>
-          <div id="verbose-detail"></div>
         </section>
 
         <section class="tab-panel preview-panel" id="panel-preview" role="tabpanel" aria-labelledby="tab-preview" tabindex="0" hidden>
