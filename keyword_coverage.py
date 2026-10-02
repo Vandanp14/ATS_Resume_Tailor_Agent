@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 from models import JDProfile, KeywordWeight
 
@@ -215,6 +216,7 @@ def build_requirements(jd: JDProfile) -> list[Requirement]:
     ]
 
 
+@lru_cache(maxsize=2048)
 def _variant_pattern(variant: str) -> re.Pattern[str]:
     words = re.split(r"[\s\-_]+", variant.strip())
     body = r"[\s\-_]+".join(re.escape(word) for word in words if word)
@@ -231,20 +233,10 @@ def _variant_pattern(variant: str) -> re.Pattern[str]:
     )
 
 
-_PATTERN_CACHE: dict[str, re.Pattern[str]] = {}
-
-
-def _pattern(variant: str) -> re.Pattern[str]:
-    pattern = _PATTERN_CACHE.get(variant)
-    if pattern is None:
-        pattern = _PATTERN_CACHE[variant] = _variant_pattern(variant)
-    return pattern
-
-
 def mentions(text: str | None, variants: Sequence[str]) -> bool:
     if not text:
         return False
-    return any(_pattern(variant).search(text) for variant in variants)
+    return any(_variant_pattern(variant).search(text) for variant in variants)
 
 
 def term_mentioned(text: str | None, term: str) -> bool:
@@ -424,17 +416,6 @@ def title_matches(position: str | None, jd: JDProfile) -> bool:
     return False
 
 
-def _strings(value: object) -> Iterable[str]:
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, Mapping):
-        for nested in value.values():
-            yield from _strings(nested)
-    elif isinstance(value, (list, tuple)):
-        for nested in value:
-            yield from _strings(nested)
-
-
 def _bullet_texts(entries: object) -> list[str]:
     texts: list[str] = []
     for entry in entries or []:
@@ -467,6 +448,7 @@ def resume_coverage(resume: Mapping, requirements: Sequence[dict]) -> dict:
             ),
         ]
     )
+    page_text = "\n".join([skills_text, experience_text])
     rows: list[dict] = []
     total = covered_weight = supported_total = supported_covered = 0
     for item in requirements:
@@ -474,7 +456,7 @@ def resume_coverage(resume: Mapping, requirements: Sequence[dict]) -> dict:
         in_skills = mentions(skills_text, variants)
         in_experience = mentions(experience_text, variants)
         proxy_on_page = bool(item.get("proxy_terms")) and mentions(
-            "\n".join([skills_text, experience_text]), item["proxy_terms"]
+            page_text, item["proxy_terms"]
         )
         covered = in_skills or in_experience
         importance = item.get("importance", item["weight"])
@@ -516,18 +498,22 @@ def resume_coverage(resume: Mapping, requirements: Sequence[dict]) -> dict:
     }
 
 
-def placement_findings(resume: Mapping, requirements: Sequence[dict]) -> list[str]:
+def placement_findings(
+    resume: Mapping, requirements: Sequence[dict], *, coverage: Mapping | None = None
+) -> list[str]:
     """Warn-only placement rules for the strongest supported must-haves."""
 
     findings: list[str] = []
-    coverage = {row["id"]: row for row in resume_coverage(resume, requirements)["requirements"]}
+    if coverage is None:
+        coverage = resume_coverage(resume, requirements)
+    by_id = {row["id"]: row for row in coverage["requirements"]}
     top = [
         item
         for item in requirements
         if item["requirement_type"] == "must_have" and item["status"] == "direct"
     ][:3]
     for item in top:
-        row = coverage[item["id"]]
+        row = by_id[item["id"]]
         if not row["in_skills"]:
             findings.append(f"must-have {item['term']!r} is missing from the skills section")
         if not row["in_experience"]:

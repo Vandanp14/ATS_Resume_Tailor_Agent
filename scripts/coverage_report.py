@@ -42,7 +42,7 @@ def _row(job_dir: Path) -> dict | None:
         "computed": coverage["computed_coverage_pct"],
         "supported": coverage["supported_coverage_pct"],
         "proxies": f"{sum(item['proxy_on_page'] for item in proxied)}/{len(proxied)}",
-        "placement": len(placement_findings(tailored, requirements)),
+        "placement": len(placement_findings(tailored, requirements, coverage=coverage)),
         "truth": len(report.get("truth_violations", [])),
         "missing": ", ".join(coverage["missing_supported_terms"][:4]),
     }

@@ -454,17 +454,20 @@ def strip_relevance_skill(scored: ScoredSkill) -> Skill:
 
 
 def strip_relevance_work(scored: ScoredWork) -> Work:
-    payload = scored.model_dump(mode="json", exclude_unset=True)
-    payload.pop("relevance", None)
-    payload.pop("source_id", None)
+    payload = scored.model_dump(
+        mode="json",
+        exclude_unset=True,
+        exclude={"relevance", "source_id", "highlights"},
+    )
     payload["highlights"] = [bullet.text for bullet in scored.highlights or []]
     return Work.model_validate(payload)
 
 
 def strip_relevance_project(scored: ScoredProject) -> Project:
-    payload = scored.model_dump(mode="json", exclude_unset=True)
-    payload.pop("relevance", None)
-    payload.pop("source_id", None)
-    payload.pop("source_ids", None)
+    payload = scored.model_dump(
+        mode="json",
+        exclude_unset=True,
+        exclude={"relevance", "source_id", "source_ids", "highlights"},
+    )
     payload["highlights"] = [bullet.text for bullet in scored.highlights or []]
     return Project.model_validate(payload)

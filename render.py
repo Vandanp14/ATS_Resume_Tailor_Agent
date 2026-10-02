@@ -547,7 +547,9 @@ class ScoredResume(BaseModel):
 
 def scored_to_plain(sr: ScoredResume) -> JSONResume:
     """Convert a :class:`ScoredResume` to a plain :class:`JSONResume` for rendering."""
-    payload = sr.model_dump(mode="json", exclude_unset=True)
+    payload = sr.model_dump(
+        mode="json", exclude_unset=True, exclude={"work", "skills", "projects"}
+    )
     payload["work"] = [strip_relevance_work(w) for w in sr.work] if sr.work else None
     payload["skills"] = (
         [strip_relevance_skill(s) for s in sr.skills] if sr.skills else None
@@ -704,16 +706,11 @@ def _next_trim(sr: ScoredResume) -> str | None:
     projects = sr.projects or []
     skills = sr.skills or []
 
-    action = _trim_excess_project_bullet(projects)
-    if action:
-        return action
-    action = _trim_skill_group(skills)
-    if action:
-        return action
-    action = _trim_excess_project(projects)
-    if action:
-        return action
-    return None
+    return (
+        _trim_excess_project_bullet(projects)
+        or _trim_skill_group(skills)
+        or _trim_excess_project(projects)
+    )
 
 
 def _default_page_counter(out_dir: Path) -> Callable[[JSONResume], int]:

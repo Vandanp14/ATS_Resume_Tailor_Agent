@@ -33,6 +33,7 @@ from pipeline_core import (
     PipelineComponents,
     SelectedEvidence,
     assemble_scored,
+    global_evidence_payload,
     master_fact_index,
     project_evidence,
     technologies_in_experience,
@@ -123,6 +124,15 @@ MASTER_DATA = {
 
 def master() -> JSONResume:
     return JSONResume.model_validate(MASTER_DATA)
+
+
+def test_reused_evidence_preserves_fact_index_and_duplicate_validation():
+    resume = master()
+    evidence = global_evidence_payload(resume)
+    assert master_fact_index(resume, evidence=evidence) == master_fact_index(resume)
+    evidence["work"].append(evidence["work"][0])
+    with pytest.raises(ContractError, match="duplicate master fact source_id"):
+        master_fact_index(resume, evidence=evidence)
 
 
 def selected_evidence(resume: JSONResume | None = None) -> SelectedEvidence:

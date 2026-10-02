@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+from queue import Empty
+
 from resume_tailor.progress import JobContext, ProgressEvent, ProgressEventKind, Stage
 from resume_tailor.web.models import StreamEvent, TrackerSnapshot, WebEvent
 from resume_tailor.web.reporter import EventHub, EventJournal, WebProgressReporter
@@ -25,6 +29,71 @@ def test_journal_persistence_replay_and_duplicate_suppression(tmp_path):
     reloaded = EventJournal(path)
     assert [event.id for event in reloaded.replay()] == [0, 1]
     assert [event.id for event in reloaded.replay(after_id=0)] == [1]
+    assert reloaded.append(second) is False
+
+
+def test_journal_failed_write_can_be_retried(tmp_path):
+    path = tmp_path / "missing" / "events.jsonl"
+    journal = EventJournal(path)
+    event = WebEvent(id=0, kind="job_started", job_id="j1")
+    assert journal.append(event) is False
+    path.parent.mkdir()
+    assert journal.append(event) is True
+    assert journal.replay() == [event]
+
+
+def test_full_subscriber_drops_oldest_without_blocking_other_subscribers():
+    hub = EventHub()
+    slow = hub.subscribe()
+    for index in range(slow.queue.maxsize):
+        hub.publish(StreamEvent(id=index, kind="queue_changed"))
+    fast = hub.subscribe()
+    latest = StreamEvent(id=slow.queue.maxsize, kind="queue_changed")
+    publisher = threading.Thread(target=hub.publish, args=(latest,), daemon=True)
+    publisher.start()
+    publisher.join(timeout=2)
+    assert not publisher.is_alive(), "A full subscriber queue blocked publishing"
+    assert fast.queue.get_nowait() == latest
+    retained = [slow.queue.get_nowait().id for _ in range(slow.queue.maxsize)]
+    assert retained == list(range(1, latest.id + 1))
+
+
+def test_event_stream_survives_idle_timeout_and_detaches(make_app, monkeypatch):
+    app, _ = make_app()
+    endpoint = next(
+        route.endpoint for route in app.routes if route.path == "/api/events"
+    )
+    latest = StreamEvent(id=7, kind="queue_changed")
+    calls = 0
+    detached = []
+    original_detach = EventHub.detach
+
+    async def receive(_get, _block, _timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise Empty
+        return latest
+
+    def detach(hub, subscriber):
+        original_detach(hub, subscriber)
+        detached.append(subscriber)
+
+    monkeypatch.setattr(asyncio, "to_thread", receive)
+    monkeypatch.setattr(EventHub, "detach", detach)
+
+    async def consume():
+        stream = endpoint()
+        try:
+            event = await anext(stream)
+            assert event.id == "7"
+            assert event.event == "queue_changed"
+        finally:
+            await stream.aclose()
+
+    asyncio.run(consume())
+    assert calls == 2
+    assert len(detached) == 1 and detached[0].closed
 
 
 def test_reporter_maps_stage_context_and_publishes_live(tmp_path):

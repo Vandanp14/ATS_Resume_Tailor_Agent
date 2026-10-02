@@ -351,15 +351,19 @@ def _iter_source_facts(value: object) -> Iterable[dict]:
             yield from _iter_source_facts(nested)
 
 
-def master_fact_index(master: JSONResume) -> dict[str, dict]:
-    evidence = work_evidence(master) + project_evidence(master) + skill_evidence(master)
+def master_fact_index(
+    master: JSONResume, *, evidence: Mapping[str, list[dict]] | None = None
+) -> dict[str, dict]:
+    if evidence is None:
+        evidence = global_evidence_payload(master)
     facts: dict[str, dict] = {}
-    for entry in evidence:
-        for fact in _iter_source_facts(entry.get("source_facts")):
-            source_id = fact["source_id"]
-            if source_id in facts:
-                raise ContractError(f"duplicate master fact source_id: {source_id}")
-            facts[source_id] = fact
+    for entries in evidence.values():
+        for entry in entries:
+            for fact in _iter_source_facts(entry.get("source_facts")):
+                source_id = fact["source_id"]
+                if source_id in facts:
+                    raise ContractError(f"duplicate master fact source_id: {source_id}")
+                facts[source_id] = fact
     return facts
 
 
@@ -1355,12 +1359,29 @@ def validate_skills(
 
 
 def _protected_source_fields(source: dict, generated: set[str]) -> dict:
-    internal = {key for key in source if key.startswith("selection_")}
+    excluded = generated | {"source_id", "source_facts"}
     return {
         key: value
         for key, value in source.items()
-        if key not in generated | {"source_id", "source_facts"} | internal
+        if key not in excluded and not key.startswith("selection_")
     }
+
+
+def _scored_bullets(bullets: Sequence[STARBullet]) -> list[ScoredBullet]:
+    return [
+        ScoredBullet(
+            text=bullet.text,
+            relevance=bullet.relevance,
+            source_ids=bullet.source_ids,
+            evidence_assignment_id=bullet.evidence_assignment_id,
+            situation_task=bullet.situation_task,
+            action=bullet.action,
+            result=bullet.result,
+            impact_type=bullet.impact_type,
+            impact_claim=bullet.impact_claim,
+        )
+        for bullet in bullets
+    ]
 
 
 def assemble_scored(
@@ -1400,20 +1421,7 @@ def assemble_scored(
                     "source_id": rewrite.source_id,
                     "summary": rewrite.summary,
                     "relevance": rewrite.relevance,
-                    "highlights": [
-                        ScoredBullet(
-                            text=bullet.text,
-                            relevance=bullet.relevance,
-                            source_ids=bullet.source_ids,
-                            evidence_assignment_id=bullet.evidence_assignment_id,
-                            situation_task=bullet.situation_task,
-                            action=bullet.action,
-                            result=bullet.result,
-                            impact_type=bullet.impact_type,
-                            impact_claim=bullet.impact_claim,
-                        )
-                        for bullet in rewrite.bullets
-                    ],
+                    "highlights": _scored_bullets(rewrite.bullets),
                 }
             )
         )
@@ -1436,20 +1444,7 @@ def assemble_scored(
                     **_protected_source_fields(source, {"description", "highlights"}),
                     "source_id": rewrite.source_id,
                     "description": rewrite.description,
-                    "highlights": [
-                        ScoredBullet(
-                            text=bullet.text,
-                            relevance=bullet.relevance,
-                            source_ids=bullet.source_ids,
-                            evidence_assignment_id=bullet.evidence_assignment_id,
-                            situation_task=bullet.situation_task,
-                            action=bullet.action,
-                            result=bullet.result,
-                            impact_type=bullet.impact_type,
-                            impact_claim=bullet.impact_claim,
-                        )
-                        for bullet in rewrite.bullets
-                    ],
+                    "highlights": _scored_bullets(rewrite.bullets),
                     "relevance": rewrite.relevance,
                     "source_ids": [
                         source_id
@@ -1466,7 +1461,11 @@ def assemble_scored(
             mode="json", exclude={"summary"}, exclude_unset=True
         )
         basics = type(master.basics).model_validate(basics_payload)
-    payload = master.model_dump(mode="json", exclude_unset=True)
+    payload = master.model_dump(
+        mode="json",
+        exclude_unset=True,
+        exclude={"basics", "work", "skills", "projects"},
+    )
     payload.update(
         {
             "basics": basics,

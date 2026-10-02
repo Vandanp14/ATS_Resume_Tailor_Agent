@@ -9,6 +9,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty
 from typing import Callable
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
@@ -53,7 +54,6 @@ from .io import atomic_write_text
 
 LOGGER = __import__("logging").getLogger("resume_tailor.web")
 
-_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
 _HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
@@ -125,25 +125,6 @@ def _problem(
         ).as_json(),
         headers={"Cache-Control": "no-store"},
         media_type="application/problem+json",
-    )
-
-
-def _host_allowed(host: str) -> bool:
-    return host.split(":", 1)[0].strip().lower() in _ALLOWED_HOSTS
-
-
-def _origin_allowed(origin: str | None) -> bool:
-    if origin is None:
-        return True
-    from urllib.parse import urlparse
-
-    try:
-        parsed = urlparse(origin)
-    except ValueError:
-        return False
-    return (
-        parsed.scheme == "http"
-        and parsed.netloc.split(":", 1)[0].strip().lower() in _ALLOWED_HOSTS
     )
 
 
@@ -529,10 +510,8 @@ def create_app(
         try:
             while True:
                 try:
-                    event = await asyncio.wait_for(
-                        asyncio.to_thread(subscriber.queue.get, True, 1.0), 1.0
-                    )
-                except asyncio.TimeoutError:
+                    event = await asyncio.to_thread(subscriber.queue.get, True, 1.0)
+                except Empty:
                     continue
                 yield ServerSentEvent(
                     data=event.model_dump(mode="json", exclude_none=True),

@@ -72,7 +72,6 @@ from .evidence import (
     jd_signal_is_thin,
     jd_signal_strength,
     master_fact_index,
-    project_evidence,
     proxy_coverage_gaps,
     repair_allocation_provenance,
     sanitize_target_terms,
@@ -86,7 +85,6 @@ from .evidence import (
     validate_transferable_skill_plan,
     validate_work_item,
     work_bullet_targets,
-    work_evidence,
 )
 from .llm import (
     ChatProvider,
@@ -1098,8 +1096,9 @@ class TailorPipeline:
                             signals.model_dump_json(indent=2) if signals else None
                         )
 
-            facts = master_fact_index(master)
-            global_evidence_json = json.dumps(global_evidence_payload(master), indent=2)
+            evidence = global_evidence_payload(master)
+            facts = master_fact_index(master, evidence=evidence)
+            global_evidence_json = json.dumps(evidence, indent=2)
             with self.tracker.stage(Stage.MAP_REQUIREMENTS):
                 requirements, proxy_plan = self._map_requirements(
                     jd_json, requirement_map(jd, facts), facts, global_evidence_json
@@ -1138,8 +1137,8 @@ class TailorPipeline:
                             f"({', '.join(item['proxy_fact_ids'])})"
                         )
 
-            all_work = work_evidence(master)
-            all_projects = project_evidence(master)
+            all_work = evidence["work"]
+            all_projects = evidence["projects"]
             with self.tracker.stage(Stage.SELECT_WORK):
                 selected_work = tuple(
                     self._select(
@@ -1321,9 +1320,8 @@ class TailorPipeline:
             with self.tracker.stage(Stage.ASSEMBLE):
                 draft = assemble_scored(master, components)
                 draft_plain = scored_to_plain(draft)
-                draft_coverage = resume_coverage(
-                    draft_plain.model_dump(mode="json"), requirements
-                )
+                draft_dump = draft_plain.model_dump(mode="json")
+                draft_coverage = resume_coverage(draft_dump, requirements)
                 self.tracker.detail(
                     f"Draft keyword coverage {draft_coverage['computed_coverage_pct']}% "
                     f"(stated requirements: {draft_coverage['supported_coverage_pct']}%)"
@@ -1359,7 +1357,7 @@ class TailorPipeline:
                                 )
                             ),
                             "placement_findings": placement_findings(
-                                draft_plain.model_dump(mode="json"), requirements
+                                draft_dump, requirements, coverage=draft_coverage
                             ),
                         },
                         indent=2,
@@ -1434,7 +1432,7 @@ class TailorPipeline:
                 keyword_coverage = resume_coverage(final_dump, requirements)
                 report_payload["keyword_coverage"] = keyword_coverage
                 report_payload["placement_findings"] = placement_findings(
-                    final_dump, requirements
+                    final_dump, requirements, coverage=keyword_coverage
                 )
                 self.tracker.detail(
                     "Final keyword coverage "

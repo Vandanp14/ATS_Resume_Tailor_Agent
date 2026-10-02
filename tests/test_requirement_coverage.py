@@ -279,6 +279,7 @@ def test_resume_coverage_and_placement_are_measured_literally():
     coverage = resume_coverage(resume, requirements)
     assert coverage["computed_coverage_pct"] == 100.0
     findings = placement_findings(resume, requirements)
+    assert placement_findings(resume, requirements, coverage=coverage) == findings
     assert any("no work or project bullet" in item for item in findings)
     assert any("first bullet" in item for item in findings)
 

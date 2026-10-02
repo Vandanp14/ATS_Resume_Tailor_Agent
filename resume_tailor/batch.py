@@ -79,7 +79,7 @@ def run_single(
             ProgressEvent(
                 ProgressEventKind.JOB_FAILED,
                 job=job,
-                        message="unresolved truth violation",
+                message="unresolved truth violation",
             )
         )
         return result
@@ -153,7 +153,7 @@ def run_batch(
                     ProgressEvent(
                         ProgressEventKind.JOB_FAILED,
                         job=job,
-                message="unresolved truth violation",
+                        message="unresolved truth violation",
                     )
                 )
             else:
@@ -167,40 +167,26 @@ def run_batch(
                     )
                 )
         except Exception as exc:
-            if is_quota_error(exc):
+            quota_exhausted = is_quota_error(exc)
+            if quota_exhausted or isinstance(exc, ModelUnavailableError):
                 remaining = [item.stem for item in jobs[index - 1 :]]
                 failed.extend(remaining)
+                message = (
+                    "Gemini quota exhausted — wait and re-run. Remaining: "
+                    if quota_exhausted
+                    else f"{exc} Batch stopped. Remaining: "
+                )
                 reporter.emit(
                     ProgressEvent(
                         ProgressEventKind.JOB_FAILED,
                         job=job,
-                        message=(
-                            "Gemini quota exhausted — wait and re-run. Remaining: "
-                            + ", ".join(remaining)
-                        ),
+                        message=message + ", ".join(remaining),
                     )
                 )
                 reporter.emit(
                     _summary_event(batch_started, completed_paths, skipped, len(failed))
                 )
-                return QUOTA_EXIT_CODE
-            if isinstance(exc, ModelUnavailableError):
-                # Every configured model is down; later jobs would fail the
-                # same way, so stop and report what the API returned.
-                remaining = [item.stem for item in jobs[index - 1 :]]
-                failed.extend(remaining)
-                reporter.emit(
-                    ProgressEvent(
-                        ProgressEventKind.JOB_FAILED,
-                        job=job,
-                        message=f"{exc} Batch stopped. Remaining: "
-                        + ", ".join(remaining),
-                    )
-                )
-                reporter.emit(
-                    _summary_event(batch_started, completed_paths, skipped, len(failed))
-                )
-                return 1
+                return QUOTA_EXIT_CODE if quota_exhausted else 1
             failed.append(jd_path.stem)
             reporter.emit(
                 ProgressEvent(

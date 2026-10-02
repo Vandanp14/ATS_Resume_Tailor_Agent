@@ -29,6 +29,7 @@ class EventJournal:
         self._events: list[WebEvent] = []
         if path.is_file():
             self._load()
+        self._event_ids = {event.id for event in self._events}
 
     def _load(self) -> None:
         try:
@@ -43,7 +44,7 @@ class EventJournal:
     def append(self, event: WebEvent) -> bool:
         """Persist and index; False for a duplicate id."""
         with self._mutex:
-            if any(item.id == event.id for item in self._events):
+            if event.id in self._event_ids:
                 return False
             try:
                 with self.path.open("a", encoding="utf-8") as handle:
@@ -51,6 +52,7 @@ class EventJournal:
             except OSError:
                 return False
             self._events.append(event)
+            self._event_ids.add(event.id)
             return True
 
     def replay(self, after_id: int | None = None) -> list[WebEvent]:
@@ -90,11 +92,10 @@ class EventHub:
             try:
                 subscriber.queue.put_nowait(event)
             except queue.Full:
-                with subscriber.queue.mutex:
-                    try:
-                        subscriber.queue.get_nowait()
-                    except queue.Empty:
-                        pass
+                try:
+                    subscriber.queue.get_nowait()
+                except queue.Empty:
+                    pass
                 try:
                     subscriber.queue.put_nowait(event)
                 except queue.Full:
