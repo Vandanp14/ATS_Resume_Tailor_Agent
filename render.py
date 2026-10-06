@@ -379,7 +379,7 @@ def _work_ctx(work: list[Work] | None) -> list[dict[str, Any]]:
                 "name": _esc(w.name),
                 "position": _esc(w.position),
                 "dates": _date_range(w.startDate, w.endDate),
-                "location": None,  # JSONResume Work carries no location field
+                "location": _esc(w.location),
                 "highlights": _esc_list(w.highlights),
             }
         )

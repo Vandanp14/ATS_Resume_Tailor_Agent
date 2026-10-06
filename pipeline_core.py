@@ -1825,7 +1825,7 @@ def validate_scored_resume(
     work_sources = {item["source_id"]: item for item in selected.work}
     for item in resume.work or []:
         source = work_sources[item.source_id]
-        for field in ("name", "position", "url", "startDate", "endDate"):
+        for field in ("name", "location", "position", "url", "startDate", "endDate"):
             if getattr(item, field) != source.get(field):
                 raise ContractError(
                     f"protected work field changed: {item.source_id}.{field}"

@@ -26,6 +26,7 @@
   "work": [
     {
       "name": "Brightline Health",
+      "location": "Remote",
       "position": "Senior Software Engineer",
       "url": "https://www.brightlinehealth.example.com",
       "startDate": "2023-06",
@@ -40,6 +41,7 @@
     },
     {
       "name": "Corvid Analytics",
+      "location": "Denver, CO",
       "position": "Software Engineer",
       "url": "https://www.corvidanalytics.example.com",
       "startDate": "2021-02",
@@ -55,6 +57,7 @@
     },
     {
       "name": "Riverbend Software",
+      "location": "Boulder, CO",
       "position": "Software Developer",
       "url": "https://www.riverbendsoftware.example.com",
       "startDate": "2019-07",

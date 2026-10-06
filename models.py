@@ -54,6 +54,7 @@ class Basics(BaseModel):
 
 class Work(BaseModel):
     name: str | None = None
+    location: str | None = None
     position: str | None = None
     url: str | None = None
     startDate: str | None = None

@@ -688,3 +688,15 @@ def test_unparseable_dates_are_never_annotated():
     )
     assert ctx[0]["dates"] is None
     assert ctx[1]["dates"] == "Jan 2024 -- Present"
+
+
+def test_work_location_renders_beside_company():
+    work = [
+        render.Work(name="Acme", location="New York, NY", position="Engineer"),
+        render.Work(name="Beta", position="Engineer"),
+    ]
+    ctx = render._work_ctx(work)
+    assert ctx[0]["location"] == "New York, NY"
+    assert ctx[1]["location"] is None
+    tex = render_tex(JSONResume(basics=Basics(name="A"), work=work))
+    assert "{Acme}{New York, NY}" in tex
