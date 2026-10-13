@@ -39,3 +39,6 @@ jds/*.txt
 output_new/
 graphify-out/
 *.bak
+
+# Terms kept out of every model call (confidential employers, clients, salary)
+private_terms.txt

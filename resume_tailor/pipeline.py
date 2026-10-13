@@ -105,6 +105,7 @@ from .llm import (
 from .progress import JobContext, ProgressReporter, ProgressTracker, Stage
 from .bullet_review import live_flags, persist_bullet_review
 from .checkpoints import CheckpointStore, run_fingerprint
+from .privacy import PrivacyGuard, strip_prompt_context, unrestored_placeholders
 from .fit_recovery import (
     FitRecoveryRequired,
     persist_fit_recovery,
@@ -386,8 +387,10 @@ class TailorPipeline:
         raw_provider = provider or ModelRouter(
             model, progress_callback=lambda message: self.tracker.detail(message)
         )
+        # Every model call, on every provider, passes through the privacy guard.
+        self.privacy = PrivacyGuard(raw_provider)
         self.provider: ChatProvider = PacedProvider(
-            raw_provider, RatePacer(call_interval, self.tracker)
+            self.privacy, RatePacer(call_interval, self.tracker)
         )
         self.templates = TemplateManager(str(_TEMPLATE_DIR))
         self.options = MODEL_PARAMETERS.get(model, {"temperature": 0.1, "top_p": 0.9})
@@ -435,7 +438,9 @@ class TailorPipeline:
             "research_company_signals": "company research",
         }.get(template_name, template_name.replace("_", " "))
         system = self.templates.render_template("system_message", stage=stage)
-        prompt = self.templates.render_template(template_name, **context)
+        prompt = self.templates.render_template(
+            template_name, **strip_prompt_context(context)
+        )
         if not prompt:
             raise StageFailure(
                 template_name, 0, [], None, "prompt template unavailable"
@@ -1276,6 +1281,7 @@ class TailorPipeline:
             ),
         )
         self._resuming = resume
+        self.privacy.protect(master)
         try:
             with self.tracker.stage(Stage.PREFLIGHT):
                 self.tracker.detail(f"Model: {self.model}")
@@ -1746,6 +1752,32 @@ class TailorPipeline:
                     unsupported_technology
                 )
                 final_dump = scored_to_plain(final_scored).model_dump(mode="json")
+                privacy_counts = self.privacy.counts
+                report_payload["privacy"] = {
+                    "values_kept_out_of_model_calls": privacy_counts
+                }
+                self.tracker.detail(
+                    "Privacy: kept "
+                    f"{sum(privacy_counts.values())} personal value(s) out of model "
+                    "calls"
+                    + (
+                        " ("
+                        + ", ".join(
+                            f"{kind} {count}"
+                            for kind, count in sorted(privacy_counts.items())
+                        )
+                        + ")"
+                        if privacy_counts
+                        else ""
+                    ),
+                    verbose_only=False,
+                )
+                leftover = unrestored_placeholders(json.dumps(final_dump))
+                if leftover:
+                    self.tracker.warn(
+                        "Privacy placeholders left in the resume text: "
+                        + ", ".join(leftover)
+                    )
                 keyword_coverage = resume_coverage(final_dump, requirements)
                 report_payload["keyword_coverage"] = keyword_coverage
                 report_payload["placement_findings"] = placement_findings(

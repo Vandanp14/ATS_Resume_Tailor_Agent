@@ -970,6 +970,7 @@ class QueueRegistry:
             pipeline.tracker.job = JobContext(
                 name=job.persisted.job_id, output_dir=job.directory
             )
+            pipeline.privacy.protect(load_master(self.master_path))
             regenerate = pipeline.regenerate_review_bullet
         return apply_bullet_review(
             job.directory,
