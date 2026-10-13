@@ -134,6 +134,11 @@ def _is_gemini(model: str) -> bool:
     return str(model).startswith("gemini")
 
 
+def _chains_models(model: str) -> bool:
+    """Models whose pipeline walks a fallback chain that may include Gemini."""
+    return _is_gemini(model) or str(model).startswith("openrouter/")
+
+
 def create_app(
     settings: WebSettings,
     registry: QueueRegistry,
@@ -512,6 +517,14 @@ def create_app(
             headers={"Cache-Control": "no-store"},
         )
 
+    @app.post("/api/jobs/{job_id}/resume", status_code=202)
+    async def resume_job(job: Job = Depends(job_or_404)) -> JSONResponse:
+        try:
+            registry.enqueue_resume(job)
+        except RecoveryRequestError as exc:
+            raise HTTPException(exc.status, exc.detail) from exc
+        return created(job.persisted.job_id, position=registry.queue_position(job) or 0)
+
     @app.delete("/api/jobs/{job_id}", status_code=204)
     async def delete_job(job: Job = Depends(job_or_404)) -> Response:
         if job.persisted.state != JobState.QUEUED:
@@ -645,8 +658,8 @@ def webapp_factory(
     hub = EventHub()
     provider: ScheduledProvider | None = None
     scheduler: GeminiScheduler | None = None
-    if _is_gemini(model):
-        from llm_utils import initialize_llm_provider
+    if _chains_models(model):
+        from llm_utils import ModelRouter
 
         scheduler = GeminiScheduler(
             call_interval,
@@ -658,7 +671,7 @@ def webapp_factory(
         )
         provider = ScheduledProvider(
             scheduler,
-            lambda: initialize_llm_provider(
+            lambda: ModelRouter(
                 model,
                 progress_callback=None,
                 attempt_callback=scheduler.wait,

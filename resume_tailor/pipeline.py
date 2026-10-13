@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import inspect
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +42,7 @@ from keyword_coverage import (
     supported_tech_requirements,
 )
 from llm_utils import (
+    ModelRouter,
     describe_api_error,
     is_model_unavailable,
     is_persistent_unavailability,
@@ -61,7 +62,13 @@ from .assembly import (
     transferable_skill_injections,
     waive_cross_entry_objections,
 )
-from .config import DEFAULT_MODEL, FALLBACK_MODELS, MODEL_PARAMETERS, PLANNING_MODELS
+from .config import (
+    DEFAULT_MODEL,
+    FALLBACK_MODELS,
+    MODEL_PARAMETERS,
+    OPENROUTER_MODEL_PREFIX,
+    PLANNING_MODELS,
+)
 from .evidence import (
     RESEARCH_THIN_JD_SIGNAL_THRESHOLD,
     ContractError,
@@ -97,6 +104,7 @@ from .llm import (
 )
 from .progress import JobContext, ProgressReporter, ProgressTracker, Stage
 from .bullet_review import live_flags, persist_bullet_review
+from .checkpoints import CheckpointStore, run_fingerprint
 from .fit_recovery import (
     FitRecoveryRequired,
     persist_fit_recovery,
@@ -183,6 +191,16 @@ PLANNING_MODEL_TIMEOUT_MS = 60_000
 
 def _dedupe(models: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(model for model in models if model))
+
+
+def _dump_optional(value: BaseModel | None) -> object:
+    return value.model_dump(mode="json") if value is not None else None
+
+
+def _restore_optional[_M: BaseModel](
+    model: type[_M],
+) -> Callable[[Any], _M | None]:
+    return lambda payload: model.model_validate(payload) if payload else None
 
 
 def _provider_supports_grounding(model: str) -> bool:
@@ -365,7 +383,7 @@ class TailorPipeline:
         self.research_company = research_company
         self.tracker = ProgressTracker(reporter)
         self.stage_executor = StageExecutor(self.tracker)
-        raw_provider = provider or initialize_llm_provider(
+        raw_provider = provider or ModelRouter(
             model, progress_callback=lambda message: self.tracker.detail(message)
         )
         self.provider: ChatProvider = PacedProvider(
@@ -379,7 +397,9 @@ class TailorPipeline:
         real_client = provider is None or (
             getattr(type(provider), "supports_model_chain", False) is True
         )
-        chains_enabled = real_client and model.startswith("gemini")
+        chains_enabled = real_client and model.startswith(
+            ("gemini", OPENROUTER_MODEL_PREFIX)
+        )
         if planning_models is None:
             planning_models = PLANNING_MODELS if chains_enabled else ()
         if fallback_models is None:
@@ -389,9 +409,23 @@ class TailorPipeline:
         self.planning_only_models = frozenset(self.planning_chain) - frozenset(
             self.default_chain
         )
+        # Web-search grounding exists only on Gemini, so company research uses
+        # the first Gemini model in the chain even when another provider leads.
+        self.grounding_model = next(
+            (
+                name
+                for name in (*self.default_chain, *self.planning_chain)
+                if _provider_supports_grounding(name)
+            ),
+            None,
+        )
         # model -> (API error text, skip-until monotonic time or None for the run)
         self._unavailable_models: dict[str, tuple[str, float | None]] = {}
         self._bullet_flags: list[dict] = []
+        self._checkpoints: CheckpointStore | None = None
+        self._resuming = False
+        self._reused: list[str] = []
+        self._grounding_exhausted = False
 
     def _messages(self, template_name: str, **context: object) -> list[dict[str, str]]:
         stage = {
@@ -462,6 +496,81 @@ class TailorPipeline:
         for note in notes:
             self.tracker.detail(f"Repaired provenance: {note}")
 
+    def _checkpointed[_T](
+        self,
+        name: str,
+        compute: Callable[[], _T],
+        dump: Callable[[_T], object],
+        restore: Callable[[Any], _T],
+    ) -> _T:
+        """Reuse a stage result saved by an earlier failed run, else compute and save.
+
+        Reuse stops at the first stage that must run again, so every later
+        stage is rebuilt from fresh inputs.
+        """
+
+        store = self._checkpoints
+        if store is not None and self._resuming:
+            cached = store.load(name)
+            if cached is not None:
+                self._reused.append(name)
+                self.tracker.detail("Reused from the earlier run", verbose_only=False)
+                return restore(cached["payload"])
+            self._resuming = False
+            if self._reused:
+                self.tracker.detail(
+                    f"Resuming here; reused {len(self._reused)} earlier stage(s)",
+                    verbose_only=False,
+                )
+        value = compute()
+        if store is not None:
+            store.save(name, dump(value))
+        return value
+
+    def _checkpointed_rewrite[_Item: BaseModel](
+        self,
+        name: str,
+        item_model: type[_Item],
+        compute: Callable[[], list[_Item]],
+    ) -> list[_Item]:
+        """Checkpoint rewrites together with the review flags their salvage added."""
+
+        start = len(self._bullet_flags)
+
+        def restore(payload: dict) -> list[_Item]:
+            self._bullet_flags.extend(payload["flags"])
+            return [item_model.model_validate(item) for item in payload["items"]]
+
+        return self._checkpointed(
+            name,
+            compute,
+            lambda items: {
+                "items": [item.model_dump(mode="json") for item in items],
+                "flags": self._bullet_flags[start:],
+            },
+            restore,
+        )
+
+    def _round_order(self, chain: Sequence[str]) -> list[str]:
+        """Models to try this round: healthy ones in chain order, then cooling ones.
+
+        A model that was merely busy a moment ago is still worth one more try
+        before the whole stage sleeps; only retired or quota-exhausted models
+        are left out.
+        """
+
+        healthy = [model for model in chain if not self._skipped(model)]
+        cooling = sorted(
+            (
+                model
+                for model in chain
+                if model not in healthy
+                and self._unavailable_models[model][1] is not None
+            ),
+            key=lambda model: self._unavailable_models[model][1] or 0.0,
+        )
+        return healthy + cooling
+
     def _skipped(self, model: str) -> bool:
         entry = self._unavailable_models.get(model)
         if entry is None:
@@ -491,14 +600,13 @@ class TailorPipeline:
         rounds = len(CHAIN_RETRY_DELAYS_SECONDS) + 1 if len(chain) > 1 else 1
         failures: list[tuple[str, str]] = []
         for round_number in range(1, rounds + 1):
+            ordered = self._round_order(chain)
             failures = [
                 (model, self._unavailable_models[model][0])
                 for model in chain
-                if self._skipped(model)
+                if model not in ordered
             ]
-            for model in chain:
-                if self._skipped(model):
-                    continue
+            for position, model in enumerate(ordered):
                 options = dict(MODEL_PARAMETERS.get(model, self.options))
                 if template_name in _DETERMINISTIC_TEMPLATES:
                     options.update({"temperature": 0.0, "top_p": 1.0})
@@ -532,12 +640,14 @@ class TailorPipeline:
                     error = describe_api_error(exc)
                     self._unavailable_models[model] = (
                         error,
-                        None
-                        if is_persistent_unavailability(exc)
-                        else time.monotonic() + TRANSIENT_COOLDOWN_SECONDS,
+                        (
+                            None
+                            if is_persistent_unavailability(exc)
+                            else time.monotonic() + TRANSIENT_COOLDOWN_SECONDS
+                        ),
                     )
                     failures.append((model, error))
-                    remaining = [m for m in chain if not self._skipped(m)]
+                    remaining = ordered[position + 1 :]
                     self.tracker.warn(
                         f"{model} unavailable for {template_name} ({error}); "
                         + (
@@ -657,7 +767,11 @@ class TailorPipeline:
                     indent=2,
                 ),
                 stated_requirements_json=json.dumps(
-                    [item["term"] for item in requirements if item["status"] == "direct"]
+                    [
+                        item["term"]
+                        for item in requirements
+                        if item["status"] == "direct"
+                    ]
                 ),
                 global_evidence_json=global_evidence_json,
             )
@@ -676,7 +790,9 @@ class TailorPipeline:
         """Rewrite one flagged bullet from its own facts; None keeps the safe text."""
 
         facts_text = "\n".join(flag.source_facts)
-        tech = [(str(term), list(variants)) for term, variants in bundle.tech_requirements]
+        tech = [
+            (str(term), list(variants)) for term, variants in bundle.tech_requirements
+        ]
 
         def validate(result: BulletConcision) -> None:
             result.text = " ".join(result.text.split())
@@ -724,7 +840,7 @@ class TailorPipeline:
         try:
             return call_llm_with_retry(
                 self.provider,
-                self.model,
+                self.grounding_model or self.model,
                 self._messages(template_name, **context),
                 response_model,
                 options={**self.options, "temperature": 0.0, "top_p": 1.0},
@@ -732,8 +848,11 @@ class TailorPipeline:
                 grounding=True,
             )
         except Exception as exc:  # noqa: BLE001 - best-effort enrichment, never fatal
+            if is_persistent_unavailability(exc):
+                self._grounding_exhausted = True
             self.tracker.warn(
-                f"{template_name} failed, continuing without company research: {exc}"
+                f"{template_name} failed, continuing without company research: "
+                f"{describe_api_error(exc)}"
             )
             return None
 
@@ -956,7 +1075,9 @@ class TailorPipeline:
             )
             for error in partial_errors:
                 if error.startswith("unknown source IDs"):
-                    self.tracker.detail(f"Ignored entries for unselected roles: {error}")
+                    self.tracker.detail(
+                        f"Ignored entries for unselected roles: {error}"
+                    )
             accepted.update(partial)
             errors.extend(partial_errors)
             pending = [source_id for source_id in pending if source_id in unresolved]
@@ -1136,20 +1257,41 @@ class TailorPipeline:
         out_dir: Path,
         no_pdf: bool = False,
         job: JobContext | None = None,
+        resume: bool = False,
     ) -> int:
         out_dir = Path(out_dir)
         self.tracker.job = job
         self._unavailable_models = {}
         self._bullet_flags = []
+        self._reused = []
+        self._grounding_exhausted = False
+        self._checkpoints = CheckpointStore(
+            out_dir,
+            run_fingerprint(
+                master.model_dump_json(),
+                jd_text,
+                bridge_skills=self.bridge_skills,
+                research_company=self.research_company,
+                allow_fit_recovery=self.allow_fit_recovery,
+            ),
+        )
+        self._resuming = resume
         try:
             with self.tracker.stage(Stage.PREFLIGHT):
                 self.tracker.detail(f"Model: {self.model}")
                 clear_artifacts(out_dir)
+                if not resume:
+                    self._checkpoints.clear()
                 if not no_pdf:
                     ensure_tectonic()
 
             with self.tracker.stage(Stage.PARSE_JD):
-                jd = self._parse_jd(jd_text)
+                jd = self._checkpointed(
+                    "jd_parse",
+                    lambda: self._parse_jd(jd_text),
+                    lambda value: value.model_dump(mode="json"),
+                    JDProfile.model_validate,
+                )
                 jd, dropped_keywords = sanitize_jd_profile(jd, jd_text)
                 if dropped_keywords:
                     self.tracker.warn(
@@ -1161,7 +1303,7 @@ class TailorPipeline:
             company_stack_json: str | None = None
             company_signals_json: str | None = None
             if self.research_company:
-                provider_ok = _provider_supports_grounding(self.model)
+                provider_ok = self.grounding_model is not None
                 thin = jd_signal_is_thin(jd)
                 has_company = bool(jd.company_name)
 
@@ -1172,7 +1314,9 @@ class TailorPipeline:
                             "grounding"
                         )
                     if not has_company:
-                        return "could not identify a company name in the job description"
+                        return (
+                            "could not identify a company name in the job description"
+                        )
                     if not thin:
                         return (
                             f"JD signal is sufficient ({jd_signal_strength(jd)} "
@@ -1185,17 +1329,29 @@ class TailorPipeline:
                     if reason:
                         self.tracker.detail(f"Skipping company research: {reason}")
                     else:
-                        stack = self._research_company_stack(jd)
+                        stack = self._checkpointed(
+                            "research_company_stack",
+                            lambda: self._research_company_stack(jd),
+                            _dump_optional,
+                            _restore_optional(CompanyStackResearch),
+                        )
                         company_stack_json = (
                             stack.model_dump_json(indent=2) if stack else None
                         )
 
                 with self.tracker.stage(Stage.RESEARCH_COMPANY_SIGNALS):
                     reason = _skip_reason()
+                    if not reason and self._grounding_exhausted:
+                        reason = "web-search quota is exhausted for this run"
                     if reason:
                         self.tracker.detail(f"Skipping company research: {reason}")
                     else:
-                        signals = self._research_company_signals(jd)
+                        signals = self._checkpointed(
+                            "research_company_signals",
+                            lambda: self._research_company_signals(jd),
+                            _dump_optional,
+                            _restore_optional(CompanyHiringSignals),
+                        )
                         company_signals_json = (
                             signals.model_dump_json(indent=2) if signals else None
                         )
@@ -1204,8 +1360,19 @@ class TailorPipeline:
             facts = master_fact_index(master, evidence=evidence)
             global_evidence_json = json.dumps(evidence, indent=2)
             with self.tracker.stage(Stage.MAP_REQUIREMENTS):
-                requirements, proxy_plan = self._map_requirements(
-                    jd_json, requirement_map(jd, facts), facts, global_evidence_json
+                requirements, proxy_plan = self._checkpointed(
+                    "requirement_map",
+                    lambda: self._map_requirements(
+                        jd_json, requirement_map(jd, facts), facts, global_evidence_json
+                    ),
+                    lambda value: {
+                        "requirements": value[0],
+                        "proxy_plan": value[1].model_dump(mode="json"),
+                    },
+                    lambda payload: (
+                        payload["requirements"],
+                        RequirementProxyPlan.model_validate(payload["proxy_plan"]),
+                    ),
                 )
                 transferable_skill_plan = TransferableSkillPlan(skills=[])
                 if self.bridge_skills and proxy_plan.proxies:
@@ -1216,9 +1383,7 @@ class TailorPipeline:
                         )
                         transferable_skill_plan = candidate_plan
                     except ContractError as exc:
-                        self.tracker.warn(
-                            f"Transferable skills group skipped: {exc}"
-                        )
+                        self.tracker.warn(f"Transferable skills group skipped: {exc}")
                 forbidden_terms = forbidden_claim_terms(requirements)
                 tech_requirements = supported_tech_requirements(requirements)
                 priority = priority_proxies(requirements, facts)
@@ -1245,32 +1410,42 @@ class TailorPipeline:
             all_projects = evidence["projects"]
             with self.tracker.stage(Stage.SELECT_WORK):
                 selected_work = tuple(
-                    self._select(
+                    self._checkpointed(
                         "select_work",
-                        "work",
-                        jd_json,
-                        all_work,
-                        MAX_SELECTED_WORK,
-                        company_stack_json,
-                        company_signals_json,
-                        requirements=requirements,
-                        fact_index=facts,
-                        jd=jd,
+                        lambda: self._select(
+                            "select_work",
+                            "work",
+                            jd_json,
+                            all_work,
+                            MAX_SELECTED_WORK,
+                            company_stack_json,
+                            company_signals_json,
+                            requirements=requirements,
+                            fact_index=facts,
+                            jd=jd,
+                        ),
+                        list,
+                        list,
                     )
                 )
             with self.tracker.stage(Stage.SELECT_PROJECTS):
                 selected_projects = tuple(
-                    self._select(
+                    self._checkpointed(
                         "select_projects",
-                        "projects",
-                        jd_json,
-                        all_projects,
-                        MAX_SELECTED_PROJECTS,
-                        company_stack_json,
-                        company_signals_json,
-                        requirements=requirements,
-                        fact_index=facts,
-                        jd=jd,
+                        lambda: self._select(
+                            "select_projects",
+                            "projects",
+                            jd_json,
+                            all_projects,
+                            MAX_SELECTED_PROJECTS,
+                            company_stack_json,
+                            company_signals_json,
+                            requirements=requirements,
+                            fact_index=facts,
+                            jd=jd,
+                        ),
+                        list,
+                        list,
                     )
                 )
             selected = SelectedEvidence(work=selected_work, projects=selected_projects)
@@ -1299,8 +1474,8 @@ class TailorPipeline:
                     )
                 proxy_warnings[:] = gaps
 
-            with self.tracker.stage(Stage.PLAN_EVIDENCE):
-                evidence_plan = self._simple_stage(
+            def plan_evidence() -> EvidencePlan:
+                return self._simple_stage(
                     "plan_evidence",
                     EvidencePlan,
                     selected_ids=list(targets),
@@ -1350,6 +1525,23 @@ class TailorPipeline:
                     ),
                     bullet_targets_json=json.dumps(targets, indent=2),
                 )
+
+            def restore_plan(payload: dict) -> EvidencePlan:
+                proxy_warnings[:] = payload["proxy_warnings"]
+                dropped_target_terms[:] = payload["dropped_target_terms"]
+                return EvidencePlan.model_validate(payload["plan"])
+
+            with self.tracker.stage(Stage.PLAN_EVIDENCE):
+                evidence_plan = self._checkpointed(
+                    "plan_evidence",
+                    plan_evidence,
+                    lambda value: {
+                        "plan": value.model_dump(mode="json"),
+                        "proxy_warnings": list(proxy_warnings),
+                        "dropped_target_terms": list(dropped_target_terms),
+                    },
+                    restore_plan,
+                )
                 for message in proxy_warnings:
                     self.tracker.warn(f"Proxy evidence not placed: {message}")
                 if dropped_target_terms:
@@ -1361,55 +1553,68 @@ class TailorPipeline:
             with self.tracker.stage(Stage.TAILOR_SKILLS):
                 skills: TailoredSkills | None = None
                 if master.skills or transferable_skill_plan.skills:
-                    skills = self._simple_stage(
+                    skills = self._checkpointed(
                         "tailor_skills",
-                        TailoredSkills,
-                        validator=lambda value: validate_skills(
-                            value, master, transferable_skill_plan
+                        lambda: self._simple_stage(
+                            "tailor_skills",
+                            TailoredSkills,
+                            validator=lambda value: validate_skills(
+                                value, master, transferable_skill_plan
+                            ),
+                            jd_profile_json=jd_json,
+                            master_skills_json=json.dumps(
+                                [
+                                    item.model_dump(mode="json")
+                                    for item in master.skills or []
+                                ],
+                                indent=2,
+                            ),
+                            experience_technologies_json=json.dumps(
+                                technologies_in_experience(master), indent=2
+                            ),
+                            transferable_skill_plan_json=(
+                                transferable_skill_plan.model_dump_json(indent=2)
+                            ),
+                            requirement_map_json=requirement_map_json,
                         ),
-                        jd_profile_json=jd_json,
-                        master_skills_json=json.dumps(
-                            [
-                                item.model_dump(mode="json")
-                                for item in master.skills or []
-                            ],
-                            indent=2,
-                        ),
-                        experience_technologies_json=json.dumps(
-                            technologies_in_experience(master), indent=2
-                        ),
-                        transferable_skill_plan_json=(
-                            transferable_skill_plan.model_dump_json(indent=2)
-                        ),
-                        requirement_map_json=requirement_map_json,
+                        lambda value: value.model_dump(mode="json"),
+                        TailoredSkills.model_validate,
                     )
             with self.tracker.stage(Stage.REWRITE_WORK):
                 work = tuple(
-                    self._rewrite_work(
-                        jd_json,
-                        selected.work,
-                        evidence_plan,
-                        transferable_skill_plan,
-                        facts,
-                        company_stack_json,
-                        company_signals_json,
-                        requirement_map_json,
-                        forbidden_terms,
-                        tech_requirements,
+                    self._checkpointed_rewrite(
+                        "rewrite_work",
+                        WorkRewriteItem,
+                        lambda: self._rewrite_work(
+                            jd_json,
+                            selected.work,
+                            evidence_plan,
+                            transferable_skill_plan,
+                            facts,
+                            company_stack_json,
+                            company_signals_json,
+                            requirement_map_json,
+                            forbidden_terms,
+                            tech_requirements,
+                        ),
                     )
                 )
             with self.tracker.stage(Stage.REWRITE_PROJECTS):
                 projects = tuple(
-                    self._rewrite_projects(
-                        jd_json,
-                        selected.projects,
-                        transferable_skill_plan,
-                        facts,
-                        company_stack_json,
-                        company_signals_json,
-                        requirement_map_json,
-                        forbidden_terms,
-                        tech_requirements,
+                    self._checkpointed_rewrite(
+                        "rewrite_projects",
+                        ProjectRewriteItem,
+                        lambda: self._rewrite_projects(
+                            jd_json,
+                            selected.projects,
+                            transferable_skill_plan,
+                            facts,
+                            company_stack_json,
+                            company_signals_json,
+                            requirement_map_json,
+                            forbidden_terms,
+                            tech_requirements,
+                        ),
                     )
                 )
             components = PipelineComponents(
@@ -1431,8 +1636,8 @@ class TailorPipeline:
                     f"(stated requirements: {draft_coverage['supported_coverage_pct']}%)"
                 )
 
-            with self.tracker.stage(Stage.HOLISTIC_REVIEW):
-                review = self._simple_stage(
+            def holistic_review() -> HolisticReview:
+                return self._simple_stage(
                     "holistic_review",
                     HolisticReview,
                     jd_profile_json=jd_json,
@@ -1489,6 +1694,14 @@ class TailorPipeline:
                         },
                         indent=2,
                     ),
+                )
+
+            with self.tracker.stage(Stage.HOLISTIC_REVIEW):
+                review = self._checkpointed(
+                    "holistic_review",
+                    holistic_review,
+                    lambda value: value.model_dump(mode="json"),
+                    HolisticReview.model_validate,
                 )
 
             with self.tracker.stage(Stage.VALIDATE_REVIEW):
@@ -1548,10 +1761,8 @@ class TailorPipeline:
                 unresolved_violations, resolved_violations = (
                     partition_review_truth_violations(review, final_scored)
                 )
-                unresolved_violations, waived_violations = (
-                    waive_cross_entry_objections(
-                        unresolved_violations, final_scored, evidence_plan, facts
-                    )
+                unresolved_violations, waived_violations = waive_cross_entry_objections(
+                    unresolved_violations, final_scored, evidence_plan, facts
                 )
                 for violation in waived_violations:
                     self.tracker.warn(
@@ -1571,6 +1782,8 @@ class TailorPipeline:
             if unresolved_violations:
                 report_payload["pipeline_status"] = "blocked_truth_violations"
                 write_json(out_dir / "match_report.json", report_payload)
+                # A retry should get a fresh review, not the one that blocked.
+                self._checkpoints.discard("holistic_review")
                 return 1
             for message in rejected_edits:
                 self.tracker.warn(f"Reviewer edit rejected: {message}")
@@ -1644,6 +1857,7 @@ class TailorPipeline:
                 )
                 write_json(out_dir / "match_report.json", report_payload)
                 write_json(out_dir / ".done", {"pdf": not no_pdf})
+                self._checkpoints.clear()
             return 0
         except StageFailure as exc:
             write_json(out_dir / "diagnostic_report.json", exc.diagnostic())

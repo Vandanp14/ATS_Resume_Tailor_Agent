@@ -42,6 +42,11 @@ def is_quota_error(exc: Exception) -> bool:
     return code == 429 or "resource_exhausted" in str(exc).lower()
 
 
+def _resume_kwargs(args: argparse.Namespace) -> dict[str, bool]:
+    # Only pass the flag when set, so pipeline stand-ins without it still work.
+    return {"resume": True} if getattr(args, "resume", False) else {}
+
+
 def pipeline_from_args(
     args: argparse.Namespace, reporter: ProgressReporter | None = None
 ) -> TailorPipeline:
@@ -68,6 +73,7 @@ def run_single(
             args.out_dir,
             no_pdf=args.no_pdf,
             job=job,
+            **_resume_kwargs(args),
         )
     except (StageFailure, RenderError, OSError, ValueError) as exc:
         reporter.emit(
@@ -146,6 +152,7 @@ def run_batch(
                 out_dir,
                 no_pdf=args.no_pdf,
                 job=job,
+                **_resume_kwargs(args),
             )
             if result:
                 failed.append(jd_path.stem)

@@ -459,8 +459,12 @@ function renderDetail(job) {
   renderDetailState();
   $("detail-company").textContent = job.company || "Untitled company";
   $("detail-body").dataset.state = job.state;
+  const resumable = job.state === "failed" && job.source !== "cli";
+  $("resume-job").hidden = !resumable;
+  $("resume-job").textContent = job.current_stage ? `Resume from ${job.current_stage.toLowerCase()}` : "Resume run";
+  $("resume-job").title = "Reuse every finished stage and continue where the run stopped";
   $("duplicate-job").hidden = job.source === "cli";
-  $("duplicate-job").textContent = job.state === "failed" ? "Retry tailoring" : "Tailor again";
+  $("duplicate-job").textContent = job.state === "failed" ? "Start over" : "Tailor again";
   $("detail-role").textContent = job.role || "Role not provided";
   const badge = $("detail-state");
   badge.className = `status-pill ${job.state}`;
@@ -1286,6 +1290,24 @@ async function duplicateJob() {
   finally { button.disabled = false; }
 }
 
+async function resumeJob() {
+  const jobId = state.selectedId;
+  const button = $("resume-job");
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "Resuming…";
+  $("detail-action-status").textContent = "";
+  try {
+    await fetchJson(`/api/jobs/${jobId}/resume`, { method: "POST" });
+    if (state.selectedId === jobId) $("detail-action-status").textContent = "Queued. Finished stages are reused; only what is left will run.";
+    loadJobData().catch(() => {});
+    if (state.selectedId === jobId) fetchDetail(jobId);
+  } catch (error) {
+    if (state.selectedId === jobId) $("detail-action-status").textContent = `Could not resume. ${error.message}`;
+    button.textContent = label;
+  } finally { button.disabled = false; }
+}
+
 function reviewSection(title, entries) {
   if (!Array.isArray(entries) || !entries.length) return;
   const section = el("section", "review-section");
@@ -1497,6 +1519,7 @@ function bindEvents() {
   $("job-search").addEventListener("input", () => { state.listFilter = "recent"; renderJobLists(); });
   $("job-status-filter").addEventListener("change", () => { state.listFilter = "recent"; renderJobLists(); });
   $("duplicate-job").addEventListener("click", duplicateJob);
+  $("resume-job").addEventListener("click", resumeJob);
   $("reload-review").addEventListener("click", () => loadReview(true));
   $("save-review").addEventListener("click", saveReview);
   $("job-form").addEventListener("input", saveDraft);

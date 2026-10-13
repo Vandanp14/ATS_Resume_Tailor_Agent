@@ -133,6 +133,8 @@ class QueuePayload(BaseModel):
     created_at: str = Field(default_factory=utc_now_iso)
     idempotency_key: str | None = None
     request_fingerprint: str | None = None
+    # Set by "Resume run": reuse the stages a failed run already finished.
+    resume: bool = False
 
 
 class RecoveryQueuePayload(BaseModel):

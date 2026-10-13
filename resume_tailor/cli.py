@@ -31,6 +31,14 @@ def _common_flags(parser: argparse.ArgumentParser) -> None:
             "selection and tone (Gemini only; no effect on an already-detailed JD)"
         ),
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "reuse the stages a failed run already finished in the same output "
+            "directory instead of starting over"
+        ),
+    )
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument(
         "--verbose",

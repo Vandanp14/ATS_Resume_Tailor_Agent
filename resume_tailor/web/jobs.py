@@ -64,7 +64,7 @@ from .scheduler import GeminiScheduler, ScheduledProvider
 
 LOGGER = logging.getLogger("resume_tailor.web")
 MAX_SAFE_MESSAGE = 500
-_QUOTA_MESSAGE = "Gemini quota exhausted (429); the queue is paused. Resume it when the quota is available again."
+_QUOTA_MESSAGE = "Gemini quota exhausted (429); the queue is paused. Resume the queue when quota is back, then resume this run to pick up where it stopped."
 
 
 @dataclass
@@ -672,6 +672,39 @@ class QueueRegistry:
             job, idempotency_key, fingerprint, build, "Bullet review choices queued."
         )
 
+    def enqueue_resume(self, job: Job) -> Job:
+        """Queue a failed web run again, reusing the stages it already finished."""
+        path = self.requests_dir / f"{job.persisted.job_id}.json"
+        with self._cond:
+            if job.persisted.state != JobState.FAILED:
+                raise RecoveryRequestError(409, "Only a failed run can be resumed.")
+            if job.persisted.source != JobSource.WEB or not path.is_file():
+                raise RecoveryRequestError(
+                    404,
+                    "This run has no saved job description to resume from.",
+                )
+            if self._stopping:
+                raise RecoveryRequestError(503, "Server is restarting. Retry shortly.")
+            payload = QueuePayload.model_validate_json(path.read_text(encoding="utf-8"))
+            job.payload = payload.model_copy(update={"resume": True})
+            job.persisted = job.persisted.model_copy(
+                update={
+                    "state": JobState.QUEUED,
+                    "finished_at": None,
+                    "current_stage": None,
+                    "message": None,
+                }
+            )
+            self._persist_payload(job)
+            self._persist_job(job)
+            self._waiting.append(job)
+            job.reporter.write_job_boundary(
+                "job_recovery_queued", message="Resuming from the last finished stage."
+            )
+            self._cond.notify_all()
+        self._publish_queue_changed()
+        return job
+
     def _enqueue_user_action(
         self,
         job: Job,
@@ -890,6 +923,8 @@ class QueueRegistry:
                 job.directory,
                 no_pdf=payload.no_pdf,
                 job=context,
+                # Only pass the flag when set, so pipeline stand-ins without it work.
+                **({"resume": True} if payload.resume else {}),
             )
         except Exception as exc:
             if self._transition_to_action_required(job, started):

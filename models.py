@@ -23,6 +23,7 @@ class StrictModel(BaseModel):
 class ModelProvider(str, Enum):
     OLLAMA = "ollama"
     GEMINI = "gemini"
+    OPENROUTER = "openrouter"
 
 
 # JSON Resume -----------------------------------------------------------------

@@ -93,3 +93,11 @@ GEMINI_TIMEOUT_MS = int(os.getenv("GEMINI_TIMEOUT_MS", "120000"))
 
 # Get API keys from environment
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# OpenRouter (OpenAI-compatible). Any model id prefixed "openrouter/" routes
+# here, e.g. DEFAULT_MODEL=openrouter/deepseek/deepseek-v4.1-flash, and can be
+# mixed with Gemini models in PLANNING_MODELS / FALLBACK_MODELS.
+OPENROUTER_MODEL_PREFIX = "openrouter/"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_TIMEOUT_MS = int(os.getenv("OPENROUTER_TIMEOUT_MS", "120000"))

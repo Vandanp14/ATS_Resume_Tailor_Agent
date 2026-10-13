@@ -96,23 +96,30 @@ class ModelUnavailableError(StageFailure):
 
 
 class RatePacer:
+    """Minimum spacing between calls, tracked per model.
+
+    Gemini rate limits are per model, so a fallback hop to another model does
+    not wait out the previous model's interval.
+    """
+
     def __init__(
         self, min_interval: float, tracker: ProgressTracker | None = None
     ) -> None:
         self.min_interval = max(float(min_interval), 0.0)
-        self._next_allowed: float | None = None
+        self._next_allowed: dict[str | None, float] = {}
         self._tracker = tracker
 
-    def wait(self) -> None:
+    def wait(self, model: str | None = None) -> None:
         if self.min_interval <= 0:
             return
         now = time.monotonic()
-        if self._next_allowed is not None and now < self._next_allowed:
-            delay = self._next_allowed - now
+        next_allowed = self._next_allowed.get(model)
+        if next_allowed is not None and now < next_allowed:
+            delay = next_allowed - now
             if self._tracker:
                 self._tracker.detail(f"Rate-limit pacing: waiting {delay:.1f}s")
             time.sleep(delay)
-        self._next_allowed = time.monotonic() + self.min_interval
+        self._next_allowed[model] = time.monotonic() + self.min_interval
 
 
 class PacedProvider:
@@ -121,7 +128,7 @@ class PacedProvider:
         self._pacer = pacer
 
     def chat(self, *args: Any, **kwargs: Any) -> Any:
-        self._pacer.wait()
+        self._pacer.wait(kwargs.get("model", args[0] if args else None))
         return self._provider.chat(*args, **kwargs)
 
 

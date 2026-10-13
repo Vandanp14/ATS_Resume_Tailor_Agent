@@ -12,7 +12,15 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ValidationError
 
 from models import ModelProvider
-from prompt import GEMINI_API_KEY, GEMINI_TIMEOUT_MS, MODEL_PROVIDER_MAPPING
+from prompt import (
+    GEMINI_API_KEY,
+    GEMINI_TIMEOUT_MS,
+    MODEL_PROVIDER_MAPPING,
+    OPENROUTER_API_KEY,
+    OPENROUTER_BASE_URL,
+    OPENROUTER_MODEL_PREFIX,
+    OPENROUTER_TIMEOUT_MS,
+)
 
 
 class ChatProvider(Protocol):
@@ -221,7 +229,179 @@ class GeminiProvider:
         raise AssertionError("unreachable")
 
 
-_UNAVAILABLE_CODES = {400, 404, 429, 500, 502, 503, 504}
+class OpenRouterError(RuntimeError):
+    """HTTP-level failure carrying the status code the fallback logic reads."""
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+
+
+class OpenRouterProvider:
+    """OpenAI-compatible ``/chat/completions`` client for OpenRouter models.
+
+    Structured calls send the JSON schema as ``response_format`` and ask
+    OpenRouter to route only to upstreams that honor it; when none can, the
+    404 it returns falls back to the next model like any outage.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://openrouter.ai/api/v1",
+        timeout_ms: int = 120_000,
+        progress_callback: Callable[[str], None] | None = None,
+        client: Any = None,
+    ) -> None:
+        import httpx
+
+        self._httpx = httpx
+        self._timeout_ms = timeout_ms
+        self._progress_callback = progress_callback
+        self.client = client or httpx.Client(
+            base_url=base_url.rstrip("/"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "X-Title": "ATS Resume Tailor",
+            },
+        )
+
+    @staticmethod
+    def _retryable(exc: Exception) -> bool:
+        return getattr(exc, "code", None) in {429, 500, 502, 503, 504}
+
+    def _post(self, body: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
+        httpx = self._httpx
+        try:
+            response = self.client.post(
+                "/chat/completions", json=body, timeout=timeout_ms / 1000
+            )
+        except httpx.TimeoutException as exc:
+            raise OpenRouterError(504, f"request timed out: {exc}") from exc
+        except httpx.TransportError as exc:
+            raise OpenRouterError(503, f"connection failed: {exc}") from exc
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+        error = data.get("error") if isinstance(data, dict) else None
+        if response.status_code >= 400 or error:
+            code = response.status_code if response.status_code >= 400 else 502
+            if isinstance(error, dict):
+                raw_code = error.get("code")
+                if response.status_code < 400 and isinstance(raw_code, int):
+                    code = raw_code
+                message = str(error.get("message") or response.text)
+            else:
+                message = response.text
+            raise OpenRouterError(code, " ".join(message.split())[:300])
+        return data
+
+    def chat(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        if kwargs.get("grounding"):
+            raise RuntimeError(
+                "OpenRouterProvider does not support Gemini web-search grounding."
+            )
+        options = options or {}
+        body: dict[str, Any] = {
+            "model": model.removeprefix(OPENROUTER_MODEL_PREFIX),
+            "messages": messages,
+            "max_tokens": options.get("max_output_tokens", 8192),
+        }
+        for key in ("temperature", "top_p"):
+            if options.get(key) is not None:
+                body[key] = options[key]
+        schema = kwargs.get("format")
+        if schema is not None:
+            if isinstance(schema, type) and issubclass(schema, BaseModel):
+                schema = schema.model_json_schema()
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "response", "strict": False, "schema": schema},
+            }
+            body["provider"] = {"require_parameters": True}
+        attempts = max(1, int(options.get("transport_attempts", 3)))
+        timeout_ms = int(options.get("timeout_ms") or self._timeout_ms)
+        for attempt in range(attempts):
+            try:
+                data = self._post(body, timeout_ms)
+                choices = data.get("choices") or []
+                content = (choices[0].get("message") or {}).get("content") if choices else None
+                if not content:
+                    raise OpenRouterError(502, "OpenRouter returned no text content")
+                usage = data.get("usage") or {}
+                return {
+                    "message": {"role": "assistant", "content": content},
+                    "usage": {"input_tokens": usage.get("prompt_tokens")},
+                }
+            except OpenRouterError as exc:
+                if attempt == attempts - 1 or not self._retryable(exc):
+                    raise
+                delay = random.uniform(0, min(20.0, 0.5 * (2**attempt)))
+                if self._progress_callback:
+                    self._progress_callback(
+                        f"OpenRouter transport retry {attempt + 2}/{attempts} after "
+                        f"{delay:.1f}s: {exc}"
+                    )
+                time.sleep(delay)
+        raise AssertionError("unreachable")
+
+
+def provider_kind(model_name: str) -> ModelProvider:
+    if model_name.startswith(OPENROUTER_MODEL_PREFIX):
+        return ModelProvider.OPENROUTER
+    provider = MODEL_PROVIDER_MAPPING.get(model_name)
+    if provider is None:
+        if model_name.startswith("gemini-"):
+            raise ValueError(
+                f"Unrecognized Gemini model '{model_name}'; refusing fallback."
+            )
+        provider = ModelProvider.OLLAMA
+    return provider
+
+
+class ModelRouter:
+    """One ChatProvider that sends each call to the client its model belongs to.
+
+    Lets a fallback chain mix providers (e.g. OpenRouter first, Gemini as
+    backup). Gemini-only callbacks (the web quota scheduler) reach only the
+    Gemini client, so other providers are not counted against Gemini limits.
+    """
+
+    def __init__(self, primary_model: str, **callbacks: Any) -> None:
+        self._callbacks = callbacks
+        self._providers: dict[ModelProvider, ChatProvider] = {}
+        self._for(primary_model)  # surface configuration errors up front
+
+    def _for(self, model: str) -> ChatProvider:
+        kind = provider_kind(model)
+        if kind not in self._providers:
+            self._providers[kind] = initialize_llm_provider(model, **self._callbacks)
+        return self._providers[kind]
+
+    def chat(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        options: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        provider = self._for(model)
+        if isinstance(provider, OllamaProvider) and kwargs.get("format") is not None:
+            schema = kwargs["format"]
+            if isinstance(schema, type):
+                kwargs["format"] = schema.model_json_schema()
+        return provider.chat(model=model, messages=messages, options=options, **kwargs)
+
+
+_UNAVAILABLE_CODES = {400, 402, 404, 429, 500, 502, 503, 504}
 _UNAVAILABLE_TOKENS = (
     "resource_exhausted",
     "unavailable",
@@ -233,7 +413,8 @@ _UNAVAILABLE_TOKENS = (
     "not_found",
     "no longer available",
 )
-_PERSISTENT_CODES = {404, 429}
+# 402: OpenRouter credits exhausted.
+_PERSISTENT_CODES = {402, 404, 429}
 
 
 def is_model_unavailable(exc: BaseException) -> bool:
@@ -279,13 +460,18 @@ def initialize_llm_provider(
     attempt_callback: Callable[[], str | None] | None = None,
     usage_callback: Callable[[str | None, int | None], None] | None = None,
 ) -> ChatProvider:
-    provider = MODEL_PROVIDER_MAPPING.get(model_name)
-    if provider is None:
-        if model_name.startswith("gemini-"):
-            raise ValueError(
-                f"Unrecognized Gemini model '{model_name}'; refusing fallback."
+    provider = provider_kind(model_name)
+    if provider == ModelProvider.OPENROUTER:
+        if not OPENROUTER_API_KEY:
+            raise RuntimeError(
+                f"{model_name} needs OPENROUTER_API_KEY, which is not configured."
             )
-        provider = ModelProvider.OLLAMA
+        return OpenRouterProvider(
+            OPENROUTER_API_KEY,
+            base_url=OPENROUTER_BASE_URL,
+            timeout_ms=OPENROUTER_TIMEOUT_MS,
+            progress_callback=progress_callback,
+        )
     if provider == ModelProvider.GEMINI:
         if not GEMINI_API_KEY:
             raise RuntimeError("Gemini selected but GEMINI_API_KEY is not configured.")
