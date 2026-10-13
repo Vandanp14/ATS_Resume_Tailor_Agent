@@ -42,3 +42,6 @@ graphify-out/
 
 # Terms kept out of every model call (confidential employers, clients, salary)
 private_terms.txt
+
+# Browser automation logs
+.playwright-mcp/

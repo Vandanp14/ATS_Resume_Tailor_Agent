@@ -1,0 +1,14 @@
+Start the ATS Resume Tailor app locally
+
+Open Terminal and run:
+
+cd /Users/vandanpatel/Desktop/ATS_Resume_Tailor_Agent
+.venv/bin/python webapp.py
+
+Open this address in your browser:
+http://127.0.0.1:8000
+
+Keep the Terminal window open while using the app. Press Ctrl+C in that window
+to stop the app. Next time, run the same two commands again.
+
+The frontend is served by the Python app; no separate frontend command is needed.
