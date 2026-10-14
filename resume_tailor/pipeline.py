@@ -65,6 +65,7 @@ from .assembly import (
 from .config import (
     DEFAULT_MODEL,
     FALLBACK_MODELS,
+    FREELLM_MODEL_PREFIX,
     MODEL_PARAMETERS,
     OPENROUTER_MODEL_PREFIX,
     PLANNING_MODELS,
@@ -394,14 +395,14 @@ class TailorPipeline:
         )
         self.templates = TemplateManager(str(_TEMPLATE_DIR))
         self.options = MODEL_PARAMETERS.get(model, {"temperature": 0.1, "top_p": 0.9})
-        # Model chains apply only to Gemini through the real client (built here,
+        # Model chains apply only to Gemini/OpenAI-compatible models through the real client (built here,
         # or wrapped by a provider that declares ``supports_model_chain``, like
         # the web scheduler). Other injected providers stay on ``model`` alone.
         real_client = provider is None or (
             getattr(type(provider), "supports_model_chain", False) is True
         )
         chains_enabled = real_client and model.startswith(
-            ("gemini", OPENROUTER_MODEL_PREFIX)
+            ("gemini", OPENROUTER_MODEL_PREFIX, FREELLM_MODEL_PREFIX)
         )
         if planning_models is None:
             planning_models = PLANNING_MODELS if chains_enabled else ()

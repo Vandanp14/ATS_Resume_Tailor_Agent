@@ -24,6 +24,7 @@ class ModelProvider(str, Enum):
     OLLAMA = "ollama"
     GEMINI = "gemini"
     OPENROUTER = "openrouter"
+    FREELLM = "freellm"
 
 
 # JSON Resume -----------------------------------------------------------------

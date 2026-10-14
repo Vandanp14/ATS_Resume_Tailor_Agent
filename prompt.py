@@ -101,3 +101,14 @@ OPENROUTER_MODEL_PREFIX = "openrouter/"
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OPENROUTER_TIMEOUT_MS = int(os.getenv("OPENROUTER_TIMEOUT_MS", "120000"))
+
+# FreeLLMAPI (local OpenAI-compatible proxy over many free upstreams, e.g. the
+# tashfeenahmed/freellmapi Docker image). Model ids prefixed "freellm/" route
+# here; the web UI picks it per run (FreeLLMAPI only, or mixed with Gemini).
+FREELLM_MODEL_PREFIX = "freellm/"
+FREELLMAPI_API_KEY = os.getenv("FREELLMAPI_API_KEY", "")
+FREELLMAPI_BASE_URL = os.getenv("FREELLMAPI_BASE_URL", "http://localhost:3001/v1")
+# "auto" can land on an upstream that hangs without erroring; the timeout is
+# what moves a mixed chain on to Gemini.
+FREELLMAPI_TIMEOUT_MS = int(os.getenv("FREELLMAPI_TIMEOUT_MS", "120000"))
+FREELLMAPI_MODEL = os.getenv("FREELLMAPI_MODEL", "auto")

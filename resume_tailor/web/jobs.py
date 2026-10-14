@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..batch import is_quota_error
+from ..config import resolve_chains
 from ..pipeline import TailorPipeline
 from ..progress import JobContext
 from ..runtime import load_master
@@ -394,6 +395,8 @@ class QueueRegistry:
                             bridge_skills=payload.bridge_skills,
                             research_company=payload.research_company,
                             no_pdf=payload.no_pdf,
+                            provider_mode=payload.provider_mode,
+                            freellm_model=payload.freellm_model,
                         ),
                         created_at=payload.created_at,
                         idempotency_key=payload.idempotency_key,
@@ -546,6 +549,8 @@ class QueueRegistry:
             bridge_skills=request.bridge_skills,
             research_company=request.research_company,
             no_pdf=request.no_pdf,
+            provider_mode=request.provider_mode,
+            freellm_model=request.freellm_model,
         )
         payload = QueuePayload(
             company=request.company,
@@ -554,6 +559,8 @@ class QueueRegistry:
             bridge_skills=request.bridge_skills,
             research_company=request.research_company,
             no_pdf=request.no_pdf,
+            provider_mode=request.provider_mode,
+            freellm_model=request.freellm_model,
             idempotency_key=idempotency_key,
             request_fingerprint=job_fingerprint(request, options),
         )
@@ -897,6 +904,19 @@ class QueueRegistry:
             except (FileNotFoundError, OSError):
                 pass
 
+    def _model_kwargs(self, options: JobOptions) -> dict[str, object]:
+        """Model chain for a job's provider mode; Gemini keeps the app's model."""
+        if options.provider_mode == "gemini":
+            return {"model": self.model}
+        model, planning, fallback = resolve_chains(
+            options.provider_mode, options.freellm_model
+        )
+        return {
+            "model": model,
+            "planning_models": planning,
+            "fallback_models": fallback,
+        }
+
     def _run_job(self, job: Job) -> None:
         context = JobContext(name=job.persisted.job_id, output_dir=job.directory)
         started = time.monotonic()
@@ -909,7 +929,7 @@ class QueueRegistry:
         try:
             master = load_master(self.master_path)
             pipeline = self.pipeline_factory(
-                model=self.model,
+                **self._model_kwargs(job.persisted.options),
                 call_interval=self.call_interval,
                 provider=self.provider,
                 reporter=job.reporter,
@@ -961,7 +981,7 @@ class QueueRegistry:
         regenerate = None
         if "regenerate" in payload.decisions.values():
             pipeline = self.pipeline_factory(
-                model=self.model,
+                **self._model_kwargs(job.persisted.options),
                 call_interval=self.call_interval,
                 provider=self.provider,
                 reporter=job.reporter,

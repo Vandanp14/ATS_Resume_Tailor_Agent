@@ -28,6 +28,7 @@ const TAB_NAMES = ["progress", "preview", "review", "files"];
 const $ = (id) => document.getElementById(id);
 const state = {
   meta: null,
+  providers: null,
   queue: null,
   tracker: null,
   jobs: new Map(),
@@ -474,6 +475,7 @@ function renderDetail(job) {
   $("detail-stage-text").textContent = stage;
   $("detail-body").dataset.live = String(job.state === "running");
   $("detail-elapsed").textContent = job.started_at ? formatElapsed(job.started_at, job.finished_at) : "—";
+  $("detail-provider").textContent = providerSummary(job.options);
   $("detail-position").textContent = job.queue_position ? `#${job.queue_position}` : job.active ? "Active" : "—";
   $("detail-output").textContent = job.artifacts && job.artifacts.length ? `${job.artifacts.length} ${job.artifacts.length === 1 ? "file" : "files"}` : ["failed", "cancelled"].includes(job.state) ? "None" : "Pending";
   $("detail-message").hidden = !job.message || job.state === "action_required";
@@ -1184,6 +1186,7 @@ function validateField(name) {
 function openJobDialog() {
   const dialog = $("new-job-dialog");
   if (!dialog.open) dialog.showModal();
+  fetchProviders();
   requestAnimationFrame(() => formFields.jd.focus());
 }
 
@@ -1224,6 +1227,7 @@ async function submitJob(event) {
     if (state.meta && state.meta.pdf_available === false) lockSkipPdf();
     touchedFields.clear();
     for (const name of Object.keys(formFields)) validateField(name);
+    rememberProvider();
     status.textContent = "Added to the queue.";
     closeJobDialog();
     await loadJobData();
@@ -1237,6 +1241,112 @@ async function submitJob(event) {
   }
 }
 
+/* Model provider */
+
+const PROVIDER_MODES = ["gemini", "freellm", "freellm_gemini", "gemini_freellm"];
+const PROVIDER_LABELS = { gemini: "Gemini", freellm: "FreeLLMAPI", freellm_gemini: "FreeLLMAPI → Gemini", gemini_freellm: "Gemini → FreeLLMAPI" };
+const PROVIDER_STORE = "provider-choice";
+
+function selectedMode() {
+  const checked = document.querySelector('input[name="provider_mode"]:checked');
+  return checked ? checked.value : "gemini";
+}
+
+function providerChoice() {
+  const mode = selectedMode();
+  if (mode === "gemini") return { provider_mode: "gemini" };
+  return { provider_mode: mode, freellm_model: $("freellm-model").value || "auto" };
+}
+
+function ensureModelOption(model) {
+  const select = $("freellm-model");
+  if (model && ![...select.options].some((option) => option.value === model)) select.appendChild(new Option(model, model));
+}
+
+function setProviderChoice(mode, model) {
+  const radio = document.querySelector(`input[name="provider_mode"][value="${PROVIDER_MODES.includes(mode) ? mode : "gemini"}"]`);
+  if (radio && !radio.disabled) radio.checked = true;
+  if (typeof model === "string" && model) { ensureModelOption(model); $("freellm-model").value = model; }
+  syncProviderUi();
+}
+
+function rememberProvider() {
+  try { localStorage.setItem(PROVIDER_STORE, JSON.stringify(providerChoice())); }
+  catch { /* Choice still applies to this form. */ }
+}
+
+function restoreProvider() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PROVIDER_STORE) || "null");
+    if (saved && PROVIDER_MODES.includes(saved.provider_mode)) setProviderChoice(saved.provider_mode, saved.freellm_model);
+  } catch { /* Ignore a damaged saved choice. */ }
+}
+
+function syncProviderUi() {
+  const mode = selectedMode();
+  const usesFree = mode !== "gemini";
+  const providers = state.providers;
+  $("freellm-model-row").hidden = !usesFree;
+  const research = $("research-company");
+  research.disabled = mode === "freellm";
+  if (research.disabled) research.checked = false;
+  const help = $("provider-help");
+  help.dataset.tone = "";
+  if (!providers) {
+    help.textContent = usesFree ? "Checking FreeLLMAPI…" : "Gemini uses the models configured in .env.";
+    return;
+  }
+  const free = providers.freellm;
+  if (!free.reachable) {
+    help.dataset.tone = "warning";
+    help.textContent = free.configured
+      ? "FreeLLMAPI is offline — start the Docker container to use it. Gemini only for now."
+      : "Add FREELLMAPI_API_KEY to .env to enable FreeLLMAPI. Gemini only for now.";
+    return;
+  }
+  const geminiChain = [providers.gemini.default_model, ...providers.gemini.fallback_models].join(", ");
+  const model = $("freellm-model").value || "auto";
+  help.textContent = {
+    gemini: `Gemini chain: ${geminiChain}.`,
+    freellm: `Every stage runs on FreeLLMAPI ${model}. Company research needs Gemini.`,
+    freellm_gemini: `FreeLLMAPI ${model} first; Gemini takes over if the proxy is down or busy.`,
+    gemini_freellm: `Gemini first; FreeLLMAPI ${model} is the last fallback.`,
+  }[mode];
+}
+
+function renderProviders() {
+  const providers = state.providers;
+  const free = providers?.freellm;
+  const offline = providers && !free.reachable;
+  for (const radio of document.querySelectorAll('input[name="provider_mode"]')) {
+    radio.disabled = Boolean(offline) && radio.value !== "gemini";
+    if (radio.disabled && radio.checked) document.querySelector('input[name="provider_mode"][value="gemini"]').checked = true;
+  }
+  if (free?.reachable) {
+    const select = $("freellm-model");
+    const current = select.value || free.default_model || "auto";
+    clear(select);
+    const ids = free.models.map((model) => model.id);
+    const ordered = ["auto", ...ids.filter((id) => id !== "auto").sort((a, b) => a.localeCompare(b))];
+    for (const id of new Set(ordered)) select.appendChild(new Option(id, id));
+    ensureModelOption(current);
+    select.value = current;
+  }
+  syncProviderUi();
+}
+
+async function fetchProviders() {
+  try { state.providers = await fetchJson("/api/providers"); }
+  catch { state.providers = null; }
+  renderProviders();
+}
+
+function providerSummary(options) {
+  if (!options || !options.provider_mode || options.provider_mode === "gemini") return "Gemini";
+  const label = PROVIDER_LABELS[options.provider_mode] || options.provider_mode;
+  return options.freellm_model ? label.replace("FreeLLMAPI", `FreeLLMAPI (${options.freellm_model})`) : label;
+}
+
 /* Live updates */
 
 function currentDraft() {
@@ -1244,6 +1354,7 @@ function currentDraft() {
     company: formFields.company.value.trim(), role: formFields.role.value.trim(),
     jd_text: formFields.jd.value.trim(), bridge_skills: $("bridge-skills").checked,
     research_company: $("research-company").checked, no_pdf: $("no-pdf").checked,
+    ...providerChoice(),
   };
 }
 
@@ -1252,6 +1363,7 @@ function fillDraft(draft) {
   formFields.role.value = typeof draft.role === "string" ? draft.role : "";
   formFields.jd.value = typeof draft.jd_text === "string" ? draft.jd_text : "";
   for (const [id, key] of [["bridge-skills", "bridge_skills"], ["research-company", "research_company"], ["no-pdf", "no_pdf"]]) $(id).checked = draft[key] === true;
+  if (PROVIDER_MODES.includes(draft.provider_mode)) setProviderChoice(draft.provider_mode, draft.freellm_model);
   if (state.meta?.pdf_available === false) lockSkipPdf();
 }
 
@@ -1510,6 +1622,7 @@ function bindEvents() {
     if (state.submitting) return;
     if (!window.confirm("Clear this saved draft?")) return;
     $("job-form").reset(); state.submission = null; touchedFields.clear();
+    restoreProvider(); renderProviders();
     for (const name of Object.keys(formFields)) { const error = $(name === "jd" ? "jd-error" : `${name}-error`); error.textContent = ""; formFields[name].removeAttribute("aria-invalid"); }
     $("enqueue-status").textContent = "Draft cleared.";
     $("suggest-status").textContent = "";
@@ -1534,6 +1647,8 @@ function bindEvents() {
   $("close-job-dialog").addEventListener("click", closeJobDialog);
   $("cancel-job-dialog").addEventListener("click", closeJobDialog);
   $("job-form").addEventListener("submit", submitJob);
+  for (const radio of document.querySelectorAll('input[name="provider_mode"]')) radio.addEventListener("change", syncProviderUi);
+  $("freellm-model").addEventListener("change", syncProviderUi);
   $("review-removals-btn").addEventListener("click", openRecoveryDialog);
   $("open-bullet-review-btn").addEventListener("click", openBulletReview);
   $("retry-bullet-review").addEventListener("click", openBulletReview);
@@ -1586,11 +1701,13 @@ function startTicker() {
 }
 
 function boot() {
+  restoreProvider();
   restoreDraft();
   bindEvents();
   renderDetailState();
   renderJobLists();
   loadAll();
+  fetchProviders();
   openStream();
   startTicker();
 }

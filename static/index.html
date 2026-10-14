@@ -172,6 +172,7 @@
             <div><dt>Elapsed</dt><dd class="tabnum" id="detail-elapsed">—</dd></div>
             <div><dt>Queue</dt><dd class="tabnum" id="detail-position">—</dd></div>
             <div><dt>Output</dt><dd id="detail-output">Pending</dd></div>
+            <div><dt>Provider</dt><dd id="detail-provider">—</dd></div>
           </dl>
         </section>
 
@@ -304,6 +305,20 @@
             <input id="role" name="role" type="text" maxlength="80" autocomplete="organization-title" aria-describedby="role-error" required>
             <p class="error-slot" id="role-error" role="alert"></p>
           </div>
+          <fieldset class="provider-field" id="provider-field" aria-describedby="provider-help">
+            <legend>Model provider</legend>
+            <div class="provider-segment" role="radiogroup" aria-label="Model provider">
+              <label><input type="radio" name="provider_mode" value="gemini" checked><span>Gemini</span></label>
+              <label><input type="radio" name="provider_mode" value="freellm"><span>FreeLLMAPI</span></label>
+              <label><input type="radio" name="provider_mode" value="freellm_gemini"><span>Free → Gemini</span></label>
+              <label><input type="radio" name="provider_mode" value="gemini_freellm"><span>Gemini → Free</span></label>
+            </div>
+            <div class="provider-model" id="freellm-model-row" hidden>
+              <label for="freellm-model">FreeLLMAPI model</label>
+              <select id="freellm-model" name="freellm_model"><option value="auto">auto</option></select>
+            </div>
+            <p class="help" id="provider-help" role="status">Gemini uses the models configured in .env.</p>
+          </fieldset>
           <details class="advanced">
             <summary>Advanced options</summary>
             <label class="check"><input type="checkbox" id="bridge-skills"> <span><strong>Bridge skills</strong><small>Include transferable-skill planning.</small></span></label>

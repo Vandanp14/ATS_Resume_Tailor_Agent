@@ -48,6 +48,7 @@ from .models import (
     TrackerSnapshot,
     job_fingerprint,
 )
+from .providers import ProviderCatalog, ProvidersResponse
 from .reporter import EventHub
 from .scheduler import GeminiScheduler, ScheduledProvider, inactive_tracker
 from .access import AccessSettings, Sessions
@@ -145,7 +146,9 @@ def create_app(
     master: JSONResume,
     hub: EventHub,
     scheduler: GeminiScheduler | None,
+    catalog: ProviderCatalog | None = None,
 ) -> FastAPI:
+    catalog = catalog or ProviderCatalog()
     @asynccontextmanager
     async def lifespan(_app):
         yield
@@ -360,6 +363,10 @@ def create_app(
             tracker=tracker(),
         )
 
+    @app.get("/api/providers", response_model=ProvidersResponse)
+    async def providers() -> ProvidersResponse:
+        return await asyncio.to_thread(catalog.snapshot)
+
     # -- jobs ------------------------------------------------------------------
 
     @app.post("/api/jobs", status_code=202)
@@ -382,6 +389,8 @@ def create_app(
                 bridge_skills=body.bridge_skills,
                 research_company=body.research_company,
                 no_pdf=body.no_pdf,
+                provider_mode=body.provider_mode,
+                freellm_model=body.freellm_model,
             ),
         )
         existing = registry.find_idempotent(key)

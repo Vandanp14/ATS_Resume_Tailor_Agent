@@ -65,7 +65,7 @@ class ModelUnavailableError(StageFailure):
     """Every model in a stage's chain failed at the API; the run is cancelled.
 
     ``failures`` holds (model, API error text) in the order tried, so the user
-    sees exactly what Gemini returned instead of a generic failure.
+    sees exactly what each provider returned instead of a generic failure.
     """
 
     def __init__(self, stage: str, failures: Sequence[tuple[str, str]]) -> None:
@@ -76,7 +76,7 @@ class ModelUnavailableError(StageFailure):
             len(self.failures),
             [],
             None,
-            "Gemini API unavailable for every configured model; tailoring "
+            "Model API unavailable for every configured model; tailoring "
             f"stopped. {summary}",
         )
 

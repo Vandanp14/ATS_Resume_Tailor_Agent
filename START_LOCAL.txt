@@ -12,3 +12,9 @@ Keep the Terminal window open while using the app. Press Ctrl+C in that window
 to stop the app. Next time, run the same two commands again.
 
 The frontend is served by the Python app; no separate frontend command is needed.
+
+Model provider: the New tailoring form has a "Model provider" switch. Gemini is
+the default. To use FreeLLMAPI, start its Docker container first
+(docker start freellmapi-freellmapi-1) and make sure FREELLMAPI_API_KEY is set
+(in .env or your shell). "Free → Gemini" uses FreeLLMAPI and falls back to
+Gemini if the proxy is down or busy.

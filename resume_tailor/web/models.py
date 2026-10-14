@@ -54,6 +54,12 @@ class JobState(StrEnum):
     FAILED = "failed"
 
 
+# Values of resume_tailor.config.ProviderMode; a Literal so strict request
+# validation accepts the JSON string.
+ProviderModeName = Literal["gemini", "freellm", "freellm_gemini", "gemini_freellm"]
+FREELLM_MODEL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}$"
+
+
 class JobSource(StrEnum):
     WEB = "web"
     CLI = "cli"
@@ -70,6 +76,16 @@ class CreateJobRequest(BaseModel):
     bridge_skills: bool = False
     research_company: bool = False
     no_pdf: bool = False
+    provider_mode: ProviderModeName = "gemini"
+    freellm_model: str | None = Field(default=None, pattern=FREELLM_MODEL_PATTERN)
+
+    @model_validator(mode="after")
+    def _research_needs_gemini(self) -> "CreateJobRequest":
+        if self.research_company and self.provider_mode == "freellm":
+            raise ValueError(
+                "Company research uses Gemini web search; pick a mode that includes Gemini."
+            )
+        return self
 
     @field_validator("company", "role")
     @classmethod
@@ -94,6 +110,8 @@ class JobOptions(BaseModel):
     bridge_skills: bool = False
     research_company: bool = False
     no_pdf: bool = False
+    provider_mode: ProviderModeName = "gemini"
+    freellm_model: str | None = None
 
 
 class PersistedJob(BaseModel):
@@ -130,6 +148,8 @@ class QueuePayload(BaseModel):
     bridge_skills: bool = False
     research_company: bool = False
     no_pdf: bool = False
+    provider_mode: ProviderModeName = "gemini"
+    freellm_model: str | None = None
     created_at: str = Field(default_factory=utc_now_iso)
     idempotency_key: str | None = None
     request_fingerprint: str | None = None
@@ -443,6 +463,9 @@ def job_fingerprint(request: CreateJobRequest, options: JobOptions) -> str:
         options.research_company,
         options.no_pdf,
     )
+    if options.provider_mode != "gemini":
+        # Appended only when set, so Gemini-run fingerprints stay as before.
+        seed += (options.provider_mode, options.freellm_model)
     return uuid.uuid5(uuid.NAMESPACE_URL, repr(seed)).hex
 
 

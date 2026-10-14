@@ -8,13 +8,28 @@ import sys
 from pathlib import Path
 
 from .batch import run_batch, run_single
-from .config import DEFAULT_MODEL
+from .config import DEFAULT_MODEL, ProviderMode
 from .progress import build_progress_reporter
 from .runtime import DEFAULT_CALL_INTERVAL
 
 
 def _common_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--provider",
+        choices=[mode.value.replace("_", "-") for mode in ProviderMode],
+        default=None,
+        help=(
+            "provider chain: gemini (the .env chain), freellm (local FreeLLMAPI "
+            "proxy only), freellm-gemini (proxy first, Gemini fallback), or "
+            "gemini-freellm (Gemini first, proxy fallback); overrides --model"
+        ),
+    )
+    parser.add_argument(
+        "--freellm-model",
+        default=None,
+        help="FreeLLMAPI model id for --provider freellm* (default FREELLMAPI_MODEL or auto)",
+    )
     parser.add_argument("--call-interval", type=float, default=DEFAULT_CALL_INTERVAL)
     parser.add_argument("--no-pdf", action="store_true")
     parser.add_argument(

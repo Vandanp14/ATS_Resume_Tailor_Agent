@@ -8,6 +8,7 @@ from pathlib import Path
 
 from render import RenderError
 
+from .config import resolve_chains
 from .pipeline import TailorPipeline
 from .progress import (
     JobContext,
@@ -50,8 +51,19 @@ def _resume_kwargs(args: argparse.Namespace) -> dict[str, bool]:
 def pipeline_from_args(
     args: argparse.Namespace, reporter: ProgressReporter | None = None
 ) -> TailorPipeline:
+    chains: dict[str, object] = {"model": args.model}
+    provider = getattr(args, "provider", None)
+    if provider:
+        model, planning, fallback = resolve_chains(
+            provider.replace("-", "_"), getattr(args, "freellm_model", None)
+        )
+        chains = {
+            "model": model,
+            "planning_models": planning,
+            "fallback_models": fallback,
+        }
     return TailorPipeline(
-        model=args.model,
+        **chains,
         call_interval=args.call_interval,
         reporter=reporter,
         bridge_skills=getattr(args, "bridge_skills", False),

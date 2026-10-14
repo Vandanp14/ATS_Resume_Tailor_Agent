@@ -1,4 +1,4 @@
-"""Bounded structured-output calls for Ollama and the supported Google SDK."""
+"""Bounded structured-output calls for Ollama, Gemini, and OpenAI-compatible APIs."""
 
 from __future__ import annotations
 
@@ -13,6 +13,10 @@ from pydantic import BaseModel, ValidationError
 
 from models import ModelProvider
 from prompt import (
+    FREELLM_MODEL_PREFIX,
+    FREELLMAPI_API_KEY,
+    FREELLMAPI_BASE_URL,
+    FREELLMAPI_TIMEOUT_MS,
     GEMINI_API_KEY,
     GEMINI_TIMEOUT_MS,
     MODEL_PROVIDER_MAPPING,
@@ -229,27 +233,47 @@ class GeminiProvider:
         raise AssertionError("unreachable")
 
 
-class OpenRouterError(RuntimeError):
-    """HTTP-level failure carrying the status code the fallback logic reads."""
+class ChatAPIError(RuntimeError):
+    """HTTP-level failure carrying the status code the fallback logic reads.
 
-    def __init__(self, code: int, message: str) -> None:
+    ``provider_scoped`` marks errors confined to one provider (e.g. a bad
+    FreeLLMAPI key): they skip that provider's models instead of stopping a
+    run whose chain also holds models from another provider.
+    """
+
+    def __init__(self, code: int, message: str, provider_scoped: bool = False) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+        self.provider_scoped = provider_scoped
 
 
-class OpenRouterProvider:
-    """OpenAI-compatible ``/chat/completions`` client for OpenRouter models.
+OpenRouterError = ChatAPIError
 
-    Structured calls send the JSON schema as ``response_format`` and ask
-    OpenRouter to route only to upstreams that honor it; when none can, the
-    404 it returns falls back to the next model like any outage.
+
+class OpenAICompatibleProvider:
+    """``/chat/completions`` client shared by OpenAI-compatible providers.
+
+    Structured calls send the JSON schema as ``response_format``. Subclasses
+    set the label, the model-id prefix to strip, and provider quirks.
     """
+
+    label = "OpenAI-compatible API"
+    prefix = ""
+    default_base_url = ""
+    extra_headers: dict[str, str] = {}
+    # OpenRouter: route only to upstreams that honor response_format.
+    require_parameters = False
+    # Repeat the schema in a system message for upstreams that may ignore
+    # response_format.
+    schema_in_prompt = False
+    # Auth failures (401/403) only disable this provider's models.
+    auth_errors_scoped = False
 
     def __init__(
         self,
         api_key: str,
-        base_url: str = "https://openrouter.ai/api/v1",
+        base_url: str | None = None,
         timeout_ms: int = 120_000,
         progress_callback: Callable[[str], None] | None = None,
         client: Any = None,
@@ -260,16 +284,17 @@ class OpenRouterProvider:
         self._timeout_ms = timeout_ms
         self._progress_callback = progress_callback
         self.client = client or httpx.Client(
-            base_url=base_url.rstrip("/"),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "X-Title": "ATS Resume Tailor",
-            },
+            base_url=(base_url or self.default_base_url).rstrip("/"),
+            headers={"Authorization": f"Bearer {api_key}", **self.extra_headers},
         )
 
     @staticmethod
     def _retryable(exc: Exception) -> bool:
         return getattr(exc, "code", None) in {429, 500, 502, 503, 504}
+
+    def _error(self, code: int, message: str) -> ChatAPIError:
+        scoped = self.auth_errors_scoped and code in {401, 403}
+        return ChatAPIError(code, message, provider_scoped=scoped)
 
     def _post(self, body: dict[str, Any], timeout_ms: int) -> dict[str, Any]:
         httpx = self._httpx
@@ -278,9 +303,9 @@ class OpenRouterProvider:
                 "/chat/completions", json=body, timeout=timeout_ms / 1000
             )
         except httpx.TimeoutException as exc:
-            raise OpenRouterError(504, f"request timed out: {exc}") from exc
+            raise self._error(504, f"request timed out: {exc}") from exc
         except httpx.TransportError as exc:
-            raise OpenRouterError(503, f"connection failed: {exc}") from exc
+            raise self._error(503, f"connection failed: {exc}") from exc
         try:
             data = response.json()
         except ValueError:
@@ -294,8 +319,8 @@ class OpenRouterProvider:
                     code = raw_code
                 message = str(error.get("message") or response.text)
             else:
-                message = response.text
-            raise OpenRouterError(code, " ".join(message.split())[:300])
+                message = str(error or response.text)
+            raise self._error(code, " ".join(message.split())[:300])
         return data
 
     def chat(
@@ -307,12 +332,12 @@ class OpenRouterProvider:
     ) -> dict[str, Any]:
         if kwargs.get("grounding"):
             raise RuntimeError(
-                "OpenRouterProvider does not support Gemini web-search grounding."
+                f"{type(self).__name__} does not support Gemini web-search grounding."
             )
         options = options or {}
         body: dict[str, Any] = {
-            "model": model.removeprefix(OPENROUTER_MODEL_PREFIX),
-            "messages": messages,
+            "model": model.removeprefix(self.prefix),
+            "messages": list(messages),
             "max_tokens": options.get("max_output_tokens", 8192),
         }
         for key in ("temperature", "top_p"):
@@ -326,7 +351,19 @@ class OpenRouterProvider:
                 "type": "json_schema",
                 "json_schema": {"name": "response", "strict": False, "schema": schema},
             }
-            body["provider"] = {"require_parameters": True}
+            if self.require_parameters:
+                body["provider"] = {"require_parameters": True}
+            if self.schema_in_prompt:
+                body["messages"].append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "Respond with one JSON object only, no prose or code "
+                            "fences, matching this JSON schema:\n"
+                            + json.dumps(schema, separators=(",", ":"))
+                        ),
+                    }
+                )
         attempts = max(1, int(options.get("transport_attempts", 3)))
         timeout_ms = int(options.get("timeout_ms") or self._timeout_ms)
         for attempt in range(attempts):
@@ -335,28 +372,56 @@ class OpenRouterProvider:
                 choices = data.get("choices") or []
                 content = (choices[0].get("message") or {}).get("content") if choices else None
                 if not content:
-                    raise OpenRouterError(502, "OpenRouter returned no text content")
+                    raise self._error(502, f"{self.label} returned no text content")
                 usage = data.get("usage") or {}
                 return {
                     "message": {"role": "assistant", "content": content},
                     "usage": {"input_tokens": usage.get("prompt_tokens")},
                 }
-            except OpenRouterError as exc:
+            except ChatAPIError as exc:
                 if attempt == attempts - 1 or not self._retryable(exc):
                     raise
                 delay = random.uniform(0, min(20.0, 0.5 * (2**attempt)))
                 if self._progress_callback:
                     self._progress_callback(
-                        f"OpenRouter transport retry {attempt + 2}/{attempts} after "
+                        f"{self.label} transport retry {attempt + 2}/{attempts} after "
                         f"{delay:.1f}s: {exc}"
                     )
                 time.sleep(delay)
         raise AssertionError("unreachable")
 
 
+class OpenRouterProvider(OpenAICompatibleProvider):
+    """OpenRouter: asks to route only to upstreams that honor the schema; when
+    none can, the 404 it returns falls back to the next model like any outage."""
+
+    label = "OpenRouter"
+    prefix = OPENROUTER_MODEL_PREFIX
+    default_base_url = "https://openrouter.ai/api/v1"
+    extra_headers = {"X-Title": "ATS Resume Tailor"}
+    require_parameters = True
+
+
+class FreeLLMProvider(OpenAICompatibleProvider):
+    """Local FreeLLMAPI proxy (one key, many free upstreams; ``auto`` routes).
+
+    Upstreams vary in honoring ``response_format``, so the schema is repeated
+    in the prompt. A stopped container (connection refused) and a bad proxy
+    key both fall back to the next provider in the chain.
+    """
+
+    label = "FreeLLMAPI"
+    prefix = FREELLM_MODEL_PREFIX
+    default_base_url = "http://localhost:3001/v1"
+    schema_in_prompt = True
+    auth_errors_scoped = True
+
+
 def provider_kind(model_name: str) -> ModelProvider:
     if model_name.startswith(OPENROUTER_MODEL_PREFIX):
         return ModelProvider.OPENROUTER
+    if model_name.startswith(FREELLM_MODEL_PREFIX):
+        return ModelProvider.FREELLM
     provider = MODEL_PROVIDER_MAPPING.get(model_name)
     if provider is None:
         if model_name.startswith("gemini-"):
@@ -426,6 +491,8 @@ def is_model_unavailable(exc: BaseException) -> bool:
     identically on every model and must stop the run at once.
     """
 
+    if getattr(exc, "provider_scoped", False):
+        return True
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
     if isinstance(code, int):
         return code in _UNAVAILABLE_CODES
@@ -438,6 +505,8 @@ def is_model_unavailable(exc: BaseException) -> bool:
 def is_persistent_unavailability(exc: BaseException) -> bool:
     """Retired model (404) or exhausted quota (429): it will not recover this run."""
 
+    if getattr(exc, "provider_scoped", False):
+        return True
     code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
     message = str(exc).lower()
     return code in _PERSISTENT_CODES or "resource_exhausted" in message
@@ -461,6 +530,17 @@ def initialize_llm_provider(
     usage_callback: Callable[[str | None, int | None], None] | None = None,
 ) -> ChatProvider:
     provider = provider_kind(model_name)
+    if provider == ModelProvider.FREELLM:
+        if not FREELLMAPI_API_KEY:
+            raise RuntimeError(
+                f"{model_name} needs FREELLMAPI_API_KEY, which is not configured."
+            )
+        return FreeLLMProvider(
+            FREELLMAPI_API_KEY,
+            base_url=FREELLMAPI_BASE_URL,
+            timeout_ms=FREELLMAPI_TIMEOUT_MS,
+            progress_callback=progress_callback,
+        )
     if provider == ModelProvider.OPENROUTER:
         if not OPENROUTER_API_KEY:
             raise RuntimeError(
