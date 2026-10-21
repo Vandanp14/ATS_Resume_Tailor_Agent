@@ -40,7 +40,6 @@ from keyword_coverage import (
     requirement_map,
     resume_coverage,
     sanitize_jd_profile,
-    supported_tech_requirements,
 )
 from llm_utils import (
     ModelRouter,
@@ -110,6 +109,7 @@ from .llm import (
 from .progress import JobContext, ProgressReporter, ProgressTracker, Stage
 from .bullet_review import live_flags, persist_bullet_review
 from .checkpoints import CheckpointStore, run_fingerprint
+from .skill_answers import bullet_tech_requirements
 from .privacy import PrivacyGuard, strip_prompt_context, unrestored_placeholders
 from .fit_recovery import (
     FitRecoveryRequired,
@@ -1428,7 +1428,7 @@ class TailorPipeline:
                     except ContractError as exc:
                         self.tracker.warn(f"Transferable skills group skipped: {exc}")
                 forbidden_terms = forbidden_claim_terms(requirements)
-                tech_requirements = supported_tech_requirements(requirements)
+                tech_requirements = bullet_tech_requirements(requirements, master)
                 priority = priority_proxies(requirements, facts)
                 requirement_map_json = json.dumps(
                     prompt_requirement_map(requirements), indent=2

@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 TRANSFERABLE_SKILL_GROUP = "Transferable / Adjacent Tools"
+# Skills the user confirmed in the pre-run skill check; ordinary skill facts.
+CONFIRMED_SKILL_GROUP = "Confirmed Skills"
 
 
 class StrictModel(BaseModel):
@@ -140,6 +142,12 @@ class Project(BaseModel):
     skills: list[str] | None = None
 
 
+class SkillCheckAnswers(BaseModel):
+    """Skill-check terms the user said they do not know; never asked again."""
+
+    declined: list[str] = Field(default_factory=list)
+
+
 class JSONResume(BaseModel):
     basics: Basics | None = None
     work: list[Work] | None = None
@@ -153,6 +161,7 @@ class JSONResume(BaseModel):
     interests: list[Interest] | None = None
     references: list[Reference] | None = None
     projects: list[Project] | None = None
+    skill_check: SkillCheckAnswers | None = None
 
 
 # Compact LLM contracts -------------------------------------------------------
