@@ -65,10 +65,13 @@ from .assembly import (
 from .config import (
     DEFAULT_MODEL,
     FALLBACK_MODELS,
+    FIX_MODELS,
     FREELLM_MODEL_PREFIX,
     MODEL_PARAMETERS,
     OPENROUTER_MODEL_PREFIX,
     PLANNING_MODELS,
+    WRITING_MODELS,
+    model_rpm,
 )
 from .evidence import (
     RESEARCH_THIN_JD_SIGNAL_THRESHOLD,
@@ -163,6 +166,12 @@ PLANNING_TEMPLATES = frozenset(
         "holistic_review",
     }
 )
+# Stages whose text lands on the page run on the writing chain.
+WRITING_TEMPLATES = frozenset(
+    {"jd_parse", "tailor_skills", "tailor_work", "tailor_projects"}
+)
+# One-bullet repairs run on the light, steady fix chain.
+FIX_TEMPLATES = frozenset({"concise_bullet", "regenerate_bullet", "audit_concision"})
 _DETERMINISTIC_TEMPLATES = frozenset(
     {
         "jd_parse",
@@ -378,6 +387,8 @@ class TailorPipeline:
         research_company: bool = False,
         planning_models: Sequence[str] | None = None,
         fallback_models: Sequence[str] | None = None,
+        writing_models: Sequence[str] | None = None,
+        fix_models: Sequence[str] | None = None,
     ) -> None:
         self.model = model
         self.bridge_skills = bridge_skills
@@ -390,8 +401,16 @@ class TailorPipeline:
         )
         # Every model call, on every provider, passes through the privacy guard.
         self.privacy = PrivacyGuard(raw_provider)
+        # Free-tier limits are per model: pace each model by its own RPM.
         self.provider: ChatProvider = PacedProvider(
-            self.privacy, RatePacer(call_interval, self.tracker)
+            self.privacy,
+            RatePacer(
+                call_interval,
+                self.tracker,
+                interval_for=lambda name: (
+                    60.0 / model_rpm(name) if call_interval > 0 else 0.0
+                ),
+            ),
         )
         self.templates = TemplateManager(str(_TEMPLATE_DIR))
         self.options = MODEL_PARAMETERS.get(model, {"temperature": 0.1, "top_p": 0.9})
@@ -408,11 +427,18 @@ class TailorPipeline:
             planning_models = PLANNING_MODELS if chains_enabled else ()
         if fallback_models is None:
             fallback_models = FALLBACK_MODELS if chains_enabled else ()
+        if writing_models is None:
+            writing_models = WRITING_MODELS if chains_enabled else ()
+        if fix_models is None:
+            fix_models = FIX_MODELS if chains_enabled else ()
         self.default_chain = _dedupe([model, *fallback_models])
         self.planning_chain = _dedupe([*planning_models, *self.default_chain])
-        self.planning_only_models = frozenset(self.planning_chain) - frozenset(
-            self.default_chain
-        )
+        self.writing_chain = _dedupe([*writing_models, *self.default_chain])
+        self.fix_chain = _dedupe([*fix_models, *self.default_chain])
+        # Models that only lead a stage chain get the shorter planning timeout.
+        self.planning_only_models = frozenset(
+            (*self.planning_chain, *self.writing_chain, *self.fix_chain)
+        ) - frozenset(self.default_chain)
         # Web-search grounding exists only on Gemini, so company research uses
         # the first Gemini model in the chain even when another provider leads.
         self.grounding_model = next(
@@ -453,11 +479,13 @@ class TailorPipeline:
         return messages
 
     def _chain_for(self, template_name: str) -> tuple[str, ...]:
-        return (
-            self.planning_chain
-            if template_name in PLANNING_TEMPLATES
-            else self.default_chain
-        )
+        if template_name in PLANNING_TEMPLATES:
+            return self.planning_chain
+        if template_name in WRITING_TEMPLATES:
+            return self.writing_chain
+        if template_name in FIX_TEMPLATES:
+            return self.fix_chain
+        return self.default_chain
 
     def _salvage(
         self,

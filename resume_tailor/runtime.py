@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from pydantic import BaseModel
 
@@ -103,14 +103,25 @@ class RatePacer:
     """
 
     def __init__(
-        self, min_interval: float, tracker: ProgressTracker | None = None
+        self,
+        min_interval: float,
+        tracker: ProgressTracker | None = None,
+        interval_for: Callable[[str | None], float | None] | None = None,
     ) -> None:
         self.min_interval = max(float(min_interval), 0.0)
+        self._interval_for = interval_for
         self._next_allowed: dict[str | None, float] = {}
         self._tracker = tracker
 
+    def _interval(self, model: str | None) -> float:
+        if self._interval_for is None:
+            return self.min_interval
+        interval = self._interval_for(model)
+        return self.min_interval if interval is None else max(float(interval), 0.0)
+
     def wait(self, model: str | None = None) -> None:
-        if self.min_interval <= 0:
+        interval = self._interval(model)
+        if interval <= 0:
             return
         now = time.monotonic()
         next_allowed = self._next_allowed.get(model)
@@ -119,7 +130,7 @@ class RatePacer:
             if self._tracker:
                 self._tracker.detail(f"Rate-limit pacing: waiting {delay:.1f}s")
             time.sleep(delay)
-        self._next_allowed[model] = time.monotonic() + self.min_interval
+        self._next_allowed[model] = time.monotonic() + interval
 
 
 class PacedProvider:

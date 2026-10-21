@@ -59,3 +59,52 @@ def test_model_rpm_defaults_and_overrides(fresh_config):
     assert prompt.model_rpm(None) == 10
     fresh_config(MODEL_RPM="gemini-3.7-flash=20")
     assert prompt.model_rpm("gemini-3.7-flash") == 20
+
+
+class _ChainProvider:
+    supports_model_chain = True
+
+    def chat(self, *args, **kwargs):  # pragma: no cover - routing only
+        raise AssertionError("not called")
+
+
+def test_rewrite_templates_use_writing_chain():
+    from resume_tailor.pipeline import TailorPipeline
+
+    pipeline = TailorPipeline(
+        model="gemini-3.1-flash-lite",
+        call_interval=0,
+        provider=_ChainProvider(),
+        planning_models=["p1"],
+        writing_models=["w1"],
+        fix_models=["f1"],
+        fallback_models=["fb"],
+    )
+    tail = ("gemini-3.1-flash-lite", "fb")
+    assert pipeline._chain_for("tailor_work") == ("w1", *tail)
+    assert pipeline._chain_for("tailor_projects")[0] == "w1"
+    assert pipeline._chain_for("jd_parse")[0] == "w1"
+    assert pipeline._chain_for("concise_bullet") == ("f1", *tail)
+    assert pipeline._chain_for("select_work") == ("p1", *tail)
+    assert pipeline._chain_for("research_company_stack") == tail
+
+
+def test_pacer_uses_per_model_interval(monkeypatch):
+    from resume_tailor import runtime
+
+    now = [100.0]
+    slept: list[float] = []
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: now[0])
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(runtime.time, "sleep", sleep)
+    pacer = runtime.RatePacer(4.5, interval_for={"a": 6.0, "b": 0.0}.get)
+    pacer.wait("a")
+    pacer.wait("a")
+    assert slept == [pytest.approx(6.0)]
+    pacer.wait("b")
+    pacer.wait("b")
+    assert slept == [pytest.approx(6.0)]

@@ -44,6 +44,8 @@ class ModelChains:
         return {
             "model": self.model,
             "planning_models": self.planning,
+            "writing_models": self.writing,
+            "fix_models": self.fixes,
             "fallback_models": self.fallback,
         }
 
