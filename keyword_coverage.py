@@ -551,6 +551,109 @@ def sanitize_jd_profile(jd: JDProfile, jd_text: str) -> tuple[JDProfile, list[st
     return jd.model_copy(update={"keywords": kept}), dropped
 
 
+_EXAMPLE_MARKER_RE = re.compile(
+    r"\b(?:such as|e\.g\.,?|including(?:,? but not limited to)?|like)\s+", re.I
+)
+_PAREN_LIST_RE = re.compile(r"\(([^()]+)\)")
+_LIST_END_RE = re.compile(r"[;:()]|\.(?:\s|$)")
+_LIST_SPLIT_RE = re.compile(r",|\s+or\s+|\s+and\s+", re.I)
+_ITEM_PREFIX_RE = re.compile(r"^(?:or|and|a|an|the)\s+", re.I)
+_ITEM_SUFFIX_RE = re.compile(r"[\s,]*(?:etc\.?|and more|and others)?[\s.,]*$", re.I)
+
+
+def _list_items(raw: str) -> list[str]:
+    items: list[str] = []
+    for part in _LIST_SPLIT_RE.split(raw):
+        item = _ITEM_SUFFIX_RE.sub("", _ITEM_PREFIX_RE.sub("", part.strip())).strip()
+        if item and len(item.split()) <= 4:
+            items.append(item)
+    return items
+
+
+def _example_items(term: str, span: str | None) -> list[str]:
+    """Concrete examples a posting lists for a category term, in order."""
+
+    if not span:
+        return []
+    found: list[str] = []
+    marker = _EXAMPLE_MARKER_RE.search(span)
+    if marker:
+        rest = span[marker.end() :]
+        end = _LIST_END_RE.search(rest)
+        found = _list_items(rest[: end.start()] if end else rest)
+    if not found:
+        for match in _PAREN_LIST_RE.finditer(span):
+            items = _list_items(match.group(1))
+            # "(or equivalent)" is a qualifier, not a list of tools.
+            if len(items) >= 2:
+                found = items
+                break
+    umbrella = normalize_term(term)
+    unique: dict[str, str] = {}
+    for item in found:
+        key = normalize_term(item)
+        if key != umbrella:
+            unique.setdefault(key, item)
+    return list(unique.values())
+
+
+def expand_example_lists(jd: JDProfile) -> tuple[JDProfile, list[str]]:
+    """Split category terms into the literal tools the posting names.
+
+    "cloud platforms such as AWS, Azure, or Google Cloud" is searched by
+    recruiters and rankers as AWS / Azure / Google Cloud, never as the category.
+    Each example becomes its own keyword with the category's weight and list
+    membership; the category stays only as a weight-1 keyword.
+    """
+
+    existing = {normalize_term(item.term) for item in jd.keywords}
+    keywords: list[KeywordWeight] = []
+    replacements: dict[str, list[str]] = {}
+    added: list[str] = []
+    for item in jd.keywords:
+        examples = _example_items(item.term, item.evidence_span)
+        if not examples:
+            keywords.append(item)
+            continue
+        keywords.append(item.model_copy(update={"weight": 1}))
+        replacements[normalize_term(item.term)] = examples
+        for example in examples:
+            key = normalize_term(example)
+            if key in existing:
+                continue
+            existing.add(key)
+            added.append(example)
+            keywords.append(
+                KeywordWeight(
+                    term=example,
+                    weight=item.weight,
+                    aliases=[],
+                    category=item.category,
+                    evidence_span=item.evidence_span,
+                )
+            )
+    if not replacements:
+        return jd, []
+
+    def expand(terms: list[str]) -> list[str]:
+        result: dict[str, str] = {}
+        for term in terms:
+            for value in replacements.get(normalize_term(term), [term]):
+                result.setdefault(normalize_term(value), value)
+        return list(result.values())
+
+    return (
+        jd.model_copy(
+            update={
+                "keywords": keywords,
+                "must_have_skills": expand(jd.must_have_skills),
+                "nice_to_have_skills": expand(jd.nice_to_have_skills),
+            }
+        ),
+        added,
+    )
+
+
 def prompt_requirement_map(requirements: Sequence[dict]) -> list[dict]:
     """Compact map for prompts: drop long fact lists the model does not need."""
 

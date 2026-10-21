@@ -30,6 +30,7 @@ from models import (
     WorkRewriteResponse,
 )
 from keyword_coverage import (
+    expand_example_lists,
     attach_proxies,
     forbidden_claim_terms,
     missing_requirements,
@@ -1332,6 +1333,11 @@ class TailorPipeline:
                     self.tracker.warn(
                         "Dropped JD keywords the posting never states: "
                         + ", ".join(dropped_keywords)
+                    )
+                jd, expanded_terms = expand_example_lists(jd)
+                if expanded_terms:
+                    self.tracker.detail(
+                        "Expanded JD lists: " + ", ".join(expanded_terms)
                     )
                 jd_json = jd.model_dump_json(indent=2)
 

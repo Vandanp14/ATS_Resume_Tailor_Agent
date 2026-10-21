@@ -646,3 +646,88 @@ def test_stray_citations_are_pinned_to_the_allocation():
 def test_short_language_names_ignore_hyphenated_words():
     assert not mentions("Owned the Go-live checklist", ["Go"])
     assert mentions("Wrote services in Go.", ["Go"])
+
+
+# -- umbrella terms expanded into the literal tools they name -------------------
+
+
+def _umbrella_jd(term, span, *, must=False, category="platform", extra=()):
+    from models import JDProfile, KeywordWeight
+
+    keywords = [
+        KeywordWeight(term=term, weight=2, category=category, evidence_span=span),
+        *extra,
+    ]
+    return JDProfile(
+        role="Associate Full Stack Developer",
+        must_have_skills=[term] if must else [],
+        nice_to_have_skills=[] if must else [term],
+        keywords=keywords,
+    )
+
+
+def test_cloud_platforms_such_as_expands():
+    from keyword_coverage import expand_example_lists
+
+    jd = _umbrella_jd(
+        "Cloud Platforms", "cloud platforms such as AWS, Azure, or Google Cloud"
+    )
+    expanded, added = expand_example_lists(jd)
+    assert added == ["AWS", "Azure", "Google Cloud"]
+    assert expanded.nice_to_have_skills == ["AWS", "Azure", "Google Cloud"]
+    weights = {item.term: item.weight for item in expanded.keywords}
+    assert weights["Cloud Platforms"] == 1
+    assert weights["AWS"] == 2
+    assert {item.category for item in expanded.keywords} == {"platform"}
+
+
+def test_single_item_and_but_not_limited_to():
+    from keyword_coverage import expand_example_lists
+
+    _, added = expand_example_lists(
+        _umbrella_jd("version control", "version control tools such as Git", category="tool")
+    )
+    assert added == ["Git"]
+    expanded, added = expand_example_lists(
+        _umbrella_jd(
+            "Collaboration Tools",
+            "collaboration tools including but not limited to Jira, Confluence, etc.",
+            must=True,
+            category="tool",
+        )
+    )
+    assert added == ["Jira", "Confluence"]
+    assert expanded.must_have_skills == ["Jira", "Confluence"]
+    assert all(term and not term.lower().startswith(("or ", "and ")) for term in added)
+
+
+def test_parenthesised_list_expands():
+    from keyword_coverage import expand_example_lists
+
+    _, added = expand_example_lists(
+        _umbrella_jd("Testing Frameworks", "testing frameworks (JUnit, Mockito)", category="tool")
+    )
+    assert added == ["JUnit", "Mockito"]
+
+
+def test_no_marker_is_unchanged():
+    from keyword_coverage import expand_example_lists
+
+    jd = _umbrella_jd("React.js", "React.js", category="framework")
+    expanded, added = expand_example_lists(jd)
+    assert added == []
+    assert expanded == jd
+
+
+def test_existing_keyword_not_duplicated():
+    from keyword_coverage import expand_example_lists
+    from models import KeywordWeight
+
+    jd = _umbrella_jd(
+        "Cloud Platforms",
+        "cloud platforms such as AWS or Azure",
+        extra=(KeywordWeight(term="AWS", weight=4, category="platform", evidence_span="AWS"),),
+    )
+    expanded, added = expand_example_lists(jd)
+    assert added == ["Azure"]
+    assert [item.term for item in expanded.keywords].count("AWS") == 1
