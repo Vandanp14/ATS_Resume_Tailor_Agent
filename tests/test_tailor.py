@@ -284,7 +284,8 @@ def test_selector_requires_exact_count_and_orders_by_relevance(monkeypatch):
     monkeypatch.setattr(instance, "_call_once", fake)
     selected = instance._select("select_work", "work", "{}", evidence, 3)
     assert [item["source_id"] for item in selected] == ["work[1]", "work[2]", "work[0]"]
-    assert work_bullet_targets(selected) == {"work[1]": 4, "work[2]": 3, "work[0]": 3}
+    # work[0] is the current role: it gets at least as many bullets as any other.
+    assert work_bullet_targets(selected) == {"work[1]": 3, "work[2]": 3, "work[0]": 4}
 
 
 def test_jd_text_is_fenced_and_reaches_the_parser_prompt():
@@ -735,3 +736,55 @@ def test_no_current_role_uses_most_recent():
     )
     picked = choose_selected(candidates, evidence, 3, requirements=[], pin_current=True)
     assert [item["source_id"] for item in picked] == ["work[1]", "work[0]", "work[3]"]
+
+
+# -- bullet budget follows evidence strength, not rank -------------------------
+
+
+def _budget_source(index, highlights, relevance, covered, end="2024-12"):
+    return {
+        "source_id": f"work[{index}]",
+        "endDate": end,
+        "selection_relevance": relevance,
+        "selection_covered_requirement_ids": [f"R{n}" for n in range(covered)],
+        "source_facts": {
+            "summary": None,
+            "highlights": [
+                {"source_id": f"work[{index}].highlights[{n}]", "text": "x"}
+                for n in range(highlights)
+            ],
+        },
+    }
+
+
+def test_current_role_gets_at_least_as_many_bullets():
+    sources = [
+        _budget_source(0, 8, 90, 3),
+        _budget_source(1, 14, 40, 1, end=None),
+        _budget_source(2, 8, 90, 3),
+    ]
+    targets = work_bullet_targets(sources)
+    assert sum(targets.values()) == 10
+    assert all(targets["work[1]"] >= count for count in targets.values())
+
+
+def test_caps_respect_available_highlights():
+    sources = [
+        _budget_source(0, 3, 99, 5, end=None),
+        _budget_source(1, 3, 50, 0),
+        _budget_source(2, 3, 40, 0),
+    ]
+    targets = work_bullet_targets(sources)
+    assert targets == {"work[0]": 3, "work[1]": 3, "work[2]": 3}
+
+
+def test_strongest_entry_gets_the_extra_bullets():
+    sources = [
+        _budget_source(0, 6, 30, 0, end=None),
+        _budget_source(1, 6, 95, 4),
+        _budget_source(2, 6, 20, 0),
+    ]
+    targets = work_bullet_targets(sources)
+    assert sum(targets.values()) == 10
+    assert targets["work[1]"] >= targets["work[2]"]
+    assert targets["work[0]"] >= targets["work[1]"]

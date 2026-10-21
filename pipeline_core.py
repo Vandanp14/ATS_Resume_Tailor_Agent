@@ -45,7 +45,13 @@ from keyword_coverage import (
 from render import ScoredResume
 
 
-WORK_BULLET_COUNTS = (4, 3, 3)
+# Work bullets on one page, shared by evidence strength (see work_bullet_targets).
+WORK_BULLET_BUDGET = 10
+MIN_WORK_BULLETS = 2
+MAX_WORK_BULLETS = 5
+# An entry may borrow facts from projects or other roles, so even a thin entry
+# can carry this many bullets.
+THIN_ENTRY_BULLET_CAP = 3
 PROJECT_BULLET_COUNT = 2
 MAX_SKILL_GROUPS = 5
 RESEARCH_THIN_JD_SIGNAL_THRESHOLD = 12
@@ -566,11 +572,59 @@ def choose_selected(
     ]
 
 
+def _bullet_strength(source: Mapping) -> float:
+    return float(source.get("selection_relevance") or 0) + 10 * len(
+        source.get("selection_covered_requirement_ids") or []
+    )
+
+
+def _bullet_cap(source: Mapping) -> int:
+    facts = source.get("source_facts") or {}
+    highlights = len(facts.get("highlights") or []) if isinstance(facts, Mapping) else 0
+    return min(MAX_WORK_BULLETS, max(highlights, THIN_ENTRY_BULLET_CAP))
+
+
 def work_bullet_targets(sources: Sequence[dict]) -> dict[str, int]:
-    return {
-        source["source_id"]: WORK_BULLET_COUNTS[index]
-        for index, source in enumerate(sources)
+    """Bullets per selected work entry, by evidence strength rather than rank.
+
+    Every entry starts at its floor; the rest of the budget goes one bullet at
+    a time to the entry with the most strength per bullet already given. The
+    current role then gets at least as many bullets as any other entry.
+    """
+
+    ids = [source["source_id"] for source in sources]
+    caps = {source["source_id"]: _bullet_cap(source) for source in sources}
+    strength = {
+        source["source_id"]: max(_bullet_strength(source), 1.0) for source in sources
     }
+    counts = {source_id: min(MIN_WORK_BULLETS, caps[source_id]) for source_id in ids}
+    while sum(counts.values()) < WORK_BULLET_BUDGET:
+        open_ids = [source_id for source_id in ids if counts[source_id] < caps[source_id]]
+        if not open_ids:
+            break
+        best = max(
+            open_ids,
+            key=lambda source_id: (
+                strength[source_id] / counts[source_id],
+                -ids.index(source_id),
+            ),
+        )
+        counts[best] += 1
+    for source in sources:
+        if not is_current(source):
+            continue
+        current = source["source_id"]
+        while True:
+            others = [source_id for source_id in ids if source_id != current]
+            if not others or counts[current] >= caps[current]:
+                break
+            largest = max(others, key=lambda source_id: counts[source_id])
+            if counts[current] >= counts[largest]:
+                break
+            counts[largest] -= 1
+            counts[current] += 1
+        break
+    return counts
 
 
 def _duplicate_values(values: Sequence[str]) -> list[str]:
