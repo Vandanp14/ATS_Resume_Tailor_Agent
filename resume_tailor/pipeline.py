@@ -30,6 +30,7 @@ from models import (
     WorkRewriteResponse,
 )
 from keyword_coverage import (
+    restore_requirements,
     expand_example_lists,
     attach_proxies,
     forbidden_claim_terms,
@@ -108,7 +109,7 @@ from .llm import (
 )
 from .progress import JobContext, ProgressReporter, ProgressTracker, Stage
 from .bullet_review import live_flags, persist_bullet_review
-from .checkpoints import CheckpointStore, run_fingerprint
+from .checkpoints import CheckpointStore, stage_fingerprint
 from .skill_answers import bullet_tech_requirements
 from .privacy import PrivacyGuard, strip_prompt_context, unrestored_placeholders
 from .fit_recovery import (
@@ -1302,11 +1303,13 @@ class TailorPipeline:
         self._bullet_flags = []
         self._reused = []
         self._grounding_exhausted = False
+        master_json = master.model_dump_json()
         self._checkpoints = CheckpointStore(
             out_dir,
-            run_fingerprint(
-                master.model_dump_json(),
-                jd_text,
+            lambda stage: stage_fingerprint(
+                stage,
+                master_json=master_json,
+                jd_text=jd_text,
                 bridge_skills=self.bridge_skills,
                 research_company=self.research_company,
                 allow_fit_recovery=self.allow_fit_recovery,
@@ -1408,12 +1411,12 @@ class TailorPipeline:
                     lambda: self._map_requirements(
                         jd_json, requirement_map(jd, facts), facts, global_evidence_json
                     ),
-                    lambda value: {
-                        "requirements": value[0],
-                        "proxy_plan": value[1].model_dump(mode="json"),
-                    },
-                    lambda payload: (
-                        payload["requirements"],
+                    lambda value: {"proxy_plan": value[1].model_dump(mode="json")},
+                    # The map itself is code: rebuild it from current facts so
+                    # skills confirmed since the save count as stated.
+                    lambda payload: restore_requirements(
+                        jd,
+                        facts,
                         RequirementProxyPlan.model_validate(payload["proxy_plan"]),
                     ),
                 )

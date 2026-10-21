@@ -13,12 +13,21 @@ import hashlib
 import json
 import os
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from models import CONFIRMED_SKILL_GROUP
+
 CHECKPOINT_DIR = "checkpoints"
 # Bump when a checkpointed payload's shape changes so old files are ignored.
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
+# Stages that read only the job description: any master edit keeps them.
+_JD_ONLY_STAGES = frozenset(
+    {"jd_parse", "research_company_stack", "research_company_signals"}
+)
+# Stages that ignore skill-check answers: the map is rebuilt in code on restore.
+_ANSWER_BLIND_STAGES = frozenset({"requirement_map"})
 
 
 def run_fingerprint(master_json: str, jd_text: str, **options: object) -> str:
@@ -34,10 +43,43 @@ def run_fingerprint(master_json: str, jd_text: str, **options: object) -> str:
     return digest.hexdigest()
 
 
+def master_without_answers(master_json: str) -> str:
+    """The master JSON minus skill-check answers (confirmed group, declined list)."""
+    data = json.loads(master_json)
+    data.pop("skill_check", None)
+    skills = data.get("skills")
+    if isinstance(skills, list):
+        kept = [
+            group
+            for group in skills
+            if not (isinstance(group, dict) and group.get("name") == CONFIRMED_SKILL_GROUP)
+        ]
+        data["skills"] = kept or None
+    return json.dumps(data, sort_keys=True)
+
+
+def stage_fingerprint(
+    stage: str, *, master_json: str, jd_text: str, **options: object
+) -> str:
+    """Fingerprint of exactly the inputs one stage depends on."""
+    if stage in _JD_ONLY_STAGES:
+        return run_fingerprint("", jd_text, **options)
+    if stage in _ANSWER_BLIND_STAGES:
+        return run_fingerprint(master_without_answers(master_json), jd_text, **options)
+    return run_fingerprint(master_json, jd_text, **options)
+
+
 class CheckpointStore:
-    def __init__(self, out_dir: Path, fingerprint: str) -> None:
+    def __init__(
+        self, out_dir: Path, fingerprint: str | Callable[[str], str]
+    ) -> None:
         self.directory = Path(out_dir) / CHECKPOINT_DIR
-        self.fingerprint = fingerprint
+        self._fingerprint_for = (
+            fingerprint if callable(fingerprint) else (lambda _name: fingerprint)
+        )
+
+    def fingerprint(self, name: str) -> str:
+        return self._fingerprint_for(name)
 
     def _path(self, name: str) -> Path:
         return self.directory / f"{name}.json"
@@ -56,7 +98,7 @@ class CheckpointStore:
             return None
         if (
             not isinstance(record, dict)
-            or record.get("fingerprint") != self.fingerprint
+            or record.get("fingerprint") != self.fingerprint(name)
         ):
             return None
         return {"payload": record.get("payload")}
@@ -67,7 +109,7 @@ class CheckpointStore:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(
             json.dumps(
-                {"fingerprint": self.fingerprint, "payload": payload},
+                {"fingerprint": self.fingerprint(name), "payload": payload},
                 ensure_ascii=False,
             ),
             encoding="utf-8",

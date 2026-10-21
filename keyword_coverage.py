@@ -15,7 +15,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 
-from models import JDProfile, KeywordWeight
+from models import JDProfile, KeywordWeight, RequirementProxyPlan
 
 
 TECH_CATEGORIES = frozenset({"language", "framework", "tool", "platform"})
@@ -269,6 +269,30 @@ def requirement_map(
             }
         )
     return result
+
+
+def restore_requirements(
+    jd: JDProfile, fact_index: Mapping[str, dict], proxy_plan: RequirementProxyPlan
+) -> tuple[list[dict], RequirementProxyPlan]:
+    """Rebuild the map from current facts and keep proxies still needed.
+
+    Direct matches are decided in code, so a skill confirmed after the saved
+    proxy plan simply becomes ``direct`` and its stale proxy is dropped.
+    """
+    requirements = requirement_map(jd, fact_index)
+    missing = {
+        normalize_term(item["term"]) for item in requirements if item["status"] == "missing"
+    }
+    kept = proxy_plan.model_copy(
+        update={
+            "proxies": [
+                proxy
+                for proxy in proxy_plan.proxies
+                if normalize_term(proxy.requirement) in missing
+            ]
+        }
+    )
+    return attach_proxies(requirements, kept.proxies), kept
 
 
 def missing_requirements(requirements: Sequence[dict]) -> list[dict]:

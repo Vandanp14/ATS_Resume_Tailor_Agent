@@ -109,3 +109,100 @@ def test_resume_without_checkpoints_runs_everything(monkeypatch, tmp_path):
     assert run(monkeypatch, tmp_path, stub, resume=True, bridge=True) == 0
     assert RequirementProxyPlan in models_called(stub)
     assert models_called(stub)[-1] is HolisticReview
+
+
+# -- stage-scoped fingerprints: answering skills keeps the parse and the map --
+
+
+def _answered_master_json(confirmed=(), declined=()):
+    from resume_tailor.skill_answers import apply_answers
+
+    return apply_answers(master(), list(confirmed), list(declined)).model_dump_json()
+
+
+def test_jd_parse_checkpoint_survives_master_change(tmp_path):
+    from resume_tailor.checkpoints import CheckpointStore, stage_fingerprint
+
+    def store(master_json):
+        return CheckpointStore(
+            tmp_path, lambda name: stage_fingerprint(name, master_json=master_json, jd_text=JD)
+        )
+
+    store(master().model_dump_json()).save("jd_parse", {"role": "x"})
+    edited = master().model_copy(update={"basics": None}).model_dump_json()
+    assert store(edited).load("jd_parse") == {"payload": {"role": "x"}}
+    other_jd = CheckpointStore(
+        tmp_path, lambda name: stage_fingerprint(name, master_json=edited, jd_text="Other")
+    )
+    assert other_jd.load("jd_parse") is None
+
+
+def test_requirement_map_survives_only_answer_changes(tmp_path):
+    from resume_tailor.checkpoints import CheckpointStore, stage_fingerprint
+
+    def store(master_json):
+        return CheckpointStore(
+            tmp_path, lambda name: stage_fingerprint(name, master_json=master_json, jd_text=JD)
+        )
+
+    store(master().model_dump_json()).save("requirement_map", {"proxy_plan": {}})
+    answered = _answered_master_json(["Figma"], ["Siteimprove"])
+    assert store(answered).has("requirement_map")
+    store(master().model_dump_json()).save("select_work", [])
+    assert not store(answered).has("select_work")
+    changed = master()
+    changed.work[0].highlights = ["Rewrote the billing service."]
+    assert not store(changed.model_dump_json()).has("requirement_map")
+
+
+def test_restored_map_marks_confirmed_skill_direct():
+    from keyword_coverage import requirement_map, restore_requirements
+    from models import JDProfile, KeywordWeight, RequirementProxy
+    from pipeline_core import master_fact_index
+    from resume_tailor.skill_answers import apply_answers
+
+    jd = JDProfile(
+        role="Web Developer",
+        must_have_skills=["Figma"],
+        nice_to_have_skills=[],
+        keywords=[KeywordWeight(term="Figma", weight=5, category="tool", evidence_span="Figma")],
+    )
+    before = master_fact_index(master())
+    fact_id = next(iter(before))
+    plan = RequirementProxyPlan(
+        proxies=[
+            RequirementProxy(
+                requirement="Figma",
+                requirement_type="must_have",
+                category="tool",
+                proximity="analogous_workflow",
+                proxy_terms=["React"],
+                source_fact_ids=[fact_id],
+                transfer_basis="UI design work",
+                relevance=60,
+                list_as_transferable_skill=False,
+            )
+        ]
+    )
+    assert requirement_map(jd, before)[0]["status"] == "missing"
+    after = master_fact_index(apply_answers(master(), ["Figma"], []))
+    requirements, kept = restore_requirements(jd, after, plan)
+    assert requirements[0]["status"] == "direct"
+    assert "proxy_terms" not in requirements[0]
+    assert kept.proxies == []
+    still_missing, kept = restore_requirements(jd, before, plan)
+    assert still_missing[0]["status"] == "proxy"
+    assert len(kept.proxies) == 1
+
+
+def test_old_version_checkpoint_ignored(tmp_path):
+    from resume_tailor.checkpoints import CHECKPOINT_VERSION, CheckpointStore, stage_fingerprint
+
+    assert CHECKPOINT_VERSION == 2
+    store = CheckpointStore(
+        tmp_path, lambda name: stage_fingerprint(name, master_json="{}", jd_text=JD)
+    )
+    path = tmp_path / CHECKPOINT_DIR / "jd_parse.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"fingerprint": "v1-hash", "payload": {}}), encoding="utf-8")
+    assert store.load("jd_parse") is None
