@@ -672,3 +672,66 @@ def test_skills_may_surface_a_technology_named_only_in_experience_text():
     )
     with pytest.raises(ContractError, match="absent_from_master"):
         validate_skills(unmined, resume)
+
+
+# -- current role first, then reverse chronological ----------------------------
+
+
+def _role(index, start, end):
+    return {
+        "source_id": f"work[{index}]",
+        "name": f"Company {index}",
+        "position": "Engineer",
+        "startDate": start,
+        "endDate": end,
+        "source_facts": {"summary": None, "highlights": []},
+    }
+
+
+def _candidates(relevances):
+    return {
+        source_id: SelectionCandidate(source_id=source_id, relevance=value, selected=True)
+        for source_id, value in relevances.items()
+    }
+
+
+def test_current_role_is_pinned_even_when_least_relevant():
+    from pipeline_core import choose_selected
+
+    evidence = [
+        _role(0, "2026-06", None),
+        _role(1, "2024-04", "2026-04"),
+        _role(2, "2025-08", "2025-12"),
+        _role(3, "2023-02", "2023-05"),
+    ]
+    candidates = _candidates(
+        {"work[0]": 10, "work[1]": 90, "work[2]": 80, "work[3]": 70}
+    )
+    picked = choose_selected(candidates, evidence, 3, requirements=[], pin_current=True)
+    assert [item["source_id"] for item in picked] == ["work[0]", "work[1]", "work[2]"]
+
+
+def test_pin_current_orders_chronologically_without_requirement_map():
+    from pipeline_core import choose_selected
+
+    evidence = [_role(0, "2026-06", "Present"), _role(1, "2024-04", "2026-04"), _role(2, "2025-08", "2025-12")]
+    candidates = _candidates({"work[0]": 10, "work[1]": 90, "work[2]": 80})
+    picked = choose_selected(candidates, evidence, 3, pin_current=True)
+    assert [item["source_id"] for item in picked] == ["work[0]", "work[1]", "work[2]"]
+
+
+def test_no_current_role_uses_most_recent():
+    from pipeline_core import choose_selected, current_role_id
+
+    evidence = [
+        _role(0, None, "2024"),
+        _role(1, "2024-04", "2026-04"),
+        _role(2, "2025-08", "2025-12"),
+        _role(3, None, "2022-01"),
+    ]
+    assert current_role_id(evidence) == "work[1]"
+    candidates = _candidates(
+        {"work[0]": 95, "work[1]": 5, "work[2]": 60, "work[3]": 90}
+    )
+    picked = choose_selected(candidates, evidence, 3, requirements=[], pin_current=True)
+    assert [item["source_id"] for item in picked] == ["work[1]", "work[0]", "work[3]"]

@@ -414,6 +414,44 @@ TITLE_MATCH_BONUS = 20
 COVERAGE_GAIN_SCALE = 80
 
 
+_CURRENT_END_DATES = frozenset({"", "present", "current", "now"})
+
+
+def is_current(entry: Mapping) -> bool:
+    """True for a role with no end date or an end date like "Present"."""
+    end = entry.get("endDate")
+    return end is None or str(end).strip().casefold() in _CURRENT_END_DATES
+
+
+def _date_key(value: object) -> str:
+    """Sortable YYYY-MM key; "2024" sorts as "2024-00", missing sorts first."""
+    text = str(value or "").strip()
+    if not text[:4].isdigit():
+        return ""
+    month = text[5:7] if len(text) >= 7 and text[5:7].isdigit() else "00"
+    return f"{text[:4]}-{month}"
+
+
+def _recency(entry: Mapping) -> tuple[int, str, str]:
+    return (
+        1 if is_current(entry) else 0,
+        _date_key(entry.get("endDate")),
+        _date_key(entry.get("startDate")),
+    )
+
+
+def current_role_id(evidence: Sequence[dict]) -> str | None:
+    """The current role, else the most recently ended one."""
+    if not evidence:
+        return None
+    return max(evidence, key=_recency)["source_id"]
+
+
+def chronological(entries: Sequence[dict]) -> list[dict]:
+    """Current roles first, then by end date and start date, newest first."""
+    return sorted(entries, key=_recency, reverse=True)
+
+
 def choose_selected(
     candidates: Mapping[str, object],
     evidence: Sequence[dict],
@@ -421,6 +459,7 @@ def choose_selected(
     requirements: Sequence[dict] | None = None,
     fact_index: Mapping[str, dict] | None = None,
     jd: JDProfile | None = None,
+    pin_current: bool = False,
 ) -> list[dict]:
     """Pick the selected entries.
 
@@ -430,11 +469,15 @@ def choose_selected(
     against the target role, and the weighted JD requirements it would newly
     cover (directly or through validated proxy evidence). Complementary
     coverage therefore beats several entries proving the same requirement.
+
+    ``pin_current`` (work only) always keeps the current role and returns the
+    set in reverse-chronological order: recruiters read the newest role first.
     """
 
     order = {item["source_id"]: index for index, item in enumerate(evidence)}
     by_id = {item["source_id"]: item for item in evidence}
     required = min(cap, len(evidence))
+    pinned = current_role_id(evidence) if pin_current else None
     if requirements is None:
         chosen = [candidate for candidate in candidates.values() if candidate.selected]
         chosen.sort(key=lambda item: (-item.relevance, order[item.source_id]))
@@ -443,6 +486,11 @@ def choose_selected(
                 f"selector must choose exactly {required} of {len(evidence)} "
                 f"candidates; received {len(chosen)}"
             )
+        if pinned is not None and pinned in candidates:
+            if all(item.source_id != pinned for item in chosen):
+                chosen[-1] = candidates[pinned]
+            rank = {item["source_id"]: position for position, item in enumerate(chronological(evidence))}
+            chosen.sort(key=lambda item: rank[item.source_id])
         return [
             {
                 **by_id[candidate.source_id],
@@ -475,6 +523,10 @@ def choose_selected(
     covered: set[str] = set()
     remaining = set(candidates)
     picked: list[str] = []
+    if pinned is not None and pinned in remaining and required:
+        picked.append(pinned)
+        covered |= cover[pinned]
+        remaining.discard(pinned)
     while remaining and len(picked) < required:
 
         def score(source_id: str) -> tuple[float, int]:
@@ -492,12 +544,16 @@ def choose_selected(
         raise ContractError(
             f"selector returned {len(candidates)} candidates; {required} required"
         )
-    picked.sort(
-        key=lambda source_id: (
-            -(candidates[source_id].relevance + title_bonus[source_id]),
-            order[source_id],
+    if pinned is not None:
+        rank = {item["source_id"]: position for position, item in enumerate(chronological(evidence))}
+        picked.sort(key=lambda source_id: rank[source_id])
+    else:
+        picked.sort(
+            key=lambda source_id: (
+                -(candidates[source_id].relevance + title_bonus[source_id]),
+                order[source_id],
+            )
         )
-    )
     return [
         {
             **by_id[source_id],

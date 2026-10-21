@@ -949,6 +949,7 @@ class TailorPipeline:
         requirements: Sequence[dict] | None = None,
         fact_index: dict[str, dict] | None = None,
         jd: JDProfile | None = None,
+        pin_current: bool = False,
     ) -> list[dict]:
         del section
         if not evidence:
@@ -1010,6 +1011,7 @@ class TailorPipeline:
                         requirements=requirements,
                         fact_index=fact_index,
                         jd=jd,
+                        pin_current=pin_current,
                     )
                 except ContractError as exc:
                     errors.append(str(exc))
@@ -1464,6 +1466,7 @@ class TailorPipeline:
                             requirements=requirements,
                             fact_index=facts,
                             jd=jd,
+                            pin_current=True,
                         ),
                         list,
                         list,
