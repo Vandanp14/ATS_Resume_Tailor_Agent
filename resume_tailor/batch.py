@@ -54,14 +54,9 @@ def pipeline_from_args(
     chains: dict[str, object] = {"model": args.model}
     provider = getattr(args, "provider", None)
     if provider:
-        model, planning, fallback = resolve_chains(
+        chains = resolve_chains(
             provider.replace("-", "_"), getattr(args, "freellm_model", None)
-        )
-        chains = {
-            "model": model,
-            "planning_models": planning,
-            "fallback_models": fallback,
-        }
+        ).pipeline_kwargs()
     return TailorPipeline(
         **chains,
         call_interval=args.call_interval,

@@ -908,14 +908,9 @@ class QueueRegistry:
         """Model chain for a job's provider mode; Gemini keeps the app's model."""
         if options.provider_mode == "gemini":
             return {"model": self.model}
-        model, planning, fallback = resolve_chains(
+        return resolve_chains(
             options.provider_mode, options.freellm_model
-        )
-        return {
-            "model": model,
-            "planning_models": planning,
-            "fallback_models": fallback,
-        }
+        ).pipeline_kwargs()
 
     def _run_job(self, job: Job) -> None:
         context = JobContext(name=job.persisted.job_id, output_dir=job.directory)

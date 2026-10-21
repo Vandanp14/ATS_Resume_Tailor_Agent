@@ -107,7 +107,8 @@ def test_freellm_led_chain_falls_back_to_gemini_when_proxy_is_down():
         return _ok_plan_response()
 
     provider.chat.side_effect = chat
-    model, planning, fallback = resolve_chains("freellm_gemini", "auto")
+    chains = resolve_chains("freellm_gemini", "auto")
+    model, planning, fallback = chains.model, chains.planning, chains.fallback
     pipeline = tailor.TailorPipeline(
         model=model,
         call_interval=0,
@@ -125,17 +126,21 @@ def test_freellm_led_chain_falls_back_to_gemini_when_proxy_is_down():
 
 
 def test_resolve_chains_per_mode():
-    assert resolve_chains("gemini") == (DEFAULT_MODEL, PLANNING_MODELS, FALLBACK_MODELS)
-    assert resolve_chains(ProviderMode.FREELLM, "llama-4-scout") == (
-        "freellm/llama-4-scout",
-        (),
-        (),
+    gemini = resolve_chains("gemini")
+    assert (gemini.model, gemini.planning, gemini.fallback) == (
+        DEFAULT_MODEL,
+        PLANNING_MODELS,
+        FALLBACK_MODELS,
     )
-    model, planning, fallback = resolve_chains("freellm_gemini", "auto")
+    only = resolve_chains(ProviderMode.FREELLM, "llama-4-scout")
+    assert (only.model, only.planning, only.fallback) == ("freellm/llama-4-scout", (), ())
+    chains = resolve_chains("freellm_gemini", "auto")
+    model, planning, fallback = chains.model, chains.planning, chains.fallback
     assert model == "freellm/auto"
     assert planning == ("freellm/auto", *PLANNING_MODELS)
     assert fallback == (DEFAULT_MODEL, *FALLBACK_MODELS)
-    model, planning, fallback = resolve_chains("gemini_freellm", "auto")
+    chains = resolve_chains("gemini_freellm", "auto")
+    model, planning, fallback = chains.model, chains.planning, chains.fallback
     assert model == DEFAULT_MODEL
     assert planning == PLANNING_MODELS
     assert fallback == (*FALLBACK_MODELS, "freellm/auto")

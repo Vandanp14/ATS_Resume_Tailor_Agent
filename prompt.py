@@ -83,9 +83,38 @@ def _model_list(name: str, default: str) -> tuple[str, ...]:
 # Reasoning-heavy stages (requirement coverage, selection, evidence planning,
 # holistic review) try these models first, in order, before DEFAULT_MODEL.
 # Set PLANNING_MODELS= (empty) to run every stage on DEFAULT_MODEL.
-PLANNING_MODELS = _model_list("PLANNING_MODELS", "gemini-3.8-flash,gemini-3.5-flash")
+PLANNING_MODELS = _model_list(
+    "PLANNING_MODELS", "gemini-3.8-flash,gemini-3.5-flash,gemini-3.5-flash-lite"
+)
+# Stages whose text lands on the page (JD parse, skills, work/project rewrites).
+# A different lead model than planning, so the two never share a rate meter.
+WRITING_MODELS = _model_list(
+    "WRITING_MODELS", "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash-lite"
+)
+# Small one-bullet fixes (concision, regeneration): the steadiest light models.
+FIX_MODELS = _model_list("FIX_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite")
 # Tried after DEFAULT_MODEL when it is overloaded, rate-limited, or retired.
 FALLBACK_MODELS = _model_list("FALLBACK_MODELS", "gemini-3.5-flash-lite")
+
+# Free-tier requests per minute, per model (Gemini_Models_Spec.md). Models the
+# spec does not list get DEFAULT_MODEL_RPM. Override with
+# MODEL_RPM="gemini-3.7-flash=15,gemini-3.6-flash=10".
+DEFAULT_MODEL_RPM = 10
+MODEL_RPM: dict[str, int] = {
+    "gemini-3.8-flash": 10,
+    "gemini-3.5-flash-lite": 15,
+    "gemini-2.5-flash": 10,
+    "gemini-2.5-pro": 5,
+}
+for _pair in os.getenv("MODEL_RPM", "").split(","):
+    _name, _, _value = _pair.partition("=")
+    if _name.strip() and _value.strip().isdigit() and int(_value) > 0:
+        MODEL_RPM[_name.strip()] = int(_value)
+
+
+def model_rpm(model: str | None) -> int:
+    """Requests per minute allowed for one model."""
+    return MODEL_RPM.get(model or "", DEFAULT_MODEL_RPM)
 
 # Per-request Gemini timeout. Planning prompts carry the whole master fact bank
 # and thinking models can take well over 30 s on them.
