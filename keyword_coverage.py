@@ -316,7 +316,10 @@ def qualification_requirements(jd: JDProfile, start_index: int) -> list[dict]:
         ("preferred_qualification", jd.preferred_qualifications),
     ):
         for line in lines:
-            if line.type not in {"interpersonal", "other"}:
+            # Lines no literal term can prove are proven by a bullet's facts.
+            if line.type not in {"interpersonal", "other"} and not (
+                line.type == "technical" and not line.named_terms
+            ):
                 continue
             weight = _QUALIFICATION_WEIGHT[requirement_type]
             rows.append(

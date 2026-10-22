@@ -230,6 +230,20 @@ CHAIN_RETRY_DELAYS_SECONDS = (30.0, 60.0)
 PLANNING_MODEL_TIMEOUT_MS = 60_000
 
 
+def missing_qualification_ids(plan: EvidencePlan, requirements: Sequence[dict]) -> list[str]:
+    """Minimum qualification rows no evidence assignment cites."""
+    cited = {
+        value for assignment in plan.assignments for value in assignment.matched_requirements
+    }
+    return [
+        f"{item['id']} ({item['term']})"
+        for item in requirements
+        if item.get("status") == "qualification"
+        and item.get("requirement_type") == "minimum_qualification"
+        and item["id"] not in cited
+    ]
+
+
 def _dedupe(models: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(model for model in models if model))
 
@@ -1763,6 +1777,14 @@ class TailorPipeline:
                     raise ContractError(
                         "evidence plan omits closest evidence for missing "
                         "requirements: " + " | ".join(gaps)
+                    )
+                uncited = missing_qualification_ids(value, requirements) if self.college_mode else []
+                if uncited and plan_attempts == 1:
+                    # One precise retry; a line still uncited is flagged later.
+                    raise ContractError(
+                        "evidence plan cites no fact for these minimum qualifications; "
+                        "add each id to matched_requirements of an assignment whose fact "
+                        "shows it, or leave it out if no fact does: " + " | ".join(uncited)
                     )
                 proxy_warnings[:] = gaps
 

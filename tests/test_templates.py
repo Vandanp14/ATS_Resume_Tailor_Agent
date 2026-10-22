@@ -24,6 +24,8 @@ def test_pipeline_templates_are_registered_and_summary_is_gone():
         "concise_bullet",
         "audit_concision",
         "system_message",
+        # College mode's checked summary; the old big-company tailor_summary stays gone.
+        "write_summary",
     }
     assert expected == set(manager.get_available_sections())
     assert "tailor_summary" not in manager.get_available_sections()

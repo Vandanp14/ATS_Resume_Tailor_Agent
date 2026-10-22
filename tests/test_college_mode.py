@@ -594,3 +594,49 @@ def test_ui_resets_check_when_college_toggle_changes_and_skips_summary_stage():
     app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
     assert '$("college-mode").addEventListener("change"' in app_js
     assert '"Write summary"' in app_js and "college_mode" in app_js
+
+
+# -- live-run fixes ------------------------------------------------------------
+
+
+def test_every_stage_template_is_registered():
+    from resume_tailor.pipeline import _TEMPLATE_STAGES
+
+    pipeline = _pipeline(college_mode=True)
+    for name in _TEMPLATE_STAGES:
+        assert name in pipeline.templates._templates, name
+
+
+def test_technical_lines_without_named_terms_use_provenance():
+    from keyword_coverage import qualification_requirements
+    from models import JDProfile
+
+    line = _line("Requires ability to use and adapt to a wide range of development tools/languages.", "technical")
+    jd = JDProfile(role="UX/UI Developer", must_have_skills=[], nice_to_have_skills=[], keywords=[],
+                   minimum_qualifications=[line])
+    rows = qualification_requirements(jd, 0)
+    assert [row["id"] for row in rows] == ["Q1"]
+    plan = _plan(["work[1].highlights[0]"])
+    bullets = [("Built React dashboards.", ["work[1].highlights[0]"])]
+    from render import scored_to_plain
+    from resume_tailor.qualifications import qualification_coverage
+
+    scored = _scored(bullets)
+    coverage = qualification_coverage(scored, scored_to_plain(scored), jd, _college_master(), plan, rows, TODAY)
+    assert coverage[0]["status"] == "covered"
+
+
+def test_plan_validator_demands_minimum_qualification_ids_once():
+    from pipeline_core import ContractError
+    from resume_tailor.pipeline import missing_qualification_ids
+
+    rows = [
+        {"id": "Q1", "term": "Work cordially with personnel.", "requirement_type": "minimum_qualification", "status": "qualification"},
+        {"id": "Q2", "term": "Web analytics.", "requirement_type": "preferred_qualification", "status": "qualification"},
+    ]
+    plan = _plan(["work[1].highlights[0]"])
+    plan.assignments[0].matched_requirements = ["React.js"]
+    assert missing_qualification_ids(plan, rows) == ["Q1 (Work cordially with personnel.)"]
+    plan.assignments[0].matched_requirements = ["Q1"]
+    assert missing_qualification_ids(plan, rows) == []
+    assert ContractError

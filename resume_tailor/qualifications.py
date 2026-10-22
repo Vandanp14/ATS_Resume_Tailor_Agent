@@ -371,7 +371,7 @@ def qualification_coverage(
                 if line.years is not None:
                     # The years half must show too, not only the degree name.
                     page_terms.append(years_label(experience_months(master, line.domain, today)))
-            elif line.type == "technical":
+            elif line.type == "technical" and line.named_terms:
                 status = _technical(line, master)
                 page_terms = list(line.named_terms)
             else:

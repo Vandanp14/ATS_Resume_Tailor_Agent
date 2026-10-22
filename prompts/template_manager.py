@@ -64,6 +64,7 @@ class TemplateManager:
             "holistic_review": "holistic_review.jinja",
             "concise_bullet": "concise_bullet.jinja",
             "audit_concision": "audit_concision.jinja",
+            "write_summary": "write_summary.jinja",
             "system_message": "system_message.jinja",
         }
 
