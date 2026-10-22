@@ -1272,7 +1272,7 @@ function openDeleteDialog(jobIds, includeLegacy, source) {
   const items = jobIds.map((id) => byId.get(id) || { id, label: jobLabel(state.jobs.get(id) || { company: id }), bytes: 0 });
   const legacy = includeLegacy ? inventory.legacy : [];
   const total = items.length + legacy.length;
-  state.deleting = { jobIds, includeLegacy, source };
+  state.deleting = { jobIds, legacyIds: legacy.map((item) => item.id), source };
   $("delete-title").textContent = total === 1 ? "Delete 1 resume?" : `Delete ${total} resumes?`;
   $("delete-copy").textContent = total === 1
     ? "Removes its PDF, its copy in your PDF library, its report, and its saved job description. This can't be undone."
@@ -1305,7 +1305,7 @@ async function confirmDelete() {
     const result = await fetchJson("/api/cleanup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ job_ids: pending.jobIds, include_legacy: pending.includeLegacy }),
+      body: JSON.stringify({ job_ids: pending.jobIds, legacy_ids: pending.legacyIds }),
     });
     $("delete-dialog").close();
     state.deleting = null;

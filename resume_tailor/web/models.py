@@ -499,7 +499,8 @@ class CleanupRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     job_ids: list[str] = Field(default_factory=list, max_length=1000)
-    include_legacy: bool = False
+    # Old folder names exactly as the confirm dialog listed them.
+    legacy_ids: list[str] = Field(default_factory=list, max_length=1000)
 
 
 class CleanupItem(BaseModel):

@@ -63,7 +63,7 @@ def test_delete_legacy_folders_only_when_asked(make_app):
         (legacy / "a.txt").write_text("hi", encoding="utf-8")
         first = client.post("/api/cleanup", json={}).json()
         assert first["deleted_legacy"] == [] and legacy.exists()
-        second = client.post("/api/cleanup", json={"include_legacy": True}).json()
+        second = client.post("/api/cleanup", json={"legacy_ids": ["old-run"]}).json()
         assert "old-run" in second["deleted_legacy"]
         assert not legacy.exists()
 
@@ -94,7 +94,7 @@ def test_symlinked_or_outside_paths_are_never_deleted(make_app, tmp_path):
     (outside / "keep.txt").write_text("keep", encoding="utf-8")
     with client:
         (output_dir / "evil").symlink_to(outside, target_is_directory=True)
-        body = client.post("/api/cleanup", json={"include_legacy": True}).json()
+        body = client.post("/api/cleanup", json={"legacy_ids": ["evil"]}).json()
         assert "evil" in {item["id"] for item in body["skipped"]}
         assert "evil" not in body["deleted_legacy"]
         assert (outside / "keep.txt").exists()
@@ -161,3 +161,49 @@ def test_job_whose_folder_was_removed_by_hand_can_still_be_deleted(make_app, tmp
         assert result["deleted_jobs"] == [job_id]
         assert not list((tmp_path / "resumepdfs").glob("*.pdf"))
         assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_only_the_confirmed_old_folders_are_deleted(make_app):
+    client, output_dir, _ = _client(make_app)
+    with client:
+        shown = output_dir / "old-run"
+        shown.mkdir()
+        appeared_later = output_dir / "new-cli-run"
+        appeared_later.mkdir()
+        body = client.post(
+            "/api/cleanup", json={"legacy_ids": ["old-run", "../outside", "missing"]}
+        ).json()
+        assert body["deleted_legacy"] == ["old-run"]
+        assert not shown.exists()
+        assert appeared_later.is_dir()
+
+
+def test_resume_cannot_requeue_a_job_while_it_is_being_deleted(make_app, tmp_path, monkeypatch):
+    import shutil
+
+    from resume_tailor.web.jobs import RecoveryRequestError
+
+    client, output_dir, app = _client(make_app, exit_code=1)
+    registry = app.state.registry
+    with client:
+        job_id = _finished(client)
+        assert (tmp_path / ".resume-tailor" / "requests" / f"{job_id}.json").is_file()
+        assert client.get(f"/api/jobs/{job_id}").json()["job"]["state"] == "failed"
+        job = registry._jobs[job_id]
+        real_rmtree = shutil.rmtree
+        attempts = []
+
+        def rmtree_then_resume(path, *args, **kwargs):
+            # Another tab presses Resume run while the folder is being removed.
+            try:
+                registry.enqueue_resume(job)
+                attempts.append("queued")
+            except RecoveryRequestError as error:
+                attempts.append(error.status)
+            real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr("shutil.rmtree", rmtree_then_resume)
+        body = client.post("/api/cleanup", json={"job_ids": [job_id]}).json()
+        assert body["deleted_jobs"] == [job_id]
+        assert attempts and attempts[0] != "queued"
+        assert job not in registry._waiting

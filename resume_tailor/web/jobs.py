@@ -784,6 +784,8 @@ class QueueRegistry:
         """Queue a failed web run again, reusing the stages it already finished."""
         path = self.requests_dir / f"{job.persisted.job_id}.json"
         with self._cond:
+            if self._jobs.get(job.persisted.job_id) is not job:
+                raise RecoveryRequestError(404, "That resume no longer exists.")
             if job.persisted.state != JobState.FAILED:
                 raise RecoveryRequestError(409, "Only a failed run can be resumed.")
             if job.persisted.source != JobSource.WEB or not path.is_file():
@@ -823,6 +825,8 @@ class QueueRegistry:
     ) -> tuple[RecoverySubmissionResponse, bool]:
         """Shared idempotent queueing for a paused job's user decision."""
         with self._cond:
+            if self._jobs.get(job.persisted.job_id) is not job:
+                raise RecoveryRequestError(404, "That resume no longer exists.")
             store = self._load_recovery_idempotency(job)
             existing = next(
                 (record for record in store.records if record.key == idempotency_key),
@@ -996,17 +1000,25 @@ class QueueRegistry:
                 if directory.is_symlink() or not _within(directory, self.output_dir):
                     skip(job_id, "Folder is a link or outside the output folder")
                     continue
+                # Claimed before any file is touched, so a Resume in another
+                # tab can no longer queue it while its folder is removed.
+                self._jobs.pop(job_id, None)
             removed = self._remove_job_files(job, skipped)
             if removed is None:
+                with self._cond:
+                    self._jobs[job_id] = job
                 skip(job_id, "Couldn't delete")
                 continue
-            with self._cond:
-                self._jobs.pop(job_id, None)
             freed += removed
             deleted_jobs.append(job_id)
 
-        if request.include_legacy:
+        wanted = set(request.legacy_ids)
+        if wanted:
+            with self._cond:
+                known_jobs = set(self._jobs)
             for path in self._legacy_entries():
+                if path.name not in wanted or path.name in known_jobs:
+                    continue
                 if path.is_symlink() or not _within(path, self.output_dir):
                     skip(path.name, "Link or outside the output folder, left alone")
                     continue
