@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import uuid
 from contextlib import asynccontextmanager
@@ -26,6 +27,10 @@ from ..runtime import DEFAULT_CALL_INTERVAL, load_master
 from models import JSONResume
 from .jobs import Job, JobState, QueueRegistry, RecoveryRequestError
 from .models import (
+    SKILL_CHECK_ID_PATTERN,
+    SkillAnswers,
+    SkillCheckRequest,
+    SkillCheckResponse,
     ARTIFACT_ALLOWLIST,
     CALLS_FILE,
     DEFAULT_MAX_CALLS_PER_MINUTE,
@@ -406,6 +411,30 @@ def create_app(
             raise HTTPException(exc.status, exc.detail) from exc
         return created(job.persisted.job_id, position=registry.queue_position(job) or 0)
 
+    @app.post("/api/skill-check", response_model=SkillCheckResponse)
+    async def skill_check(body: SkillCheckRequest) -> SkillCheckResponse:
+        try:
+            return await asyncio.to_thread(registry.run_skill_check, body)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the form as text
+            LOGGER.warning("skill check failed: %s", exc)
+            raise HTTPException(502, f"Skill check failed: {str(exc)[:400]}") from exc
+
+    @app.post("/api/skill-check/{check_id}/answers", status_code=204)
+    async def skill_check_answers(check_id: str, body: SkillAnswers) -> Response:
+        if not re.fullmatch(SKILL_CHECK_ID_PATTERN, check_id):
+            raise HTTPException(404, "Unknown skill check.")
+        await asyncio.to_thread(registry.save_skill_answers, body, replace=False)
+        return Response(status_code=204)
+
+    @app.get("/api/skill-answers", response_model=SkillAnswers)
+    async def get_skill_answers() -> SkillAnswers:
+        return await asyncio.to_thread(registry.skill_answers)
+
+    @app.put("/api/skill-answers", status_code=204)
+    async def put_skill_answers(body: SkillAnswers) -> Response:
+        await asyncio.to_thread(registry.save_skill_answers, body, replace=True)
+        return Response(status_code=204)
+
     @app.get("/api/jobs", response_model=list[JobEntry])
     async def list_jobs() -> list[JobEntry]:
         return [registry.entry(job) for job in registry.items()]
@@ -425,8 +454,13 @@ def create_app(
                 "This older run has no saved job description. Paste the description into a new tailoring.",
             )
         payload = QueuePayload.model_validate_json(path.read_text(encoding="utf-8"))
+        # A saved request never carries its old skill-check id: a re-run checks again.
         return CreateJobRequest(
-            **{name: getattr(payload, name) for name in CreateJobRequest.model_fields}
+            **{
+                name: getattr(payload, name)
+                for name in CreateJobRequest.model_fields
+                if name in QueuePayload.model_fields
+            }
         )
 
     @app.get("/api/jobs/{job_id}/review")

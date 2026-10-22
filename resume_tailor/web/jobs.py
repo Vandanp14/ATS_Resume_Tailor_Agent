@@ -8,23 +8,38 @@ long-lived worker loop woken by a condition.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import shutil
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from models import JSONResume
+
 from ..batch import is_quota_error
+from ..checkpoints import CHECKPOINT_DIR
 from ..config import resolve_chains
 from ..pipeline import TailorPipeline
 from ..progress import JobContext
 from ..runtime import load_master
+from ..skill_answers import (
+    apply_answers,
+    confirmed_terms,
+    declined_terms,
+    replace_answers,
+    save_master,
+)
 from .io import atomic_write_text, private_directory
 from .models import (
+    SkillAnswers,
+    SkillCheckRequest,
+    SkillCheckResponse,
     ARTIFACT_ALLOWLIST,
     EVENT_FILE,
     FIT_RECOVERY_IDEMPOTENCY_FILE,
@@ -64,6 +79,14 @@ from .reporter import EventHub, EventJournal, WebProgressReporter
 from .scheduler import GeminiScheduler, ScheduledProvider
 
 LOGGER = logging.getLogger("resume_tailor.web")
+SKILL_CHECKS_DIR_NAME = "skill_checks"
+SKILL_CHECK_FILE = "check.json"
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 MAX_SAFE_MESSAGE = 500
 _QUOTA_MESSAGE = "Gemini quota exhausted (429); the queue is paused. Resume the queue when quota is back, then resume this run to pick up where it stopped."
 
@@ -207,6 +230,9 @@ class QueueRegistry:
         self.recovery_handler = recovery_handler or self._default_recovery_handler
         self._mutex = threading.Lock()
         self._cond = threading.Condition(self._mutex)
+        # Serializes master.json writes (skill answers) against job reads.
+        self.master_lock = threading.Lock()
+        self.skill_checks_dir = private_directory(self.state_dir / SKILL_CHECKS_DIR_NAME)
         self._stopping = False
         self._worker: threading.Thread | None = None
         self._active: str | None = None
@@ -544,6 +570,59 @@ class QueueRegistry:
 
     # -- queue mutations -------------------------------------------------------
 
+    # -- skill check -------------------------------------------------------------
+
+    def load_master(self) -> JSONResume:
+        with self.master_lock:
+            return load_master(self.master_path)
+
+    def run_skill_check(self, request: SkillCheckRequest) -> SkillCheckResponse:
+        """Parse + map the JD ahead of a job and list skills to confirm."""
+        check_id = uuid.uuid4().hex
+        directory = self.skill_checks_dir / check_id
+        directory.mkdir(parents=True)
+        options = JobOptions(
+            provider_mode=request.provider_mode, freellm_model=request.freellm_model
+        )
+        pipeline = self.pipeline_factory(
+            **self._model_kwargs(options),
+            call_interval=self.call_interval,
+            provider=self.provider,
+        )
+        result = pipeline.check_skills(self.load_master(), request.jd_text, directory)
+        atomic_write_text(
+            directory / SKILL_CHECK_FILE,
+            json.dumps({"jd_sha256": _sha256(request.jd_text)}),
+            mode=0o600,
+        )
+        return SkillCheckResponse(check_id=check_id, **result.model_dump())
+
+    def skill_answers(self) -> SkillAnswers:
+        master = self.load_master()
+        return SkillAnswers(
+            confirmed=confirmed_terms(master), declined=declined_terms(master)
+        )
+
+    def save_skill_answers(self, answers: SkillAnswers, *, replace: bool) -> None:
+        with self.master_lock:
+            master = load_master(self.master_path)
+            update = replace_answers if replace else apply_answers
+            save_master(update(master, answers.confirmed, answers.declined), self.master_path)
+
+    def _skill_check_checkpoints(self, check_id: str | None, jd_text: str) -> Path | None:
+        """The check's checkpoint folder when it exists and matches this JD."""
+        if not check_id:
+            return None
+        directory = self.skill_checks_dir / check_id
+        try:
+            record = json.loads((directory / SKILL_CHECK_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(record, dict) or record.get("jd_sha256") != _sha256(jd_text):
+            return None
+        checkpoints = directory / CHECKPOINT_DIR
+        return checkpoints if checkpoints.is_dir() else None
+
     def enqueue(self, request: CreateJobRequest, idempotency_key: str) -> Job:
         options = JobOptions(
             bridge_skills=request.bridge_skills,
@@ -575,6 +654,15 @@ class QueueRegistry:
             request_fingerprint=payload.request_fingerprint,
         )
         directory = self.output_dir / persisted.job_id
+        reused = self._skill_check_checkpoints(
+            getattr(request, "skill_check_id", None), request.jd_text
+        )
+        if reused is not None:
+            target = directory / CHECKPOINT_DIR
+            target.mkdir(parents=True, exist_ok=True)
+            for source in reused.glob("*.json"):
+                shutil.copyfile(source, target / source.name)
+            payload.resume = True
         journal = EventJournal(directory / EVENT_FILE)
         job = Job(
             persisted=persisted,
@@ -922,7 +1010,7 @@ class QueueRegistry:
             self._run_recovery(job, payload, started)
             return
         try:
-            master = load_master(self.master_path)
+            master = self.load_master()
             pipeline = self.pipeline_factory(
                 **self._model_kwargs(job.persisted.options),
                 call_interval=self.call_interval,

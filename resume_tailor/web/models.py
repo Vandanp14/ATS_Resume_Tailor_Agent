@@ -9,9 +9,11 @@ import re
 import uuid
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from models import SkillChip
 
 MAX_JD_LENGTH = 100_000
 MAX_NAME_LENGTH = 80
@@ -60,6 +62,48 @@ ProviderModeName = Literal["gemini", "freellm", "freellm_gemini", "gemini_freell
 FREELLM_MODEL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}$"
 
 
+SKILL_CHECK_ID_PATTERN = r"^[0-9a-f]{32}$"
+MAX_SKILL_TERMS = 200
+MAX_SKILL_TERM_LENGTH = 80
+
+
+class SkillCheckRequest(BaseModel):
+    """``POST /api/skill-check`` body."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    jd_text: str = Field(min_length=1, max_length=MAX_JD_LENGTH)
+    provider_mode: ProviderModeName = "gemini"
+    freellm_model: str | None = Field(default=None, pattern=FREELLM_MODEL_PATTERN)
+
+    @field_validator("jd_text")
+    @classmethod
+    def _jd_not_blank(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("Paste the job description to check skills against.")
+        return trimmed
+
+
+SkillTerm = Annotated[str, Field(min_length=1, max_length=MAX_SKILL_TERM_LENGTH)]
+
+
+class SkillAnswers(BaseModel):
+    """Confirmed and declined skill-check terms."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    confirmed: list[SkillTerm] = Field(default_factory=list, max_length=MAX_SKILL_TERMS)
+    declined: list[SkillTerm] = Field(default_factory=list, max_length=MAX_SKILL_TERMS)
+
+
+class SkillCheckResponse(BaseModel):
+    check_id: str
+    chips: list[SkillChip]
+    remembered_confirmed: list[str]
+    remembered_declined: list[str]
+
+
 class JobSource(StrEnum):
     WEB = "web"
     CLI = "cli"
@@ -78,6 +122,8 @@ class CreateJobRequest(BaseModel):
     no_pdf: bool = False
     provider_mode: ProviderModeName = "gemini"
     freellm_model: str | None = Field(default=None, pattern=FREELLM_MODEL_PATTERN)
+    # A finished skill check for this JD: its parse and map are reused.
+    skill_check_id: str | None = Field(default=None, pattern=SKILL_CHECK_ID_PATTERN)
 
     @model_validator(mode="after")
     def _research_needs_gemini(self) -> "CreateJobRequest":

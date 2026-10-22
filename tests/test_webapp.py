@@ -219,3 +219,82 @@ def test_static_served_at_root(make_app):
     assert "ATS Resume Tailor" in response.text
     assert client.get("/app.js").status_code == 200
     assert client.get("/app.css").status_code == 200
+
+
+# -- skill check ---------------------------------------------------------------
+
+
+def _master_file(client):
+    import json
+
+    return json.loads((client.output_dir.parent / "master.json").read_text(encoding="utf-8"))
+
+
+def test_skill_check_returns_chips_and_id(web_client):
+    response = web_client.post("/api/skill-check", json={"jd_text": "Need Figma and Siteimprove."})
+    assert response.status_code == 200
+    body = response.json()
+    assert re.fullmatch(r"[0-9a-f]{32}", body["check_id"])
+    assert [chip["term"] for chip in body["chips"]] == ["Figma", "Siteimprove"]
+    assert body["remembered_confirmed"] == []
+
+
+def test_answers_endpoint_updates_master_file(web_client):
+    check = web_client.post("/api/skill-check", json={"jd_text": "Need Figma."}).json()
+    response = web_client.post(
+        f"/api/skill-check/{check['check_id']}/answers",
+        json={"confirmed": ["Figma"], "declined": ["Siteimprove"]},
+    )
+    assert response.status_code == 204
+    saved = _master_file(web_client)
+    assert {"name": "Confirmed Skills", "keywords": ["Figma"]} in saved["skills"]
+    assert saved["skill_check"]["declined"] == ["Siteimprove"]
+    again = web_client.post("/api/skill-check", json={"jd_text": "Need Figma."}).json()
+    assert again["chips"] == []
+    assert again["remembered_confirmed"] == ["Figma"]
+
+
+def test_put_skill_answers_replaces_lists(web_client):
+    web_client.put("/api/skill-answers", json={"confirmed": ["Figma"], "declined": ["Azure"]})
+    assert web_client.get("/api/skill-answers").json() == {
+        "confirmed": ["Figma"],
+        "declined": ["Azure"],
+    }
+    response = web_client.put("/api/skill-answers", json={"confirmed": ["Azure"], "declined": []})
+    assert response.status_code == 204
+    assert web_client.get("/api/skill-answers").json() == {"confirmed": ["Azure"], "declined": []}
+
+
+def test_job_with_skill_check_copies_checkpoints_and_resumes(web_client):
+    import json
+
+    jd = "We need a Python engineer with Figma."
+    check = web_client.post("/api/skill-check", json={"jd_text": jd}).json()
+    response = create_job(web_client, str(uuid.uuid4()), jd_text=jd, skill_check_id=check["check_id"])
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    job_dir = web_client.output_dir / job_id
+    assert (job_dir / "checkpoints" / "jd_parse.json").is_file()
+    request = json.loads(
+        (web_client.output_dir.parent / ".resume-tailor" / "requests" / f"{job_id}.json").read_text()
+    )
+    assert request["resume"] is True
+    assert wait_for(web_client, job_id)["state"] == "completed"
+
+
+def test_job_with_missing_or_mismatched_check_runs_normally(web_client):
+    import json
+
+    check = web_client.post("/api/skill-check", json={"jd_text": "Need Figma."}).json()
+    for check_id in (check["check_id"], "0" * 32):
+        response = create_job(
+            web_client, str(uuid.uuid4()), jd_text="A different posting.", skill_check_id=check_id
+        )
+        assert response.status_code == 202
+        job_id = response.json()["job_id"]
+        request = json.loads(
+            (web_client.output_dir.parent / ".resume-tailor" / "requests" / f"{job_id}.json").read_text()
+        )
+        assert request["resume"] is False
+        assert not (web_client.output_dir / job_id / "checkpoints").exists()
+        assert wait_for(web_client, job_id)["state"] == "completed"

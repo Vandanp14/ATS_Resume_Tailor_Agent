@@ -24,7 +24,32 @@ class FakePipe(TailorPipeline):
     write_tex: bool = False
     write_diagnostic: bool = False
 
-    def run(self, master, jd_text, out_dir, no_pdf, job):
+    skill_chips: tuple[str, ...] = ("Figma", "Siteimprove")
+
+    def check_skills(self, master, jd_text, out_dir):
+        from models import SkillChip, SkillCheckResult
+        from resume_tailor.skill_answers import (
+            answered_keys,
+            confirmed_terms,
+            declined_terms,
+        )
+        from keyword_coverage import normalize_term
+
+        checkpoints = out_dir / "checkpoints"
+        checkpoints.mkdir(parents=True, exist_ok=True)
+        (checkpoints / "jd_parse.json").write_text("{}", encoding="utf-8")
+        answered = answered_keys(master)
+        return SkillCheckResult(
+            chips=[
+                SkillChip(term=term, status="missing")
+                for term in self.skill_chips
+                if normalize_term(term) not in answered
+            ],
+            remembered_confirmed=confirmed_terms(master),
+            remembered_declined=declined_terms(master),
+        )
+
+    def run(self, master, jd_text, out_dir, no_pdf, job, resume=False):
         if self.wait:
             time.sleep(self.wait)
         if self.throw:
