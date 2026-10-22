@@ -86,6 +86,9 @@ class Education(BaseModel):
     endDate: str | None = None
     score: str | None = None
     courses: list[str] | None = None
+    # Credits finished so far; college postings may count them as experience.
+    credits_completed: int | None = Field(default=None, ge=0)
+    credit_system: Literal["semester", "quarter"] = "semester"
 
 
 class Award(BaseModel):
