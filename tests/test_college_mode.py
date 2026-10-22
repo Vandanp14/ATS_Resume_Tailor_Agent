@@ -651,3 +651,22 @@ def test_line_naming_only_categories_uses_provenance():
     jd = JDProfile(role="Web Developer", must_have_skills=[], nice_to_have_skills=[], keywords=[],
                    minimum_qualifications=[line])
     assert [row["id"] for row in qualification_requirements(jd, 0)] == ["Q1"]
+
+
+def test_review_payload_has_keyword_match_fields(tmp_path):
+    import json
+
+    from resume_tailor.web.review import read_review
+
+    report = {"coverage_pct": 80, "keyword_coverage": {"computed_coverage_pct": 55.6, "missing_supported_terms": ["SQL"]}}
+    (tmp_path / "match_report.json").write_text(json.dumps(report))
+    review = read_review(tmp_path)
+    assert review["keyword_match_pct"] == 55.6
+    assert review["all_stated_included"] is False
+    report["keyword_coverage"]["missing_supported_terms"] = []
+    (tmp_path / "match_report.json").write_text(json.dumps(report))
+    assert read_review(tmp_path)["all_stated_included"] is True
+    (tmp_path / "match_report.json").write_text(json.dumps({"coverage_pct": 80}))
+    old = read_review(tmp_path)
+    assert old["keyword_match_pct"] is None
+    assert old["all_stated_included"] is None
