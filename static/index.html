@@ -301,13 +301,12 @@
     </section>
 
     <section class="view view-history" id="view-history" aria-labelledby="history-title" hidden>
-      <h1 class="view-title" id="history-title">History</h1>
+      <div class="history-head">
+        <h1 class="view-title" id="history-title">History</h1>
+        <button class="button secondary compact" id="select-btn" type="button">Select</button>
+      </div>
       <p class="view-note" id="history-note" role="status"></p>
       <div class="history-tools">
-        <div class="rail-segment" aria-label="Job list filter">
-          <button type="button" id="filter-queue" aria-pressed="true">Queue <span class="tabnum" id="queue-count">0</span></button>
-          <button type="button" id="filter-recent" aria-pressed="false">Recent</button>
-        </div>
         <div class="job-filters">
           <label for="job-search">Find a resume</label>
           <input class="input" id="job-search" type="search" placeholder="Company or role" autocomplete="off">
@@ -315,6 +314,8 @@
           <select class="select" id="job-status-filter">
             <option value="all">All statuses</option>
             <option value="completed">Ready</option>
+            <option value="running">Running</option>
+            <option value="queued">Queued</option>
             <option value="failed">Failed</option>
             <option value="action_required">Needs you</option>
           </select>
@@ -322,25 +323,19 @@
       </div>
 
       <div class="history-area">
-        <div class="list-state skeleton-stack" id="queue-loading" aria-label="Loading jobs" hidden>
+        <div class="list-state skeleton-stack" id="queue-loading" aria-label="Loading resumes" hidden>
           <span></span><span></span><span></span>
         </div>
         <div class="list-state error-state" id="queue-error" role="alert" hidden>
-          <strong>Jobs could not be loaded</strong>
+          <strong>Resumes could not be loaded</strong>
           <span id="queue-error-copy"></span>
-          <button class="rail-action" id="retry-jobs-btn" type="button">Try again</button>
+          <button class="button secondary compact" id="retry-jobs-btn" type="button">Try again</button>
         </div>
-        <div class="list-state empty-state" id="queue-empty" hidden>
-          <strong>No queued jobs</strong>
-          <span>Paste a job description to start tailoring.</span>
+        <div class="list-state empty-state" id="history-empty" hidden>
+          <strong>No resumes yet</strong>
+          <span>Paste a job description on New resume to make one.</span>
         </div>
-        <ul class="job-list" id="queue-list" aria-label="Queued and running jobs"></ul>
-
-        <div class="list-state empty-state" id="recent-empty" hidden>
-          <strong>No recent runs</strong>
-          <span>Completed and failed jobs will appear here.</span>
-        </div>
-        <ul class="job-list" id="recent-list" aria-label="Recent jobs" hidden></ul>
+        <ul class="job-list" id="history-list" aria-label="Resumes"></ul>
       </div>
     </section>
   </main>

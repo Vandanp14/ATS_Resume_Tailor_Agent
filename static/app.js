@@ -45,7 +45,6 @@ const state = {
   queueError: "",
   detailStatus: "empty",
   detailError: "",
-  listFilter: "queue",
   activeTab: "progress",
   submitting: false,
   submission: null,
@@ -272,24 +271,15 @@ function jobRow(job, position = null) {
 
   const select = el("button", "job-select");
   select.type = "button";
-  select.setAttribute("aria-label", `View ${jobLabel(job)}`);
+  select.setAttribute("aria-label", `Open ${jobLabel(job)}`);
   select.setAttribute("aria-current", String(job.job_id === state.selectedId));
-  const mark = el("span", `job-state-mark ${job.state}`);
-  mark.setAttribute("aria-hidden", "true");
-  select.appendChild(mark);
-
   const copy = el("span", "job-copy");
   copy.appendChild(el("strong", null, job.company || "Untitled company"));
-  const metadata = job.role || job.current_stage || job.state;
-  copy.appendChild(el("span", null, metadata));
+  const when = job.state === "queued" && position ? `#${position} in queue` : formatWhen(job.finished_at || job.created_at);
+  copy.appendChild(el("span", null, [job.role, when].filter(Boolean).join(" · ")));
   select.appendChild(copy);
-
-  let aside = "";
-  if (job.state === "queued" && position) aside = `#${position}`;
-  else if (job.state === "running") aside = "Live";
-  else if (job.state === "action_required") aside = "Action needed";
-  else aside = formatWhen(job.finished_at || job.created_at);
-  select.appendChild(el("span", "job-aside", aside));
+  const tag = ViewModel.historyTag(job.state);
+  select.appendChild(el("span", `status-pill ${tag.tone}`, tag.text));
   select.addEventListener("click", () => go(`#job/${encodeURIComponent(job.job_id)}`));
   item.appendChild(select);
 
@@ -312,52 +302,52 @@ function renderQueueBanner() {
   action.hidden = !paused && !snapshot.active_job_id && snapshot.queue_count === 0;
 }
 
+const HISTORY_ORDER = { running: 0, queued: 1, action_required: 2 };
+
+function historyJobs() {
+  const positions = new Map((state.queue ? state.queue.waiting : []).map((entry) => [entry.job_id, entry.queue_position]));
+  const jobs = new Map(state.jobs);
+  for (const entry of state.queue ? state.queue.waiting : []) {
+    if (!jobs.has(entry.job_id)) jobs.set(entry.job_id, { ...entry, state: "queued", active: false, options: {} });
+  }
+  const search = $("job-search").value.trim().toLowerCase();
+  const statusFilter = $("job-status-filter").value;
+  const rows = [...jobs.values()]
+    .filter((job) => jobLabel(job).toLowerCase().includes(search))
+    .filter((job) => statusFilter === "all" || job.state === statusFilter)
+    .sort((a, b) => {
+      const rank = (HISTORY_ORDER[a.state] ?? 3) - (HISTORY_ORDER[b.state] ?? 3);
+      if (rank) return rank;
+      if (a.state === "queued") return (positions.get(a.job_id) || 0) - (positions.get(b.job_id) || 0);
+      return String(b.finished_at || b.created_at).localeCompare(String(a.finished_at || a.created_at));
+    });
+  return { rows, positions, filtered: Boolean(search) || statusFilter !== "all", total: jobs.size };
+}
+
 function renderJobLists() {
-  const queueList = $("queue-list");
-  const recentList = $("recent-list");
-  clear(queueList);
-  clear(recentList);
-
-  $("filter-queue").setAttribute("aria-pressed", String(state.listFilter === "queue"));
-  $("filter-recent").setAttribute("aria-pressed", String(state.listFilter === "recent"));
-  queueList.hidden = state.listFilter !== "queue";
-  recentList.hidden = state.listFilter !== "recent";
-
+  const list = $("history-list");
+  clear(list);
   const loading = state.queueStatus === "loading";
   const failed = state.queueStatus === "error";
   $("queue-loading").hidden = !loading;
   $("queue-error").hidden = !failed;
   $("queue-error-copy").textContent = state.queueError;
   if (loading || failed || !state.queue) {
-    $("queue-empty").hidden = true;
-    $("recent-empty").hidden = true;
+    $("history-empty").hidden = true;
     return;
   }
 
+  const { rows, positions, filtered, total } = historyJobs();
+  for (const job of rows) list.appendChild(jobRow(job, positions.get(job.job_id)));
+  const empty = $("history-empty");
+  empty.hidden = rows.length > 0;
+  empty.querySelector("strong").textContent = filtered ? "No matching resumes" : "No resumes yet";
+  empty.querySelector("span").textContent = filtered ? "Try another search or status." : "Paste a job description on New resume to make one.";
+
   const activeId = state.queue.active_job_id;
   const active = activeId ? state.jobs.get(activeId) : null;
-  if (active) queueList.appendChild(jobRow(active));
-  for (const entry of state.queue.waiting) {
-    const known = state.jobs.get(entry.job_id);
-    const job = known || { ...entry, state: "queued", active: false, options: {} };
-    queueList.appendChild(jobRow(job, entry.queue_position));
-  }
-
-  const search = $("job-search").value.trim().toLowerCase();
-  const statusFilter = $("job-status-filter").value;
-  const recent = [...state.jobs.values()]
-    .filter((job) => ["completed", "failed", "action_required"].includes(job.state))
-    .filter((job) => jobLabel(job).toLowerCase().includes(search) && (statusFilter === "all" || job.state === statusFilter))
-    .sort((a, b) => String(b.finished_at || b.created_at).localeCompare(String(a.finished_at || a.created_at)));
-  for (const job of recent) recentList.appendChild(jobRow(job));
-  $("recent-empty").querySelector("strong").textContent = search || statusFilter !== "all" ? "No matching runs" : "No recent runs";
-  $("recent-empty").querySelector("span").textContent = search || statusFilter !== "all" ? "Try another search or change the status filter." : "Completed and failed jobs will appear here.";
-
-  $("queue-count").textContent = String(state.queue.queue_count || 0);
-  $("history-count").textContent = String(state.jobs.size);
+  $("history-count").textContent = String(total);
   renderTopbarRunning(active);
-  $("queue-empty").hidden = state.listFilter !== "queue" || Boolean(active) || state.queue.waiting.length > 0;
-  $("recent-empty").hidden = state.listFilter !== "recent" || recent.length > 0;
   renderQueueBanner();
 }
 
@@ -427,8 +417,6 @@ function selectJob(jobId) {
   }
   const changed = state.selectedId !== jobId;
   state.selectedId = jobId;
-  const job = state.jobs.get(jobId);
-  if (changed && job) state.listFilter = ["queued", "running"].includes(job.state) ? "queue" : "recent";
   if (changed) state.activeTab = "progress";
   renderJobLists();
   fetchDetail(jobId);
@@ -1832,8 +1820,8 @@ function bindEvents() {
     if (state.meta?.pdf_available === false) lockSkipPdf();
     saveDraft();
   });
-  $("job-search").addEventListener("input", () => { state.listFilter = "recent"; renderJobLists(); });
-  $("job-status-filter").addEventListener("change", () => { state.listFilter = "recent"; renderJobLists(); });
+  $("job-search").addEventListener("input", renderJobLists);
+  $("job-status-filter").addEventListener("change", renderJobLists);
   $("duplicate-job").addEventListener("click", duplicateJob);
   $("resume-job").addEventListener("click", resumeJob);
   $("reload-review").addEventListener("click", () => loadReview(true));
@@ -1883,8 +1871,6 @@ function bindEvents() {
     else pauseQueue();
   });
 
-  $("filter-queue").addEventListener("click", () => { state.listFilter = "queue"; renderJobLists(); });
-  $("filter-recent").addEventListener("click", () => { state.listFilter = "recent"; renderJobLists(); });
   for (const name of TAB_NAMES) {
     const tab = $(`tab-${name}`);
     tab.addEventListener("click", () => activateTab(name, false));

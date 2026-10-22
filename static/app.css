@@ -231,6 +231,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--i
 
 /* Job lists ----------------------------------------------------------------- */
 
+.history-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-block-end: 18px; }
+.history-head .view-title { margin: 0; }
 .history-tools { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-block-end: 14px; }
 .rail-segment { display: flex; gap: 2px; padding: 3px; background: var(--fill); border-radius: var(--pill); }
 .rail-segment button { border: 0; background: none; padding: 6px 14px; border-radius: var(--pill); font-weight: 600; font-size: 13px; color: var(--text-2); cursor: pointer; min-block-size: 34px; }
@@ -245,6 +247,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--i
   background: none; border: 0; text-align: start; cursor: pointer;
 }
 .job-select:hover { background: var(--paper); }
+.job-select[aria-current="true"] { background: var(--paper); }
 .job-copy { flex: 1; display: grid; min-inline-size: 0; }
 .job-copy strong { font-size: 14px; }
 .job-copy span { font-size: 13px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

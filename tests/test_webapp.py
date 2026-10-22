@@ -368,3 +368,13 @@ def test_job_view_markup():
     app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
     for marker in ("ViewModel.progressSteps", "ViewModel.summary", "ViewModel.friendlyNote", "That resume no longer exists."):
         assert marker in app_js, marker
+
+
+def test_history_markup():
+    index = (REPO_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    for marker in ('id="history-title"', 'id="history-note"', 'id="history-list"', 'id="select-btn"', 'id="history-empty"'):
+        assert marker in index, marker
+    for gone in ('id="queue-list"', 'id="recent-list"', 'id="filter-queue"', 'id="filter-recent"'):
+        assert gone not in index, gone
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert "ViewModel.historyTag" in app_js
