@@ -640,3 +640,14 @@ def test_plan_validator_demands_minimum_qualification_ids_once():
     plan.assignments[0].matched_requirements = ["Q1"]
     assert missing_qualification_ids(plan, rows) == []
     assert ContractError
+
+
+def test_line_naming_only_categories_uses_provenance():
+    from keyword_coverage import qualification_requirements
+    from models import JDProfile
+
+    line = _line("Experience with content management systems and versioning software.", "technical",
+                 named_terms=["content management systems", "versioning software"])
+    jd = JDProfile(role="Web Developer", must_have_skills=[], nice_to_have_skills=[], keywords=[],
+                   minimum_qualifications=[line])
+    assert [row["id"] for row in qualification_requirements(jd, 0)] == ["Q1"]

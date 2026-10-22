@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-from keyword_coverage import mentions, normalize_term, term_variants
+from keyword_coverage import is_category_phrase, mentions, normalize_term, term_variants
 from models import (
     EvidencePlan,
     Education,
@@ -291,12 +291,13 @@ def _qualification_fact_ids(
 
 
 def _technical(line: QualificationLine, master: JSONResume) -> QualificationStatus:
-    if not line.named_terms:
+    named = [term for term in line.named_terms if not is_category_phrase(term)]
+    if not named:
         return QualificationStatus(
             line.text, line.type, "unsupported", "names no tool or standard to check"
         )
     facts = "\n".join(fact["text"] for fact in master_fact_index(master).values())
-    absent = [term for term in line.named_terms if not mentions(facts, term_variants(term))]
+    absent = [term for term in named if not mentions(facts, term_variants(term))]
     if absent:
         return QualificationStatus(
             line.text,
@@ -371,7 +372,9 @@ def qualification_coverage(
                 if line.years is not None:
                     # The years half must show too, not only the degree name.
                     page_terms.append(years_label(experience_months(master, line.domain, today)))
-            elif line.type == "technical" and line.named_terms:
+            elif line.type == "technical" and any(
+                not is_category_phrase(term) for term in line.named_terms
+            ):
                 status = _technical(line, master)
                 page_terms = list(line.named_terms)
             else:

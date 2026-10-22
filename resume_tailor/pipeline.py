@@ -35,6 +35,7 @@ from models import (
     WorkRewriteResponse,
 )
 from keyword_coverage import (
+    is_category_phrase,
     mentions,
     qualification_requirements,
     TECH_CATEGORIES,
@@ -1446,6 +1447,8 @@ class TailorPipeline:
             if item.get("category") not in TECH_CATEGORIES:
                 continue
             term = item["term"]
+            if is_category_phrase(term):
+                continue
             if len(term) > MAX_CHIP_TERM_LENGTH:
                 # Sentence-length "terms" are parse noise, not a tool to confirm.
                 continue
@@ -1465,10 +1468,14 @@ class TailorPipeline:
             # are checked by HR literally, so they are offered too.
             fact_text = "\n".join(fact["text"] for fact in facts.values())
             for line in (*jd.minimum_qualifications, *jd.preferred_qualifications):
+                if line.type != "technical":
+                    # A degree's subject ("Computer Science") is not a skill to tick.
+                    continue
                 for term in line.named_terms:
                     variants = term_variants(term)
                     if (
-                        len(term) > MAX_CHIP_TERM_LENGTH
+                        is_category_phrase(term)
+                        or len(term) > MAX_CHIP_TERM_LENGTH
                         or normalize_term(term) in chips
                         or mentions(fact_text, variants)
                         or any(normalize_term(value) in answered for value in variants)

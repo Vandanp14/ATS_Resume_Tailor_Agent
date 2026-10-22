@@ -233,6 +233,22 @@ def _variant_pattern(variant: str) -> re.Pattern[str]:
     )
 
 
+# Plural nouns that end a category phrase ("analytics platforms"), not a tool.
+_CATEGORY_TAILS = frozenset(
+    {"systems", "platforms", "tools", "software", "technologies", "frameworks",
+     "languages", "reports", "services", "applications", "environments",
+     "practices", "methodologies", "databases", "libraries"}
+)
+
+
+def is_category_phrase(term: str) -> bool:
+    """A multi-word kind of thing ("content management systems"), not a named tool."""
+    words = term.split()
+    return len(words) >= 2 and words[-1].casefold() in _CATEGORY_TAILS and not any(
+        any(char.isupper() for char in word[1:]) or word.isupper() for word in words
+    )
+
+
 def term_variants(term: str) -> tuple[str, ...]:
     """Every spelling an ATS treats as the same term."""
     return _expand_variants(term)
@@ -317,8 +333,9 @@ def qualification_requirements(jd: JDProfile, start_index: int) -> list[dict]:
     ):
         for line in lines:
             # Lines no literal term can prove are proven by a bullet's facts.
+            named = [term for term in line.named_terms if not is_category_phrase(term)]
             if line.type not in {"interpersonal", "other"} and not (
-                line.type == "technical" and not line.named_terms
+                line.type == "technical" and not named
             ):
                 continue
             weight = _QUALIFICATION_WEIGHT[requirement_type]

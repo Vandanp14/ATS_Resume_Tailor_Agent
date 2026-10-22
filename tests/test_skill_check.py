@@ -252,3 +252,35 @@ def test_college_check_offers_standards_from_lines(monkeypatch, tmp_path):
     monkeypatch.setattr(college, "_call_once", StandardsStub())
     again = [chip.term for chip in college.check_skills(answered, STANDARDS_JD, tmp_path / "a").chips]
     assert "ADA" not in again and "Section 508" in again
+
+
+def test_category_phrases_are_not_chips():
+    from keyword_coverage import is_category_phrase
+
+    for phrase in ("content management systems", "analytics platforms", "versioning software", "web analytics reports"):
+        assert is_category_phrase(phrase), phrase
+    for tool in ("Cascade CMS", "Siteimprove Web Governance Suite", "Section 508", "ADA", "Figma", "Spring Boot"):
+        assert not is_category_phrase(tool), tool
+
+
+class DegreeLineStub(StandardsStub):
+    def __call__(self, template, response_model, **context):
+        result = super().__call__(template, response_model, **context)
+        if response_model is JDProfile:
+            from models import QualificationLine
+
+            result.preferred_qualifications.append(
+                QualificationLine(text="Preferred bachelor's degree in Computer Science.", type="degree",
+                                  named_terms=["Computer Science"])
+            )
+        return result
+
+
+def test_degree_subjects_are_not_chips(monkeypatch, tmp_path):
+    college = tailor.TailorPipeline(
+        model="gemini-3.1-flash-lite", call_interval=0, provider=MagicMock(), college_mode=True
+    )
+    monkeypatch.setattr(college, "_call_once", DegreeLineStub())
+    jd = STANDARDS_JD + " Preferred bachelor's degree in Computer Science."
+    terms = [chip.term for chip in college.check_skills(tailor_master(), jd, tmp_path).chips]
+    assert "Computer Science" not in terms and "Section 508" in terms
