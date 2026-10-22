@@ -168,15 +168,6 @@ def _artifacts(directory: Path) -> list[str]:
     return [name for name in ARTIFACT_ALLOWLIST if (directory / name).is_file()]
 
 
-def _cli_state(directory: Path) -> JobState | None:
-    present = set(_artifacts(directory))
-    if present & {"tailored.json", "resume.pdf", "resume.tex"}:
-        return JobState.COMPLETED
-    if (directory / "diagnostic_report.json").is_file():
-        return JobState.FAILED
-    return None
-
-
 def _elapsed(started: str | None, finished: str | None) -> float | None:
     if not started:
         return None
@@ -442,23 +433,6 @@ class QueueRegistry:
         self._waiting.sort(
             key=lambda job: (job.persisted.created_at, job.persisted.job_id)
         )
-
-        for directory in sorted(self.output_dir.iterdir()):
-            if not directory.is_dir() or (directory / JOB_FILE).is_file():
-                continue
-            state = _cli_state(directory)
-            if state is not None:
-                self._add(
-                    directory,
-                    PersistedJob(
-                        job_id=directory.name,
-                        source=JobSource.CLI,
-                        state=state,
-                        company=directory.name,
-                        role="CLI run",
-                        created_at=utc_now_iso(),
-                    ),
-                )
 
     def _ensure_job_file(self, job: Job) -> None:
         if not (job.directory / JOB_FILE).is_file():

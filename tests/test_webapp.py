@@ -316,3 +316,15 @@ def test_skill_answers_work_past_two_hundred_terms(web_client):
     body = web_client.get("/api/skill-answers")
     assert body.status_code == 200
     assert len(body.json()["declined"]) == 300
+
+
+def test_legacy_cli_folders_are_not_listed(make_app, tmp_path):
+    legacy = tmp_path / "output" / "product_swe_disney"
+    legacy.mkdir(parents=True)
+    (legacy / "tailored.json").write_text("{}", encoding="utf-8")
+    (legacy / "resume.pdf").write_bytes(b"%PDF-1.4")
+    app, _ = make_app()
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        jobs = client.get("/api/jobs").json()
+    assert isinstance(jobs, list)
+    assert all(entry["job_id"] != "product_swe_disney" for entry in jobs)
