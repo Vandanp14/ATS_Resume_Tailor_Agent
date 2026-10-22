@@ -33,21 +33,24 @@ def main() -> int:
     if not GEMINI_API_KEY:
         print("GEMINI_API_KEY is not set in .env")
         return 1
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    # A busy model can hang for minutes; give each request a minute at most.
+    client = genai.Client(
+        api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=60_000)
+    )
     gemma = [
         model.name for model in client.models.list() if "gemma" in (model.name or "")
     ]
-    print("gemma models listed:", ", ".join(gemma) or "none")
+    print("gemma models listed:", ", ".join(gemma) or "none", flush=True)
     config = types.GenerateContentConfig(max_output_tokens=5)
     for model in CANDIDATES:
         try:
             client.models.generate_content(
                 model=model, contents="Reply with OK.", config=config
             )
-            print(f"{model}: OK")
+            print(f"{model}: OK", flush=True)
         except Exception as exc:  # noqa: BLE001 - report every failure kind
             code = getattr(exc, "code", None) or type(exc).__name__
-            print(f"{model}: {code} {str(exc)[:80]}")
+            print(f"{model}: {code} {str(exc)[:80]}", flush=True)
     return 0
 
 
