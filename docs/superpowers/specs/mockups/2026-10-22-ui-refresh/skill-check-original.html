@@ -1,0 +1,78 @@
+<h2>Skill check: where should it appear?</h2>
+<p class="subtitle">Example: Fordham "Web Strategist" posting. These skills appear in the posting but not in your master resume. Click the layout you prefer.</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Pause mid-run (card on the job page)</h3>
+      <p>Run starts right away. After the job description is parsed (~10s), it pauses and shows this card. Same pattern as the existing "Some bullets need your call" card.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Check before the run (step after pasting the job description)</h3>
+      <p>Click "Check skills" first. The parse runs, the list appears, you tick, then press "Tailor resume". The run never pauses after that.</p>
+    </div>
+  </div>
+</div>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">A: Pause card in the job view</div>
+    <div class="mockup-body" style="background:#f7f7f4;color:#18202b;font-family:system-ui;padding:16px">
+      <div style="font-size:12px;color:#85858d;margin-bottom:8px">Fordham University · Web Strategist · Paused at "Map requirements"</div>
+      <div style="background:#fff;border:1px solid #e3e3de;border-left:3px solid #8a5b00;border-radius:8px;padding:14px">
+        <div style="font-weight:700;font-size:15px">6 skills from this posting aren't in your resume</div>
+        <div style="font-size:13px;color:#555;margin:4px 0 12px">Tick the ones you know. They're saved to your master resume and listed in Skills. Unticked ones won't be asked again.</div>
+
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#85858d;margin:8px 0 6px">CLOSE TO YOUR EXPERIENCE</div>
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;margin:6px 0"><input type="checkbox"> <span><b>Figma</b> <span style="color:#85858d">· posting: "prototype layouts in Figma or Adobe XD" · you have: React UI, accessibility-focused interfaces</span></span></label>
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;margin:6px 0"><input type="checkbox"> <span><b>Adobe XD</b> <span style="color:#85858d">· same line as above</span></span></label>
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;margin:6px 0"><input type="checkbox"> <span><b>Google Search Console</b> <span style="color:#85858d">· you have: Drupal 10 site pages</span></span></label>
+
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#85858d;margin:12px 0 6px">NEW TO YOUR RESUME</div>
+        <label style="display:flex;gap:8px;font-size:13px;margin:6px 0"><input type="checkbox"> <b>Photoshop</b></label>
+        <label style="display:flex;gap:8px;font-size:13px;margin:6px 0"><input type="checkbox"> <b>Siteimprove</b></label>
+        <label style="display:flex;gap:8px;font-size:13px;margin:6px 0"><input type="checkbox"> <b>TERMINALFOUR</b></label>
+
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button style="background:#315ecc;color:#fff;border:0;border-radius:6px;padding:8px 14px;font-weight:600">Save and continue</button>
+          <button style="background:#efefeb;color:#18202b;border:0;border-radius:6px;padding:8px 14px">Skip, I know none</button>
+        </div>
+      </div>
+      <div style="font-size:12px;color:#85858d;margin-top:10px">Remembered from earlier runs: Java ✓ · JUnit ✗ · Azure ✗ <a style="color:#315ecc">edit</a></div>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">B: Step before the run</div>
+    <div class="mockup-body" style="background:#f7f7f4;color:#18202b;font-family:system-ui;padding:16px">
+      <div style="font-size:12px;color:#85858d;margin-bottom:6px">New job</div>
+      <div style="background:#fff;border:1px solid #e3e3de;border-radius:8px;padding:10px;font-size:12px;color:#85858d;height:54px;overflow:hidden">About the role: Fordham University seeks a Web Strategist to manage content in TERMINALFOUR, monitor accessibility with Siteimprove, prototype layouts in Figma or Adobe XD…</div>
+      <div style="display:flex;gap:8px;margin:10px 0">
+        <span style="background:#e5f5ec;color:#16794a;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:600">✓ Skills checked</span>
+      </div>
+
+      <div style="background:#fff;border:1px solid #e3e3de;border-radius:8px;padding:14px">
+        <div style="font-weight:700;font-size:14px;margin-bottom:8px">Do you know these? <span style="font-weight:400;color:#85858d">(6 not in your resume)</span></div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <span style="border:1px solid #315ecc;background:#e8efff;color:#244ba8;border-radius:999px;padding:5px 10px;font-size:12px">✓ Figma</span>
+          <span style="border:1px solid #315ecc;background:#e8efff;color:#244ba8;border-radius:999px;padding:5px 10px;font-size:12px">✓ Adobe XD</span>
+          <span style="border:1px solid #315ecc;background:#e8efff;color:#244ba8;border-radius:999px;padding:5px 10px;font-size:12px">✓ Photoshop</span>
+          <span style="border:1px solid #d6d6d0;border-radius:999px;padding:5px 10px;font-size:12px">Google Search Console</span>
+          <span style="border:1px solid #d6d6d0;border-radius:999px;padding:5px 10px;font-size:12px">Siteimprove</span>
+          <span style="border:1px solid #d6d6d0;border-radius:999px;padding:5px 10px;font-size:12px">TERMINALFOUR</span>
+        </div>
+        <div style="font-size:12px;color:#85858d;margin-top:8px">Tap to toggle. Saved to master resume.</div>
+      </div>
+      <button style="margin-top:12px;width:100%;background:#315ecc;color:#fff;border:0;border-radius:6px;padding:10px;font-weight:600">Tailor resume</button>
+    </div>
+  </div>
+</div>
+
+<div class="pros-cons">
+  <div class="pros"><h4>A: pause mid-run</h4><ul><li>One click to start, same as today</li><li>Shows why each skill is "close" to your experience</li><li>Fits the existing pause/resume system</li><li>But you have to come back once the run reaches that point</li></ul></div>
+  <div class="cons"><h4>B: before the run</h4><ul><li>Answer once, then walk away; run never stops</li><li>Faster to scan (chips)</li><li>Adds a click before every run</li><li>Fewer details per skill</li></ul></div>
+</div>

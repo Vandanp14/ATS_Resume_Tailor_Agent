@@ -61,9 +61,15 @@ def read_review(directory: Path) -> dict:
                 reviewed = decision.reviewed_ids
         except (ValueError, OSError):
             pass
+    keyword = report.get("keyword_coverage")
+    keyword = keyword if isinstance(keyword, dict) else None
     return {
         "revision": revision,
         "coverage_pct": report.get("coverage_pct"),
+        "keyword_match_pct": keyword.get("computed_coverage_pct") if keyword else None,
+        "all_stated_included": (
+            not keyword.get("missing_supported_terms") if keyword else None
+        ),
         "missing_must_haves": report.get("missing_must_haves", []),
         "weak_sections": report.get("weak_sections", []),
         "recommendations": report.get("recommendations", []),

@@ -188,7 +188,7 @@ def test_security_boundary_and_headers(web_client):
 
 def test_static_shell_contract():
     index = (REPO_ROOT / "static" / "index.html").read_text(encoding="utf-8")
-    assert '<dialog class="new-job-dialog"' in index
+    assert 'id="view-new"' in index and 'id="job-form"' in index
     assert 'for="company"' in index and 'for="role"' in index and 'for="jd-text"' in index
     assert 'id="jd-help"' in index and 'id="jd-error"' in index
     assert 'role="tablist"' in index and 'role="tabpanel"' in index
@@ -207,7 +207,6 @@ def test_static_shell_contract():
     assert ":focus-visible" in app_css
     assert "prefers-reduced-motion" in app_css
     assert "100dvh" in app_css
-    assert "grid-template-columns: 280px minmax(0, 1fr)" in app_css
     assert "360px 320px" not in app_css
 
 
@@ -316,3 +315,101 @@ def test_skill_answers_work_past_two_hundred_terms(web_client):
     body = web_client.get("/api/skill-answers")
     assert body.status_code == 200
     assert len(body.json()["declined"]) == 300
+
+
+def test_legacy_cli_folders_are_not_listed(make_app, tmp_path):
+    legacy = tmp_path / "output" / "product_swe_disney"
+    legacy.mkdir(parents=True)
+    (legacy / "tailored.json").write_text("{}", encoding="utf-8")
+    (legacy / "resume.pdf").write_bytes(b"%PDF-1.4")
+    app, _ = make_app()
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        jobs = client.get("/api/jobs").json()
+    assert isinstance(jobs, list)
+    assert all(entry["job_id"] != "product_swe_disney" for entry in jobs)
+
+
+def test_shell_has_views_and_topbar():
+    index = (REPO_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    for marker in (
+        'class="topbar"', 'id="nav-new"', 'id="nav-history"', 'id="history-count"',
+        'id="topbar-running"', 'id="tracker"', 'id="pause-btn"', 'id="logout-btn"',
+        'id="view-new"', 'id="view-job"', 'id="view-history"', 'id="more-options"',
+        'id="jd-text"', 'id="company"', 'id="role"', 'id="skill-check"', 'id="check-skills-btn"',
+        'id="college-mode"', 'id="bridge-skills"', 'id="research-company"', 'id="no-pdf"',
+        'class="paper"',
+    ):
+        assert marker in index, marker
+    assert "new-job-dialog" not in index
+    assert index.index('src="/view-model.js"') < index.index('src="/app.js"')
+    app_css = (REPO_ROOT / "static" / "app.css").read_text(encoding="utf-8")
+    for token in ("#F2F2F0", "#0E7C55", "Instrument Sans", "Source Serif 4"):
+        assert token in app_css, token
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert "function route(" in app_js and "function go(" in app_js
+
+
+def test_csp_allows_same_origin_fonts(web_client):
+    csp = web_client.get("/").headers["content-security-policy"]
+    assert "font-src 'self'" in csp
+    assert "fonts.googleapis.com" not in csp
+
+
+def test_job_view_markup():
+    index = (REPO_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    for marker in (
+        'id="job-title"', 'id="job-track"', 'id="job-steps"', 'id="job-elapsed"', 'id="job-note"',
+        'id="job-summary"', 'id="summary-pct"', 'id="summary-all"', 'id="summary-notes"',
+        'id="download-pdf"', 'id="delete-job"', 'id="job-details"', 'id="job-paper"',
+        'id="fit-recovery-card"', 'id="bullet-review-card"', 'id="resume-job"', 'id="duplicate-job"',
+        'id="panel-review"', 'id="panel-files"', 'id="panel-progress"',
+    ):
+        assert marker in index, marker
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    for marker in ("ViewModel.progressSteps", "ViewModel.summary", "ViewModel.friendlyNote", "That resume no longer exists."):
+        assert marker in app_js, marker
+
+
+def test_history_markup():
+    index = (REPO_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    for marker in ('id="history-title"', 'id="history-note"', 'id="history-list"', 'id="select-btn"', 'id="history-empty"'):
+        assert marker in index, marker
+    for gone in ('id="queue-list"', 'id="recent-list"', 'id="filter-queue"', 'id="filter-recent"'):
+        assert gone not in index, gone
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert "ViewModel.historyTag" in app_js
+
+
+def test_delete_flow_markup():
+    index = (REPO_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    for marker in (
+        'id="select-cancel"', 'id="select-all"', 'id="select-legacy"', 'id="delete-selected"',
+        '<dialog class="delete-dialog" id="delete-dialog"', 'id="delete-list"', 'id="delete-size"',
+        'id="delete-confirm"', 'id="delete-cancel"', 'id="toast" role="status"',
+        "Removes each one's PDF, its copy in your PDF library, its report, and its saved job description. This can't be undone.",
+    ):
+        assert marker in index, marker
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert '"/api/cleanup"' in app_js
+    assert "Running, can't delete" in app_js
+
+
+def test_running_bar_does_not_cover_delete_on_phones():
+    css = (REPO_ROOT / "static" / "app.css").read_text(encoding="utf-8")
+    assert "body.selecting .topbar-running" in css
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert 'document.body.classList.toggle("selecting"' in app_js
+
+
+def test_summary_is_reset_between_jobs():
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    reset = app_js.split("if (state.reviewJobId !== job.job_id) {", 1)[1].split("}", 1)[0]
+    assert "renderSummary(null)" in reset
+    assert "Loading the summary" in app_js
+    assert "Couldn't load the summary" in app_js
+
+
+def test_skipped_items_are_named_not_ids():
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert "function itemName(id)" in app_js
+    assert "${itemName(item.id)} (${item.label})" in app_js

@@ -24,7 +24,7 @@ const STAGE_NAMES = [
 ];
 const RESEARCH_STACK_INDEX = 2;
 const RESEARCH_SIGNALS_INDEX = 3;
-const TAB_NAMES = ["progress", "preview", "review", "files"];
+const TAB_NAMES = ["progress", "review", "files"];
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -45,9 +45,13 @@ const state = {
   queueError: "",
   detailStatus: "empty",
   detailError: "",
-  listFilter: "queue",
   activeTab: "progress",
   submitting: false,
+  selecting: false,
+  selected: new Set(),
+  selectLegacy: false,
+  inventory: null,
+  deleting: null,
   submission: null,
   review: null,
   reviewJobId: null,
@@ -149,7 +153,9 @@ async function fetchJson(url, options = {}) {
   const body = response.status === 204 ? null : await response.json().catch(() => null);
   if (!response.ok) {
     const detail = body && body.detail ? body.detail : `Request failed (${response.status}).`;
-    throw new Error(detail);
+    const error = new Error(detail);
+    error.status = response.status;
+    throw error;
   }
   return body;
 }
@@ -170,9 +176,6 @@ function renderMeta() {
   $("server-status").textContent = meta.ready
     ? `Ready · PDF ${meta.pdf_available === false ? "unavailable" : "available"}`
     : "Starting…";
-  $("model-provider").textContent = `Model · ${meta.model || "Unavailable"}`;
-  const identity = [meta.master_name, meta.master_email].filter(Boolean).join(" · ");
-  $("master-identity").textContent = `Master · ${identity || "Unavailable"}`;
   if (meta.pdf_available === false) lockSkipPdf();
 }
 
@@ -265,40 +268,52 @@ async function fetchJobs() {
   state.jobs = new Map(jobs.map((job) => [job.job_id, job]));
   if (previous && !state.jobs.has(previous)) state.selectedId = null;
   renderJobLists();
+}
 
-  if (!state.selectedId) {
-    const active = jobs.find((job) => job.active);
-    const newest = jobs.find((job) => ["completed", "failed", "action_required"].includes(job.state));
-    const initial = active || newest;
-    if (initial) selectJob(initial.job_id, { reveal: false });
-  }
+const DELETABLE_STATES = ["completed", "failed", "action_required"];
+
+function selectRow(job) {
+  const item = el("li", "job-item");
+  const label = el("label", "job-select select-row");
+  const box = el("input");
+  box.type = "checkbox";
+  const deletable = DELETABLE_STATES.includes(job.state);
+  box.disabled = !deletable;
+  box.checked = state.selected.has(job.job_id);
+  box.addEventListener("change", () => {
+    if (box.checked) state.selected.add(job.job_id);
+    else state.selected.delete(job.job_id);
+    renderSelection();
+  });
+  label.appendChild(box);
+  const copy = el("span", "job-copy");
+  copy.appendChild(el("strong", null, job.company || "Untitled company"));
+  copy.appendChild(el("span", null, deletable ? [job.role, formatWhen(job.finished_at || job.created_at)].filter(Boolean).join(" · ") : (job.state === "queued" ? "Queued, can't delete" : "Running, can't delete")));
+  label.appendChild(copy);
+  const tag = ViewModel.historyTag(job.state);
+  label.appendChild(el("span", `status-pill ${tag.tone}`, tag.text));
+  if (!deletable) label.classList.add("disabled");
+  item.appendChild(label);
+  return item;
 }
 
 function jobRow(job, position = null) {
+  if (state.selecting) return selectRow(job);
   const item = el("li", "job-item");
   item.dataset.jobId = job.job_id;
 
   const select = el("button", "job-select");
   select.type = "button";
-  select.setAttribute("aria-label", `View ${jobLabel(job)}`);
+  select.setAttribute("aria-label", `Open ${jobLabel(job)}`);
   select.setAttribute("aria-current", String(job.job_id === state.selectedId));
-  const mark = el("span", `job-state-mark ${job.state}`);
-  mark.setAttribute("aria-hidden", "true");
-  select.appendChild(mark);
-
   const copy = el("span", "job-copy");
   copy.appendChild(el("strong", null, job.company || "Untitled company"));
-  const metadata = job.role || job.current_stage || job.state;
-  copy.appendChild(el("span", null, metadata));
+  const when = job.state === "queued" && position ? `#${position} in queue` : formatWhen(job.finished_at || job.created_at);
+  copy.appendChild(el("span", null, [job.role, when].filter(Boolean).join(" · ")));
   select.appendChild(copy);
-
-  let aside = "";
-  if (job.state === "queued" && position) aside = `#${position}`;
-  else if (job.state === "running") aside = "Live";
-  else if (job.state === "action_required") aside = "Action needed";
-  else aside = formatWhen(job.finished_at || job.created_at);
-  select.appendChild(el("span", "job-aside", aside));
-  select.addEventListener("click", () => selectJob(job.job_id, { reveal: true }));
+  const tag = ViewModel.historyTag(job.state);
+  select.appendChild(el("span", `status-pill ${tag.tone}`, tag.text));
+  select.addEventListener("click", () => go(`#job/${encodeURIComponent(job.job_id)}`));
   item.appendChild(select);
 
   if (job.state === "queued" && !job.active) {
@@ -314,79 +329,61 @@ function jobRow(job, position = null) {
 function renderQueueBanner() {
   if (!state.queue) return;
   const snapshot = state.queue;
-  const active = snapshot.active_job_id ? state.jobs.get(snapshot.active_job_id) : null;
   const paused = snapshot.state === "paused";
-  const title = $("queue-status-title");
-  const copy = $("queue-status-copy");
-  const dot = $("queue-status-dot");
   const action = $("pause-btn");
-  dot.className = "status-dot";
+  action.textContent = paused ? "Resume queue" : "Pause queue";
+  action.hidden = !paused && !snapshot.active_job_id && snapshot.queue_count === 0;
+}
 
-  if (paused) {
-    title.textContent = "Queue paused";
-    copy.textContent = `${snapshot.queue_count} waiting ${snapshot.queue_count === 1 ? "job" : "jobs"} kept safely.`;
-    dot.classList.add("paused");
-    action.textContent = "Resume queue";
-  } else if (active) {
-    title.textContent = "Tailoring in progress";
-    copy.textContent = active.current_stage || jobLabel(active);
-    action.textContent = "Pause after current job";
-  } else if (snapshot.queue_count > 0) {
-    title.textContent = "Queue ready";
-    copy.textContent = `${snapshot.queue_count} waiting ${snapshot.queue_count === 1 ? "job" : "jobs"}.`;
-    action.textContent = "Pause queue";
-  } else {
-    title.textContent = "Queue ready";
-    copy.textContent = "No jobs are waiting.";
+const HISTORY_ORDER = { running: 0, queued: 1, action_required: 2 };
+
+function historyJobs() {
+  const positions = new Map((state.queue ? state.queue.waiting : []).map((entry) => [entry.job_id, entry.queue_position]));
+  const jobs = new Map(state.jobs);
+  for (const entry of state.queue ? state.queue.waiting : []) {
+    if (!jobs.has(entry.job_id)) jobs.set(entry.job_id, { ...entry, state: "queued", active: false, options: {} });
   }
-  action.hidden = !paused && !active && snapshot.queue_count === 0;
+  const search = $("job-search").value.trim().toLowerCase();
+  const statusFilter = $("job-status-filter").value;
+  const rows = [...jobs.values()]
+    .filter((job) => jobLabel(job).toLowerCase().includes(search))
+    .filter((job) => statusFilter === "all" || job.state === statusFilter)
+    .sort((a, b) => {
+      const rank = (HISTORY_ORDER[a.state] ?? 3) - (HISTORY_ORDER[b.state] ?? 3);
+      if (rank) return rank;
+      if (a.state === "queued") return (positions.get(a.job_id) || 0) - (positions.get(b.job_id) || 0);
+      return String(b.finished_at || b.created_at).localeCompare(String(a.finished_at || a.created_at));
+    });
+  return { rows, positions, filtered: Boolean(search) || statusFilter !== "all", total: jobs.size };
 }
 
 function renderJobLists() {
-  const queueList = $("queue-list");
-  const recentList = $("recent-list");
-  clear(queueList);
-  clear(recentList);
-
-  $("filter-queue").setAttribute("aria-pressed", String(state.listFilter === "queue"));
-  $("filter-recent").setAttribute("aria-pressed", String(state.listFilter === "recent"));
-  queueList.hidden = state.listFilter !== "queue";
-  recentList.hidden = state.listFilter !== "recent";
-
+  const list = $("history-list");
+  clear(list);
   const loading = state.queueStatus === "loading";
   const failed = state.queueStatus === "error";
   $("queue-loading").hidden = !loading;
   $("queue-error").hidden = !failed;
   $("queue-error-copy").textContent = state.queueError;
   if (loading || failed || !state.queue) {
-    $("queue-empty").hidden = true;
-    $("recent-empty").hidden = true;
+    $("history-empty").hidden = true;
     return;
   }
 
+  const { rows, positions, filtered, total } = historyJobs();
+  state.visibleDeletable = rows.filter((job) => DELETABLE_STATES.includes(job.state)).map((job) => job.job_id);
+  for (const job of rows) list.appendChild(jobRow(job, positions.get(job.job_id)));
+  const empty = $("history-empty");
+  empty.hidden = rows.length > 0;
+  empty.querySelector("strong").textContent = filtered ? "No matching resumes" : "No resumes yet";
+  empty.querySelector("span").textContent = filtered ? "Try another search or status." : "Paste a job description on New resume to make one.";
+
   const activeId = state.queue.active_job_id;
   const active = activeId ? state.jobs.get(activeId) : null;
-  if (active) queueList.appendChild(jobRow(active));
-  for (const entry of state.queue.waiting) {
-    const known = state.jobs.get(entry.job_id);
-    const job = known || { ...entry, state: "queued", active: false, options: {} };
-    queueList.appendChild(jobRow(job, entry.queue_position));
-  }
-
-  const search = $("job-search").value.trim().toLowerCase();
-  const statusFilter = $("job-status-filter").value;
-  const recent = [...state.jobs.values()]
-    .filter((job) => ["completed", "failed", "action_required"].includes(job.state))
-    .filter((job) => jobLabel(job).toLowerCase().includes(search) && (statusFilter === "all" || job.state === statusFilter))
-    .sort((a, b) => String(b.finished_at || b.created_at).localeCompare(String(a.finished_at || a.created_at)));
-  for (const job of recent) recentList.appendChild(jobRow(job));
-  $("recent-empty").querySelector("strong").textContent = search || statusFilter !== "all" ? "No matching runs" : "No recent runs";
-  $("recent-empty").querySelector("span").textContent = search || statusFilter !== "all" ? "Try another search or change the status filter." : "Completed and failed jobs will appear here.";
-
-  $("queue-count").textContent = String(state.queue.queue_count || 0);
-  $("queue-empty").hidden = state.listFilter !== "queue" || Boolean(active) || state.queue.waiting.length > 0;
-  $("recent-empty").hidden = state.listFilter !== "recent" || recent.length > 0;
+  $("history-count").textContent = String(total);
+  renderTopbarRunning(active);
   renderQueueBanner();
+  renderSelection();
 }
 
 async function loadJobData() {
@@ -423,6 +420,13 @@ async function fetchDetail(jobId) {
     renderJobLists();
   } catch (error) {
     if (error.name === "AbortError") return;
+    if (error.status === 404 && state.view === "job") {
+      state.selectedId = null;
+      state.detailStatus = "empty";
+      $("history-note").textContent = "That resume no longer exists.";
+      go("#history");
+      return;
+    }
     state.detailStatus = "error";
     state.detailError = String(error.message || error);
     renderDetailState();
@@ -437,7 +441,7 @@ function renderDetailState() {
   $("detail-error-copy").textContent = state.detailError;
 }
 
-function selectJob(jobId, { reveal = true } = {}) {
+function selectJob(jobId) {
   if (!jobId) {
     state.selectedId = null;
     state.currentDetail = null;
@@ -448,11 +452,8 @@ function selectJob(jobId, { reveal = true } = {}) {
   }
   const changed = state.selectedId !== jobId;
   state.selectedId = jobId;
-  const job = state.jobs.get(jobId);
-  if (changed && job) state.listFilter = ["queued", "running"].includes(job.state) ? "queue" : "recent";
-  if (changed) state.activeTab = job && job.state === "completed" && (job.artifacts || []).includes("resume.pdf") ? "preview" : "progress";
+  if (changed) state.activeTab = "progress";
   renderJobLists();
-  if (reveal) showMobileView("detail");
   fetchDetail(jobId);
 }
 
@@ -466,12 +467,13 @@ function renderDetail(job) {
   $("resume-job").hidden = !resumable;
   $("resume-job").textContent = job.current_stage ? `Resume from ${job.current_stage.toLowerCase()}` : "Resume run";
   $("resume-job").title = "Reuse every finished stage and continue where the run stopped";
-  $("duplicate-job").hidden = job.source === "cli";
+  $("duplicate-job").hidden = job.source === "cli" || ["queued", "running"].includes(job.state);
   $("duplicate-job").textContent = job.state === "failed" ? "Start over" : "Tailor again";
   $("detail-role").textContent = job.role || "Role not provided";
   const badge = $("detail-state");
-  badge.className = `status-pill ${job.state}`;
-  badge.textContent = stateLabel(job.state);
+  const tag = ViewModel.historyTag(job.state);
+  badge.className = `status-pill ${tag.tone}`;
+  badge.textContent = tag.text;
 
   const stage = job.current_stage || (job.state === "queued" ? "Waiting to start" : job.state === "completed" ? "Tailoring complete" : job.state === "failed" ? "Run stopped" : job.state === "action_required" ? (job.action_kind === "bullet_review" ? "Action needed: review bullets" : "Action needed: one-page fit") : "Preparing");
   $("detail-stage-text").textContent = stage;
@@ -487,6 +489,7 @@ function renderDetail(job) {
   $("detail-export-warning").hidden = !job.export_warning;
   $("detail-export-warning").textContent = job.export_warning || "";
   renderRecoveryCard(job);
+  renderJobView(job);
   renderStages(job);
   renderLog(job);
   renderPreview(job);
@@ -495,8 +498,11 @@ function renderDetail(job) {
     state.review = null;
     state.reviewJobId = job.job_id;
     clear($("review-content"));
+    renderSummary(null);
   }
   activateTab(state.activeTab, false);
+  if (job.state === "completed" && !state.review && state.reviewLoadingId !== job.job_id) loadReview();
+  else if (state.review) renderSummary(state.review);
 }
 
 function recoveryPageLabel(value) {
@@ -1030,20 +1036,20 @@ function renderPreview(job) {
   const jsonView = $("preview-json");
   const hasPdf = job.artifacts.includes("resume.pdf");
   const hasJson = job.artifacts.includes("tailored.json");
+  // While running, the blank page on the right "inks in"; when done it is
+  // replaced by the real PDF, or by the structured summary when PDF was skipped.
   frame.hidden = true;
   jsonView.hidden = true;
-  pending.hidden = false;
-  if (job.state === "completed" && hasPdf) {
+  pending.hidden = true;
+  const finished = job.state === "completed";
+  if (finished && hasPdf) {
     const src = `/api/jobs/${job.job_id}/files/resume.pdf?download=0#navpanes=0&view=FitH`;
     if (!frame.src.endsWith(src)) frame.src = src;
     frame.hidden = false;
-    pending.hidden = true;
-  } else if (job.state === "completed" && hasJson) {
-    pending.hidden = true;
+  } else if (finished && hasJson) {
     renderTailoredJson(job.job_id);
   }
-  $("dl-pdf-top").hidden = !hasPdf;
-  if (hasPdf) $("dl-pdf-top").href = `/api/jobs/${job.job_id}/files/resume.pdf?download=0`;
+  $("job-paper").hidden = finished && (hasPdf || hasJson);
 }
 
 async function renderTailoredJson(jobId) {
@@ -1110,10 +1116,10 @@ function activateTab(name, focus = true) {
     const active = tabName === name;
     tab.setAttribute("aria-selected", String(active));
     tab.tabIndex = active ? 0 : -1;
-    panel.hidden = !active && !(name === "preview" && tabName === "review");
+    panel.hidden = !active;
   }
   if (focus) $(`tab-${name}`).focus();
-  if ((name === "review" || name === "preview") && state.currentDetail && !state.review && state.reviewLoadingId !== state.selectedId) loadReview();
+  if (name === "review" && state.currentDetail && !state.review && state.reviewLoadingId !== state.selectedId) loadReview();
 }
 
 function onTabKeydown(event) {
@@ -1126,6 +1132,231 @@ function onTabKeydown(event) {
   else return;
   event.preventDefault();
   activateTab(TAB_NAMES[next], true);
+}
+
+/* Job screen: plain progress while running, a short summary when done. */
+
+// Stages that only run in some jobs count as skipped until they report activity.
+const CONDITIONAL_STAGES = ["Apply bullet review", "Emergency bullet concision", "Audit emergency concision"];
+
+function stageStatusFor(stageName, job) {
+  if (job.state === "completed") return "done";
+  const status = stageStatus(stageName, job);
+  if (status !== "pending") return status;
+  if (CONDITIONAL_STAGES.includes(stageName)) return "skipped";
+  return status;
+}
+
+function currentStepLabel(job) {
+  const group = ViewModel.STEP_GROUPS.find((step) => step.stages.includes(job.current_stage));
+  return group ? group.label : job.state === "queued" ? "Waiting to start" : "Starting";
+}
+
+function latestNote(job) {
+  const events = state.events.get(job.job_id) || [];
+  for (const event of [...events].reverse()) {
+    if (event.kind === "stage_completed") return "";
+    const note = event.message ? ViewModel.friendlyNote(event.message) : null;
+    if (note) return note;
+  }
+  return "";
+}
+
+function renderJobView(job) {
+  const steps = ViewModel.progressSteps((name) => stageStatusFor(name, job));
+  const list = $("job-steps");
+  clear(list);
+  for (const step of steps) {
+    const failed = job.state === "failed" && step.status === "active";
+    const item = el("li", `step ${failed ? "failed" : step.status}`);
+    item.appendChild(el("span", "step-mark", step.status === "done" ? "✓" : failed ? "!" : ""));
+    item.appendChild(el("span", "step-label", step.label));
+    list.appendChild(item);
+  }
+  const done = steps.filter((step) => step.status === "done").length;
+  const segments = $("job-track").children;
+  steps.forEach((step, index) => {
+    segments[index].className = step.status === "done" ? "on" : step.status === "active" ? "cur" : "";
+  });
+  const lines = $("job-paper").querySelectorAll(".paper-name, .paper-line");
+  const inked = Math.round((lines.length * done) / steps.length);
+  lines.forEach((line, index) => line.classList.toggle("ink", index < inked));
+
+  const running = ["queued", "running"].includes(job.state);
+  const finished = job.state === "completed";
+  $("job-running").hidden = finished;
+  $("job-summary").hidden = !finished;
+  $("job-elapsed").textContent = job.started_at ? formatElapsed(job.started_at, job.finished_at) : "—";
+  $("job-note").textContent = running ? latestNote(job) : "";
+  const hasPdf = (job.artifacts || []).includes("resume.pdf");
+  $("download-pdf").hidden = !(finished && hasPdf);
+  $("delete-job").hidden = !DELETABLE_STATES.includes(job.state);
+  if (hasPdf) $("download-pdf").href = `/api/jobs/${encodeURIComponent(job.job_id)}/files/resume.pdf`;
+}
+
+// review: null while loading, {} when the job has no report, or the report.
+function renderSummary(review, message = "Loading the summary…") {
+  if (review === null) {
+    $("summary-pct").hidden = true;
+    $("summary-label").textContent = message;
+    $("summary-all").hidden = true;
+    clear($("summary-notes"));
+    return;
+  }
+  const view = ViewModel.summary(review);
+  const missing = view.pct === null || view.pct === undefined;
+  $("summary-pct").hidden = missing;
+  $("summary-pct").textContent = missing ? "" : `${Math.round(view.pct)}%`;
+  $("summary-label").textContent = missing
+    ? "No summary for this resume. The PDF is ready to download."
+    : view.estimated ? "estimated keyword match" : "keyword match with the posting";
+  $("summary-all").hidden = !view.allIncluded;
+  const notes = $("summary-notes");
+  clear(notes);
+  for (const note of view.notes) notes.appendChild(el("li", `note ${note.tone}`, note.text));
+}
+
+function renderTopbarRunning(active) {
+  const link = $("topbar-running");
+  link.hidden = !active;
+  if (!active) return;
+  link.textContent = `${active.company || "Resume"}: ${currentStepLabel(active)}`;
+  link.href = `#job/${encodeURIComponent(active.job_id)}`;
+}
+
+/* Cleanup: select finished resumes (and old command-line folders), confirm, delete. */
+
+function formatBytes(bytes) {
+  if (!bytes) return "0 KB";
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function enterSelect() {
+  try {
+    state.inventory = await fetchJson("/api/cleanup");
+  } catch (error) {
+    $("history-note").textContent = `Couldn't load what can be deleted. ${error.message}`;
+    return;
+  }
+  state.selecting = true;
+  state.selected.clear();
+  state.selectLegacy = false;
+  renderJobLists();
+}
+
+function exitSelect() {
+  state.selecting = false;
+  state.selected.clear();
+  state.selectLegacy = false;
+  renderJobLists();
+}
+
+function renderSelection() {
+  const selecting = state.selecting;
+  document.body.classList.toggle("selecting", selecting);
+  $("select-btn").hidden = selecting;
+  $("select-cancel").hidden = !selecting;
+  $("delete-bar").hidden = !selecting;
+  $("select-all-row").hidden = !selecting;
+  const legacy = (state.inventory && state.inventory.legacy) || [];
+  $("select-legacy-row").hidden = !selecting || legacy.length === 0;
+  const count = state.selected.size + (state.selectLegacy ? legacy.length : 0);
+  $("history-title").textContent = selecting ? `${count} selected` : "History";
+  if (!selecting) return;
+  const finished = state.visibleDeletable || [];
+  $("select-all-label").textContent = `Select all finished (${finished.length})`;
+  $("select-all").checked = finished.length > 0 && finished.every((id) => state.selected.has(id));
+  $("select-legacy-label").textContent = `Old command-line folders (${legacy.length})`;
+  $("select-legacy-names").textContent = legacy.slice(0, 4).map((item) => item.id).join(", ") + (legacy.length > 4 ? ", …" : "");
+  $("select-legacy").checked = state.selectLegacy;
+  const button = $("delete-selected");
+  button.disabled = count === 0;
+  button.textContent = count === 1 ? "Delete 1 resume" : `Delete ${count} resumes`;
+}
+
+function openDeleteDialog(jobIds, includeLegacy, source) {
+  const inventory = state.inventory || { jobs: [], legacy: [] };
+  const byId = new Map(inventory.jobs.map((item) => [item.id, item]));
+  const items = jobIds.map((id) => byId.get(id) || { id, label: jobLabel(state.jobs.get(id) || { company: id }), bytes: 0 });
+  const legacy = includeLegacy ? inventory.legacy : [];
+  const total = items.length + legacy.length;
+  state.deleting = { jobIds, legacyIds: legacy.map((item) => item.id), source };
+  $("delete-title").textContent = total === 1 ? "Delete 1 resume?" : `Delete ${total} resumes?`;
+  $("delete-copy").textContent = total === 1
+    ? "Removes its PDF, its copy in your PDF library, its report, and its saved job description. This can't be undone."
+    : "Removes each one's PDF, its copy in your PDF library, its report, and its saved job description. This can't be undone.";
+  const list = $("delete-list");
+  clear(list);
+  for (const item of items.slice(0, 8)) list.appendChild(el("li", null, item.label));
+  if (items.length > 8) list.appendChild(el("li", null, `and ${items.length - 8} more`));
+  if (legacy.length) list.appendChild(el("li", null, `Old command-line folders (${legacy.length})`));
+  const bytes = [...items, ...legacy].reduce((sum, item) => sum + (item.bytes || 0), 0);
+  $("delete-size").textContent = `Frees about ${formatBytes(bytes)}.`;
+  $("delete-error").textContent = "";
+  $("delete-confirm").disabled = false;
+  $("delete-dialog").showModal();
+}
+
+// "Company, Role" for a job id; old folders are already named by their folder.
+function itemName(id) {
+  const listed = state.inventory && state.inventory.jobs.find((item) => item.id === id);
+  if (listed) return listed.label;
+  const job = state.jobs.get(id);
+  return job ? jobLabel(job) : id;
+}
+
+function showToast(message) {
+  const toast = $("toast");
+  toast.textContent = message;
+  toast.hidden = false;
+  window.clearTimeout(state.toastTimer);
+  state.toastTimer = window.setTimeout(() => { toast.hidden = true; }, 6000);
+}
+
+async function confirmDelete() {
+  const pending = state.deleting;
+  if (!pending) return;
+  $("delete-confirm").disabled = true;
+  try {
+    const result = await fetchJson("/api/cleanup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_ids: pending.jobIds, legacy_ids: pending.legacyIds }),
+    });
+    $("delete-dialog").close();
+    state.deleting = null;
+    const removed = result.deleted_jobs.length + result.deleted_legacy.length;
+    let message = `Deleted ${removed} ${removed === 1 ? "resume" : "resumes"}. ${formatBytes(result.freed_bytes)} freed.`;
+    if (result.skipped.length) message += ` Skipped: ${result.skipped.map((item) => `${itemName(item.id)} (${item.label})`).join("; ")}.`;
+    for (const id of result.deleted_jobs) state.jobs.delete(id);
+    if (result.deleted_jobs.includes(state.selectedId)) {
+      state.selectedId = null;
+      state.currentDetail = null;
+      state.detailStatus = "empty";
+    }
+    state.selecting = false;
+    state.selected.clear();
+    state.selectLegacy = false;
+    state.inventory = null;
+    showToast(message);
+    if (pending.source === "job") go("#history");
+    await loadJobData();
+  } catch (error) {
+    $("delete-error").textContent = `Couldn't delete. ${error.message}`;
+    $("delete-confirm").disabled = false;
+  }
+}
+
+async function deleteCurrentJob() {
+  const job = state.currentDetail;
+  if (!job) return;
+  try {
+    state.inventory = await fetchJson("/api/cleanup");
+  } catch {
+    state.inventory = null;
+  }
+  openDeleteDialog([job.job_id], false, "job");
 }
 
 /* Mutations and form */
@@ -1183,18 +1414,6 @@ function validateField(name) {
   error.textContent = message;
   field.setAttribute("aria-invalid", String(Boolean(message)));
   return !message;
-}
-
-function openJobDialog() {
-  const dialog = $("new-job-dialog");
-  if (!dialog.open) dialog.showModal();
-  fetchProviders();
-  requestAnimationFrame(() => formFields.jd.focus());
-}
-
-function closeJobDialog() {
-  const dialog = $("new-job-dialog");
-  if (dialog.open) dialog.close();
 }
 
 /* Skill check: confirm posting skills the master resume lacks, then tailor. */
@@ -1360,9 +1579,8 @@ async function enqueueJob(draft) {
   for (const name of Object.keys(formFields)) validateField(name);
   rememberProvider();
   status.textContent = "Added to the queue.";
-  closeJobDialog();
   await loadJobData();
-  selectJob(result.job_id, { reveal: true });
+  go(`#job/${encodeURIComponent(result.job_id)}`);
 }
 
 /* Model provider */
@@ -1515,14 +1733,14 @@ async function duplicateJob() {
     if (state.selectedId !== jobId) return;
     if (formFields.jd.value.trim()) {
       $("detail-action-status").textContent = "A draft is already open. Finish it or clear it before tailoring this job again.";
-      openJobDialog();
+      go("#new");
       return;
     }
     fillDraft(request);
     state.submission = null;
     saveDraft();
     $("detail-action-status").textContent = "Review the saved description and options before adding a new run.";
-    openJobDialog();
+    go("#new");
   } catch (error) { if (state.selectedId === jobId) $("detail-action-status").textContent = error.message; }
   finally { button.disabled = false; }
 }
@@ -1569,6 +1787,7 @@ async function loadReview(force = false) {
     const report = await fetchJson(`/api/jobs/${id}/review`);
     if (state.selectedId !== id) return;
     state.review = report;
+    renderSummary(report);
     $("review-status").textContent = typeof report.coverage_pct === "number" ? `${Math.round(report.coverage_pct)}% estimated requirement coverage` : "Review the analysis below.";
     const QUALIFICATION_LABELS = { covered: "Covered", covered_with_substitution: "Covered with education substitution", unsupported: "Not supported", supported_not_on_page: "True but not on the page" };
     reviewSection("Qualifications", (report.qualification_coverage || []).map((row) =>
@@ -1614,7 +1833,11 @@ async function loadReview(force = false) {
       reviewSection("Claims to check", ["No estimated metrics or cross-entry attributions were recorded in this report. Review the full resume before applying."]);
     }
   } catch (error) {
-    if (state.selectedId === id) $("review-status").textContent = error.message;
+    if (state.selectedId !== id) return;
+    $("review-status").textContent = error.message;
+    // No report for this job: show the plain "no summary" state and stop asking.
+    if (error.status === 404) { state.review = {}; renderSummary(state.review); }
+    else renderSummary(null, "Couldn't load the summary. Open Details, then Review, to try again.");
   } finally { if (state.reviewLoadingId === id) state.reviewLoadingId = null; }
 }
 
@@ -1672,11 +1895,7 @@ function applyEvent(event) {
     }
     loadJobData().catch(() => {});
     if (event.job_id === state.selectedId) {
-      fetchDetail(event.job_id).then(() => {
-        if (kind === "job_completed" && state.currentDetail && state.currentDetail.job_id === event.job_id && (state.currentDetail.artifacts || []).includes("resume.pdf")) {
-          activateTab("preview", false);
-        }
-      });
+      fetchDetail(event.job_id);
     }
     return;
   }
@@ -1688,6 +1907,7 @@ function applyEvent(event) {
   renderJobLists();
   if (event.job_id === state.selectedId && job) {
     state.currentDetail = job;
+    renderJobView(job);
     renderStages(job);
     renderLog(job);
     $("detail-stage-text").textContent = job.current_stage || "Processing";
@@ -1715,12 +1935,33 @@ async function loadAll() {
   await Promise.allSettled([fetchMeta(), loadJobData()]);
 }
 
-function showMobileView(name) {
-  document.body.dataset.mobileView = name;
-  requestAnimationFrame(() => {
-    if (name === "jobs") $("show-jobs-btn").focus();
-    else $("main").focus();
-  });
+/* Views: #new (home), #job/<id>, #history. The URL hash is the source of truth,
+   so reload and the browser's back button keep working. */
+
+const VIEWS = ["new", "job", "history"];
+
+
+function go(hash) {
+  if (location.hash === hash) route();
+  else location.hash = hash;
+}
+
+function route() {
+  const { view, jobId } = ViewModel.parseRoute(location.hash);
+  state.view = view;
+  if (view !== "history") {
+    $("history-note").textContent = "";
+    if (state.selecting) exitSelect();
+  }
+  for (const name of VIEWS) $(`view-${name}`).hidden = name !== view;
+  $("nav-new").setAttribute("aria-pressed", String(view === "new"));
+  $("nav-history").setAttribute("aria-pressed", String(view === "history"));
+  if (view === "job" && jobId) {
+    if (jobId !== state.selectedId || state.detailStatus === "error") selectJob(jobId);
+  } else if (view === "new") {
+    fetchProviders();
+  }
+  $("main").focus({ preventScroll: true });
 }
 
 function bindEvents() {
@@ -1757,8 +1998,8 @@ function bindEvents() {
     if (state.meta?.pdf_available === false) lockSkipPdf();
     saveDraft();
   });
-  $("job-search").addEventListener("input", () => { state.listFilter = "recent"; renderJobLists(); });
-  $("job-status-filter").addEventListener("change", () => { state.listFilter = "recent"; renderJobLists(); });
+  $("job-search").addEventListener("input", renderJobLists);
+  $("job-status-filter").addEventListener("change", renderJobLists);
   $("duplicate-job").addEventListener("click", duplicateJob);
   $("resume-job").addEventListener("click", resumeJob);
   $("reload-review").addEventListener("click", () => loadReview(true));
@@ -1770,10 +2011,23 @@ function bindEvents() {
       sessionStorage.removeItem("tailoring-draft"); location.replace("/login");
     } catch (error) { $("server-status").textContent = error.message; }
   });
-  const openers = ["header-new-job", "rail-new-job", "empty-new-job", "add-jd-action"];
-  for (const id of openers) $(id).addEventListener("click", openJobDialog);
-  $("close-job-dialog").addEventListener("click", closeJobDialog);
-  $("cancel-job-dialog").addEventListener("click", closeJobDialog);
+  $("select-btn").addEventListener("click", enterSelect);
+  $("select-cancel").addEventListener("click", exitSelect);
+  $("select-all").addEventListener("change", () => {
+    for (const id of state.visibleDeletable || []) {
+      if ($("select-all").checked) state.selected.add(id);
+      else state.selected.delete(id);
+    }
+    renderJobLists();
+  });
+  $("select-legacy").addEventListener("change", () => { state.selectLegacy = $("select-legacy").checked; renderSelection(); });
+  $("delete-selected").addEventListener("click", () => openDeleteDialog([...state.selected], state.selectLegacy, "history"));
+  $("delete-cancel").addEventListener("click", () => { state.deleting = null; $("delete-dialog").close(); });
+  $("delete-confirm").addEventListener("click", confirmDelete);
+  $("delete-job").addEventListener("click", deleteCurrentJob);
+  $("nav-new").addEventListener("click", () => go("#new"));
+  $("nav-history").addEventListener("click", () => go("#history"));
+  window.addEventListener("hashchange", route);
   $("job-form").addEventListener("submit", submitJob);
   formFields.jd.addEventListener("input", () => { if (state.skillCheck || state.skipSkillCheck) resetSkillCheck(); });
   // College mode also offers posted standards (Section 508, ADA): check again.
@@ -1802,9 +2056,6 @@ function bindEvents() {
     state.recovery.requestSignature = "";
     state.recovery.idempotencyKey = "";
   });
-  $("show-jobs-btn").addEventListener("click", () => showMobileView("jobs"));
-  $("hide-jobs-btn").addEventListener("click", () => showMobileView("detail"));
-  $("detail-back-btn").addEventListener("click", () => showMobileView("jobs"));
   $("retry-jobs-btn").addEventListener("click", loadJobData);
   $("retry-detail-btn").addEventListener("click", () => state.selectedId && fetchDetail(state.selectedId));
   $("pause-btn").addEventListener("click", () => {
@@ -1812,8 +2063,6 @@ function bindEvents() {
     else pauseQueue();
   });
 
-  $("filter-queue").addEventListener("click", () => { state.listFilter = "queue"; renderJobLists(); });
-  $("filter-recent").addEventListener("click", () => { state.listFilter = "recent"; renderJobLists(); });
   for (const name of TAB_NAMES) {
     const tab = $(`tab-${name}`);
     tab.addEventListener("click", () => activateTab(name, false));
@@ -1831,6 +2080,7 @@ function startTicker() {
     const job = state.currentDetail;
     if (job && job.state === "running") {
       $("detail-elapsed").textContent = formatElapsed(job.started_at, job.finished_at);
+      $("job-elapsed").textContent = formatElapsed(job.started_at, job.finished_at);
       if (state.activeTab === "progress") renderStages(job);
     }
   }, 1000);
@@ -1842,6 +2092,7 @@ function boot() {
   bindEvents();
   renderDetailState();
   renderJobLists();
+  route();
   loadAll();
   fetchProviders();
   openStream();

@@ -493,6 +493,34 @@ class CreateJobResponse(BaseModel):
     events_url: str = "/api/events"
 
 
+class CleanupRequest(BaseModel):
+    """``POST /api/cleanup`` body: finished jobs to delete, plus old folders on request."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    job_ids: list[str] = Field(default_factory=list, max_length=1000)
+    # Old folder names exactly as the confirm dialog listed them.
+    legacy_ids: list[str] = Field(default_factory=list, max_length=1000)
+
+
+class CleanupItem(BaseModel):
+    id: str
+    label: str
+    bytes: int
+
+
+class CleanupInventory(BaseModel):
+    jobs: list[CleanupItem]
+    legacy: list[CleanupItem]
+
+
+class CleanupResult(BaseModel):
+    deleted_jobs: list[str]
+    deleted_legacy: list[str]
+    skipped: list[CleanupItem]
+    freed_bytes: int
+
+
 class MetaResponse(BaseModel):
     ready: bool = True
     auth_required: bool = False

@@ -1,0 +1,75 @@
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap" rel="stylesheet">
+<style>
+  .A{font-family:'Instrument Sans',system-ui;background:#F2F2F0;color:#1B1B1F;padding:16px;border-radius:14px}
+  .row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+  @media (max-width:900px){.row{grid-template-columns:1fr}}
+  .A .scr{background:#FBFBFA;border:1px solid #DEDED9;border-radius:10px;display:grid;grid-template-columns:1fr 0.9fr;gap:12px;padding:14px;min-height:340px}
+  .cap{font-size:12px;margin:6px 2px 0;color:#55554E}
+  .A h4{font-size:15px;font-weight:700;margin:0 0 10px}
+  .A .field{background:#fff;border:1px solid #D6D6D0;border-radius:8px;padding:8px 10px;font-size:11px;color:#77776F;margin-bottom:8px}
+  .A .jd{height:112px;line-height:1.5}
+  .A .btn{background:#1B1B1F;color:#fff;border-radius:999px;padding:9px;text-align:center;font-weight:600;font-size:12px}
+  .A .btn.go{background:#0E7C55}
+  .A .paper{background:#fff;border:1px solid #E6E6E1;box-shadow:0 10px 24px -16px rgba(27,27,31,.35);padding:13px;font-family:'Source Serif 4',serif;font-size:7.5px;line-height:1.5}
+  .A .paper b{font-size:10px}
+  .A .ln{height:4px;background:#ECECE8;border-radius:2px;margin:4px 0}
+  .A .ln.ink{background:#1B1B1F;opacity:.82}
+  .A .step{font-size:11.5px;padding:6px 0;border-bottom:1px solid #E6E6E1;display:flex;justify-content:space-between}
+  .A .done{color:#0E7C55}.A .now{color:#1B1B1F;font-weight:700}.A .todo{color:#A3A39B}
+  .A .track{display:flex;gap:4px;margin-bottom:12px}.A .track span{flex:1;height:4px;border-radius:2px;background:#E3E3DE}.A .track .on{background:#0E7C55}.A .track .cur{background:#1B1B1F}
+  .A .big{font-size:34px;font-weight:700;line-height:1;letter-spacing:-.02em}
+  .A .muted{font-size:11px;color:#55554E;margin:4px 0 10px;line-height:1.45}
+  .A .flag{font-size:11px;background:#FFF1D6;color:#5C3800;border-radius:8px;padding:7px 9px;margin:6px 0;line-height:1.4}
+  .A .ok{font-size:11px;color:#0E7C55;margin:4px 0}
+</style>
+
+<h2>A, in B's colors</h2>
+<p class="subtitle">Paper layout from A; off-white, ink-black, and green-for-done from B. Amber marks anything you should look at.</p>
+
+<div class="A">
+  <div class="row">
+    <div>
+      <div class="scr">
+        <div>
+          <h4>New resume</h4>
+          <div class="field jd">Paste the job description<br><br>Associate Full Stack Developer — React.js, Core Java, Spring Boot, cloud platforms such as AWS, Azure…</div>
+          <div class="field">Company: HCLTech</div>
+          <div class="field">Role: Full Stack Engineer</div>
+          <div class="btn">Tailor resume</div>
+        </div>
+        <div class="paper"><b>Vandan Patel</b><div class="ln"></div><div class="ln"></div><div class="ln" style="width:70%"></div><div class="ln"></div><div class="ln" style="width:60%"></div><div class="ln"></div></div>
+      </div>
+      <p class="cap">Start</p>
+    </div>
+    <div>
+      <div class="scr">
+        <div>
+          <div class="track"><span class="on"></span><span class="on"></span><span class="cur"></span><span></span><span></span></div>
+          <h4>HCLTech, Full Stack Engineer</h4>
+          <div class="step done"><span>Read the posting</span><span>✓</span></div>
+          <div class="step done"><span>Matched your experience</span><span>✓</span></div>
+          <div class="step now"><span>Writing your bullets</span><span>1:20</span></div>
+          <div class="step todo"><span>Review</span><span></span></div>
+          <div class="step todo"><span>Fit to one page</span><span></span></div>
+          <p class="muted">About 2 minutes left. Gemini is busy, so it's using a backup model.</p>
+        </div>
+        <div class="paper"><b>Vandan Patel</b><div class="ln ink"></div><div class="ln ink" style="width:80%"></div><div class="ln ink"></div><div class="ln"></div><div class="ln" style="width:60%"></div><div class="ln"></div></div>
+      </div>
+      <p class="cap">Running</p>
+    </div>
+    <div>
+      <div class="scr">
+        <div>
+          <div class="big">56%</div>
+          <p class="muted">of the posting's keywords are on your page.</p>
+          <div class="ok">✓ Everything your resume states is included</div>
+          <div class="flag"><b>Not on your resume:</b> Section 508 / ADA. Tick it in the skill check if you've done this work.</div>
+          <div class="btn go" style="margin-top:12px">Download PDF</div>
+        </div>
+        <div class="paper"><b>Vandan Patel</b><div class="ln ink"></div><div class="ln ink"></div><div class="ln ink" style="width:70%"></div><div class="ln ink"></div><div class="ln ink" style="width:85%"></div><div class="ln ink"></div></div>
+      </div>
+      <p class="cap">Done</p>
+    </div>
+  </div>
+</div>

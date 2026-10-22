@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import shutil
 import threading
 import time
@@ -53,6 +54,10 @@ from .models import (
     BulletReviewItem,
     BulletReviewRequest,
     BulletReviewResponse,
+    CleanupInventory,
+    CleanupItem,
+    CleanupRequest,
+    CleanupResult,
     FitRecoveryRequest,
     FitRecoveryResponse,
     JobEntry,
@@ -168,13 +173,34 @@ def _artifacts(directory: Path) -> list[str]:
     return [name for name in ARTIFACT_ALLOWLIST if (directory / name).is_file()]
 
 
-def _cli_state(directory: Path) -> JobState | None:
-    present = set(_artifacts(directory))
-    if present & {"tailored.json", "resume.pdf", "resume.tex"}:
-        return JobState.COMPLETED
-    if (directory / "diagnostic_report.json").is_file():
-        return JobState.FAILED
-    return None
+def _tree_bytes(path: Path) -> int:
+    """Total size of regular files under ``path``; symlinks are counted by link, never followed."""
+    try:
+        if path.is_symlink():
+            return 0
+        if path.is_file():
+            return path.stat().st_size
+    except OSError:
+        return 0
+    total = 0
+    for root, _dirs, files in os.walk(path, followlinks=False):
+        for name in files:
+            try:
+                total += (Path(root) / name).lstat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+_DELETABLE_STATES = (JobState.COMPLETED, JobState.FAILED, JobState.ACTION_REQUIRED)
 
 
 def _elapsed(started: str | None, finished: str | None) -> float | None:
@@ -442,23 +468,6 @@ class QueueRegistry:
         self._waiting.sort(
             key=lambda job: (job.persisted.created_at, job.persisted.job_id)
         )
-
-        for directory in sorted(self.output_dir.iterdir()):
-            if not directory.is_dir() or (directory / JOB_FILE).is_file():
-                continue
-            state = _cli_state(directory)
-            if state is not None:
-                self._add(
-                    directory,
-                    PersistedJob(
-                        job_id=directory.name,
-                        source=JobSource.CLI,
-                        state=state,
-                        company=directory.name,
-                        role="CLI run",
-                        created_at=utc_now_iso(),
-                    ),
-                )
 
     def _ensure_job_file(self, job: Job) -> None:
         if not (job.directory / JOB_FILE).is_file():
@@ -775,6 +784,8 @@ class QueueRegistry:
         """Queue a failed web run again, reusing the stages it already finished."""
         path = self.requests_dir / f"{job.persisted.job_id}.json"
         with self._cond:
+            if self._jobs.get(job.persisted.job_id) is not job:
+                raise RecoveryRequestError(404, "That resume no longer exists.")
             if job.persisted.state != JobState.FAILED:
                 raise RecoveryRequestError(409, "Only a failed run can be resumed.")
             if job.persisted.source != JobSource.WEB or not path.is_file():
@@ -814,6 +825,8 @@ class QueueRegistry:
     ) -> tuple[RecoverySubmissionResponse, bool]:
         """Shared idempotent queueing for a paused job's user decision."""
         with self._cond:
+            if self._jobs.get(job.persisted.job_id) is not job:
+                raise RecoveryRequestError(404, "That resume no longer exists.")
             store = self._load_recovery_idempotency(job)
             existing = next(
                 (record for record in store.records if record.key == idempotency_key),
@@ -910,6 +923,160 @@ class QueueRegistry:
             self._cond.notify_all()
         self._publish_queue_changed()
         return True
+
+    # -- cleanup ---------------------------------------------------------------
+
+    def _pdf_copies(self, job: Job) -> list[Path]:
+        """The job's PDF-library copy: its recorded name, else any ``* - <id8>.pdf``."""
+        named = job.persisted.pdf_library_name
+        if named:
+            return [self.pdf_dir / named]
+        suffix = f" - {job.persisted.job_id[:8]}"
+        try:
+            return [p for p in self.pdf_dir.iterdir() if p.stem.endswith(suffix)]
+        except OSError:
+            return []
+
+    def _legacy_entries(self) -> list[Path]:
+        try:
+            entries = sorted(self.output_dir.iterdir())
+        except OSError:
+            return []
+        return [
+            path
+            for path in entries
+            if not path.name.startswith(".")
+            and (path.is_symlink() or path.is_dir())
+            and not (path / JOB_FILE).is_file()
+        ]
+
+    def cleanup_inventory(self) -> CleanupInventory:
+        with self._mutex:
+            finished = [
+                job
+                for job in self._jobs.values()
+                if job.persisted.state in _DELETABLE_STATES
+            ]
+        finished.sort(key=lambda job: job.persisted.created_at, reverse=True)
+        jobs = [
+            CleanupItem(
+                id=job.persisted.job_id,
+                label=f"{job.persisted.company}, {job.persisted.role}",
+                bytes=_tree_bytes(job.directory)
+                + sum(_tree_bytes(p) for p in self._pdf_copies(job)),
+            )
+            for job in finished
+        ]
+        legacy = [
+            CleanupItem(id=path.name, label=path.name, bytes=_tree_bytes(path))
+            for path in self._legacy_entries()
+            if not path.is_symlink()
+        ]
+        return CleanupInventory(jobs=jobs, legacy=legacy)
+
+    def delete(self, request: CleanupRequest) -> CleanupResult:
+        deleted_jobs: list[str] = []
+        deleted_legacy: list[str] = []
+        skipped: list[CleanupItem] = []
+        freed = 0
+
+        def skip(item_id: str, reason: str) -> None:
+            skipped.append(CleanupItem(id=item_id, label=reason, bytes=0))
+
+        for job_id in dict.fromkeys(request.job_ids):
+            with self._cond:
+                job = self._jobs.get(job_id)
+                if job is None:
+                    skip(job_id, "Not found")
+                    continue
+                if (
+                    job.persisted.state not in _DELETABLE_STATES
+                    or job in self._waiting
+                    or self._active == job_id
+                ):
+                    skip(job_id, "Running or queued, can't delete")
+                    continue
+                directory = job.directory
+                if directory.is_symlink() or not _within(directory, self.output_dir):
+                    skip(job_id, "Folder is a link or outside the output folder")
+                    continue
+                # Claimed before any file is touched, so a Resume in another
+                # tab can no longer queue it while its folder is removed.
+                self._jobs.pop(job_id, None)
+            removed = self._remove_job_files(job, skipped)
+            if removed is None:
+                with self._cond:
+                    self._jobs[job_id] = job
+                skip(job_id, "Couldn't delete")
+                continue
+            freed += removed
+            deleted_jobs.append(job_id)
+
+        wanted = set(request.legacy_ids)
+        if wanted:
+            with self._cond:
+                known_jobs = set(self._jobs)
+            for path in self._legacy_entries():
+                if path.name not in wanted or path.name in known_jobs:
+                    continue
+                if path.is_symlink() or not _within(path, self.output_dir):
+                    skip(path.name, "Link or outside the output folder, left alone")
+                    continue
+                size = _tree_bytes(path)
+                try:
+                    shutil.rmtree(path)
+                except OSError:
+                    skip(path.name, "Couldn't delete")
+                    continue
+                freed += size
+                deleted_legacy.append(path.name)
+
+        if deleted_jobs:
+            self._publish_queue_changed()
+        return CleanupResult(
+            deleted_jobs=deleted_jobs,
+            deleted_legacy=deleted_legacy,
+            skipped=skipped,
+            freed_bytes=freed,
+        )
+
+    def _remove_job_files(self, job: Job, skipped: list[CleanupItem]) -> int | None:
+        """Delete a job's files; None when its folder could not be removed."""
+        job_id = job.persisted.job_id
+        size = _tree_bytes(job.directory)
+        try:
+            shutil.rmtree(job.directory)
+        except FileNotFoundError:
+            size = 0  # Removed by hand already; still clear its other files.
+        except OSError:
+            return None
+        freed = size
+        candidates = [(p, self.pdf_dir) for p in self._pdf_copies(job)] + [
+            (self._queue_payload_path(job_id), self.state_dir),
+            (self.requests_dir / f"{job_id}.json", self.state_dir),
+        ]
+        for path, root in candidates:
+            if path.is_symlink():
+                skipped.append(
+                    CleanupItem(
+                        id=job_id, label=f"Symlink, not deleted: {path.name}", bytes=0
+                    )
+                )
+                continue
+            if not path.is_file() or not _within(path, root):
+                continue
+            size = _tree_bytes(path)
+            try:
+                path.unlink()
+            except OSError:
+                skipped.append(
+                    CleanupItem(
+                        id=job_id, label=f"Couldn't delete: {path.name}", bytes=0
+                    )
+                )
+                continue
+            freed += size
+        return freed
 
     # -- snapshots -------------------------------------------------------------
 

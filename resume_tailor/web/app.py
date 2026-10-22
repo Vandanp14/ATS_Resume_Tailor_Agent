@@ -41,6 +41,9 @@ from .models import (
     CreateJobResponse,
     BulletReviewRequest,
     BulletReviewResponse,
+    CleanupInventory,
+    CleanupRequest,
+    CleanupResult,
     FitRecoveryRequest,
     FitRecoveryResponse,
     JobDetail,
@@ -71,7 +74,7 @@ _HEADERS = {
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Resource-Policy": "same-site",
     "Content-Security-Policy": (
-        "default-src 'none'; script-src 'self'; style-src 'self'; "
+        "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; "
         "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
         "frame-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'"
     ),
@@ -576,6 +579,16 @@ def create_app(
             raise HTTPException(409, "Only queued jobs can be removed.")
         registry.remove_queued(job)
         return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+    # -- cleanup ---------------------------------------------------------------
+
+    @app.get("/api/cleanup", response_model=CleanupInventory)
+    async def cleanup_inventory() -> CleanupInventory:
+        return await asyncio.to_thread(registry.cleanup_inventory)
+
+    @app.post("/api/cleanup", response_model=CleanupResult)
+    async def cleanup(body: CleanupRequest) -> CleanupResult:
+        return await asyncio.to_thread(registry.delete, body)
 
     # -- queue -----------------------------------------------------------------
 
