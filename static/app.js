@@ -24,7 +24,7 @@ const STAGE_NAMES = [
 ];
 const RESEARCH_STACK_INDEX = 2;
 const RESEARCH_SIGNALS_INDEX = 3;
-const TAB_NAMES = ["progress", "preview", "review", "files"];
+const TAB_NAMES = ["progress", "review", "files"];
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -149,7 +149,9 @@ async function fetchJson(url, options = {}) {
   const body = response.status === 204 ? null : await response.json().catch(() => null);
   if (!response.ok) {
     const detail = body && body.detail ? body.detail : `Request failed (${response.status}).`;
-    throw new Error(detail);
+    const error = new Error(detail);
+    error.status = response.status;
+    throw error;
   }
   return body;
 }
@@ -353,6 +355,7 @@ function renderJobLists() {
 
   $("queue-count").textContent = String(state.queue.queue_count || 0);
   $("history-count").textContent = String(state.jobs.size);
+  renderTopbarRunning(active);
   $("queue-empty").hidden = state.listFilter !== "queue" || Boolean(active) || state.queue.waiting.length > 0;
   $("recent-empty").hidden = state.listFilter !== "recent" || recent.length > 0;
   renderQueueBanner();
@@ -392,6 +395,13 @@ async function fetchDetail(jobId) {
     renderJobLists();
   } catch (error) {
     if (error.name === "AbortError") return;
+    if (error.status === 404 && state.view === "job") {
+      state.selectedId = null;
+      state.detailStatus = "empty";
+      $("history-note").textContent = "That resume no longer exists.";
+      go("#history");
+      return;
+    }
     state.detailStatus = "error";
     state.detailError = String(error.message || error);
     renderDetailState();
@@ -419,7 +429,7 @@ function selectJob(jobId) {
   state.selectedId = jobId;
   const job = state.jobs.get(jobId);
   if (changed && job) state.listFilter = ["queued", "running"].includes(job.state) ? "queue" : "recent";
-  if (changed) state.activeTab = job && job.state === "completed" && (job.artifacts || []).includes("resume.pdf") ? "preview" : "progress";
+  if (changed) state.activeTab = "progress";
   renderJobLists();
   fetchDetail(jobId);
 }
@@ -434,12 +444,13 @@ function renderDetail(job) {
   $("resume-job").hidden = !resumable;
   $("resume-job").textContent = job.current_stage ? `Resume from ${job.current_stage.toLowerCase()}` : "Resume run";
   $("resume-job").title = "Reuse every finished stage and continue where the run stopped";
-  $("duplicate-job").hidden = job.source === "cli";
+  $("duplicate-job").hidden = job.source === "cli" || ["queued", "running"].includes(job.state);
   $("duplicate-job").textContent = job.state === "failed" ? "Start over" : "Tailor again";
   $("detail-role").textContent = job.role || "Role not provided";
   const badge = $("detail-state");
-  badge.className = `status-pill ${job.state}`;
-  badge.textContent = stateLabel(job.state);
+  const tag = ViewModel.historyTag(job.state);
+  badge.className = `status-pill ${tag.tone}`;
+  badge.textContent = tag.text;
 
   const stage = job.current_stage || (job.state === "queued" ? "Waiting to start" : job.state === "completed" ? "Tailoring complete" : job.state === "failed" ? "Run stopped" : job.state === "action_required" ? (job.action_kind === "bullet_review" ? "Action needed: review bullets" : "Action needed: one-page fit") : "Preparing");
   $("detail-stage-text").textContent = stage;
@@ -455,6 +466,7 @@ function renderDetail(job) {
   $("detail-export-warning").hidden = !job.export_warning;
   $("detail-export-warning").textContent = job.export_warning || "";
   renderRecoveryCard(job);
+  renderJobView(job);
   renderStages(job);
   renderLog(job);
   renderPreview(job);
@@ -465,6 +477,8 @@ function renderDetail(job) {
     clear($("review-content"));
   }
   activateTab(state.activeTab, false);
+  if (job.state === "completed" && !state.review && state.reviewLoadingId !== job.job_id) loadReview();
+  else if (state.review) renderSummary(state.review);
 }
 
 function recoveryPageLabel(value) {
@@ -998,20 +1012,20 @@ function renderPreview(job) {
   const jsonView = $("preview-json");
   const hasPdf = job.artifacts.includes("resume.pdf");
   const hasJson = job.artifacts.includes("tailored.json");
+  // While running, the blank page on the right "inks in"; when done it is
+  // replaced by the real PDF, or by the structured summary when PDF was skipped.
   frame.hidden = true;
   jsonView.hidden = true;
-  pending.hidden = false;
-  if (job.state === "completed" && hasPdf) {
+  pending.hidden = true;
+  const finished = job.state === "completed";
+  if (finished && hasPdf) {
     const src = `/api/jobs/${job.job_id}/files/resume.pdf?download=0#navpanes=0&view=FitH`;
     if (!frame.src.endsWith(src)) frame.src = src;
     frame.hidden = false;
-    pending.hidden = true;
-  } else if (job.state === "completed" && hasJson) {
-    pending.hidden = true;
+  } else if (finished && hasJson) {
     renderTailoredJson(job.job_id);
   }
-  $("dl-pdf-top").hidden = !hasPdf;
-  if (hasPdf) $("dl-pdf-top").href = `/api/jobs/${job.job_id}/files/resume.pdf?download=0`;
+  $("job-paper").hidden = finished && (hasPdf || hasJson);
 }
 
 async function renderTailoredJson(jobId) {
@@ -1078,10 +1092,10 @@ function activateTab(name, focus = true) {
     const active = tabName === name;
     tab.setAttribute("aria-selected", String(active));
     tab.tabIndex = active ? 0 : -1;
-    panel.hidden = !active && !(name === "preview" && tabName === "review");
+    panel.hidden = !active;
   }
   if (focus) $(`tab-${name}`).focus();
-  if ((name === "review" || name === "preview") && state.currentDetail && !state.review && state.reviewLoadingId !== state.selectedId) loadReview();
+  if (name === "review" && state.currentDetail && !state.review && state.reviewLoadingId !== state.selectedId) loadReview();
 }
 
 function onTabKeydown(event) {
@@ -1094,6 +1108,87 @@ function onTabKeydown(event) {
   else return;
   event.preventDefault();
   activateTab(TAB_NAMES[next], true);
+}
+
+/* Job screen: plain progress while running, a short summary when done. */
+
+// Stages that only run in some jobs count as skipped until they report activity.
+const CONDITIONAL_STAGES = ["Apply bullet review", "Emergency bullet concision", "Audit emergency concision"];
+
+function stageStatusFor(stageName, job) {
+  if (job.state === "completed") return "done";
+  const status = stageStatus(stageName, job);
+  if (status !== "pending") return status;
+  if (CONDITIONAL_STAGES.includes(stageName)) return "skipped";
+  return status;
+}
+
+function currentStepLabel(job) {
+  const group = ViewModel.STEP_GROUPS.find((step) => step.stages.includes(job.current_stage));
+  return group ? group.label : job.state === "queued" ? "Waiting to start" : "Starting";
+}
+
+function latestNote(job) {
+  const events = state.events.get(job.job_id) || [];
+  for (const event of [...events].reverse()) {
+    if (event.kind === "stage_completed") return "";
+    const note = event.message ? ViewModel.friendlyNote(event.message) : null;
+    if (note) return note;
+  }
+  return "";
+}
+
+function renderJobView(job) {
+  const steps = ViewModel.progressSteps((name) => stageStatusFor(name, job));
+  const list = $("job-steps");
+  clear(list);
+  for (const step of steps) {
+    const failed = job.state === "failed" && step.status === "active";
+    const item = el("li", `step ${failed ? "failed" : step.status}`);
+    item.appendChild(el("span", "step-mark", step.status === "done" ? "✓" : failed ? "!" : ""));
+    item.appendChild(el("span", "step-label", step.label));
+    list.appendChild(item);
+  }
+  const done = steps.filter((step) => step.status === "done").length;
+  const segments = $("job-track").children;
+  steps.forEach((step, index) => {
+    segments[index].className = step.status === "done" ? "on" : step.status === "active" ? "cur" : "";
+  });
+  const lines = $("job-paper").querySelectorAll(".paper-name, .paper-line");
+  const inked = Math.round((lines.length * done) / steps.length);
+  lines.forEach((line, index) => line.classList.toggle("ink", index < inked));
+
+  const running = ["queued", "running"].includes(job.state);
+  const finished = job.state === "completed";
+  $("job-running").hidden = finished;
+  $("job-summary").hidden = !finished;
+  $("job-elapsed").textContent = job.started_at ? formatElapsed(job.started_at, job.finished_at) : "—";
+  $("job-note").textContent = running ? latestNote(job) : "";
+  const hasPdf = (job.artifacts || []).includes("resume.pdf");
+  $("download-pdf").hidden = !(finished && hasPdf);
+  if (hasPdf) $("download-pdf").href = `/api/jobs/${encodeURIComponent(job.job_id)}/files/resume.pdf`;
+}
+
+function renderSummary(review) {
+  const view = ViewModel.summary(review || {});
+  const missing = view.pct === null || view.pct === undefined;
+  $("summary-pct").hidden = missing;
+  $("summary-pct").textContent = missing ? "" : `${Math.round(view.pct)}%`;
+  $("summary-label").textContent = missing
+    ? "No summary for this resume. The PDF is ready to download."
+    : view.estimated ? "estimated keyword match" : "keyword match with the posting";
+  $("summary-all").hidden = !view.allIncluded;
+  const notes = $("summary-notes");
+  clear(notes);
+  for (const note of view.notes) notes.appendChild(el("li", `note ${note.tone}`, note.text));
+}
+
+function renderTopbarRunning(active) {
+  const link = $("topbar-running");
+  link.hidden = !active;
+  if (!active) return;
+  link.textContent = `${active.company || "Resume"}: ${currentStepLabel(active)}`;
+  link.href = `#job/${encodeURIComponent(active.job_id)}`;
 }
 
 /* Mutations and form */
@@ -1524,6 +1619,7 @@ async function loadReview(force = false) {
     const report = await fetchJson(`/api/jobs/${id}/review`);
     if (state.selectedId !== id) return;
     state.review = report;
+    renderSummary(report);
     $("review-status").textContent = typeof report.coverage_pct === "number" ? `${Math.round(report.coverage_pct)}% estimated requirement coverage` : "Review the analysis below.";
     const QUALIFICATION_LABELS = { covered: "Covered", covered_with_substitution: "Covered with education substitution", unsupported: "Not supported", supported_not_on_page: "True but not on the page" };
     reviewSection("Qualifications", (report.qualification_coverage || []).map((row) =>
@@ -1569,7 +1665,10 @@ async function loadReview(force = false) {
       reviewSection("Claims to check", ["No estimated metrics or cross-entry attributions were recorded in this report. Review the full resume before applying."]);
     }
   } catch (error) {
-    if (state.selectedId === id) $("review-status").textContent = error.message;
+    if (state.selectedId !== id) return;
+    $("review-status").textContent = error.message;
+    // No report for this job: show the plain "no summary" state and stop asking.
+    if (error.status === 404) { state.review = {}; renderSummary(state.review); }
   } finally { if (state.reviewLoadingId === id) state.reviewLoadingId = null; }
 }
 
@@ -1627,11 +1726,7 @@ function applyEvent(event) {
     }
     loadJobData().catch(() => {});
     if (event.job_id === state.selectedId) {
-      fetchDetail(event.job_id).then(() => {
-        if (kind === "job_completed" && state.currentDetail && state.currentDetail.job_id === event.job_id && (state.currentDetail.artifacts || []).includes("resume.pdf")) {
-          activateTab("preview", false);
-        }
-      });
+      fetchDetail(event.job_id);
     }
     return;
   }
@@ -1643,6 +1738,7 @@ function applyEvent(event) {
   renderJobLists();
   if (event.job_id === state.selectedId && job) {
     state.currentDetail = job;
+    renderJobView(job);
     renderStages(job);
     renderLog(job);
     $("detail-stage-text").textContent = job.current_stage || "Processing";
@@ -1690,6 +1786,7 @@ function go(hash) {
 function route() {
   const { view, jobId } = parseRoute();
   state.view = view;
+  if (view !== "history") $("history-note").textContent = "";
   for (const name of VIEWS) $(`view-${name}`).hidden = name !== view;
   $("nav-new").setAttribute("aria-pressed", String(view === "new"));
   $("nav-history").setAttribute("aria-pressed", String(view === "history"));
@@ -1805,6 +1902,7 @@ function startTicker() {
     const job = state.currentDetail;
     if (job && job.state === "running") {
       $("detail-elapsed").textContent = formatElapsed(job.started_at, job.finished_at);
+      $("job-elapsed").textContent = formatElapsed(job.started_at, job.finished_at);
       if (state.activeTab === "progress") renderStages(job);
     }
   }, 1000);

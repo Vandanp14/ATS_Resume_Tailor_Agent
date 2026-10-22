@@ -353,3 +353,18 @@ def test_csp_allows_same_origin_fonts(web_client):
     csp = web_client.get("/").headers["content-security-policy"]
     assert "font-src 'self'" in csp
     assert "fonts.googleapis.com" not in csp
+
+
+def test_job_view_markup():
+    index = (REPO_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    for marker in (
+        'id="job-title"', 'id="job-track"', 'id="job-steps"', 'id="job-elapsed"', 'id="job-note"',
+        'id="job-summary"', 'id="summary-pct"', 'id="summary-all"', 'id="summary-notes"',
+        'id="download-pdf"', 'id="delete-job"', 'id="job-details"', 'id="job-paper"',
+        'id="fit-recovery-card"', 'id="bullet-review-card"', 'id="resume-job"', 'id="duplicate-job"',
+        'id="panel-review"', 'id="panel-files"', 'id="panel-progress"',
+    ):
+        assert marker in index, marker
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    for marker in ("ViewModel.progressSteps", "ViewModel.summary", "ViewModel.friendlyNote", "That resume no longer exists."):
+        assert marker in app_js, marker

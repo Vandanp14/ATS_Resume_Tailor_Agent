@@ -153,131 +153,150 @@
       </section>
 
       <article class="job-detail" id="detail-body" hidden>
-        <header class="detail-header">
-          <div class="detail-title">
-            <p class="eyebrow">Selected job</p>
-            <h1 id="detail-company">—</h1>
-            <p id="detail-role">—</p>
-          </div>
-          <span class="status-pill" id="detail-state">Queued</span>
-          <div class="detail-actions">
-            <button class="button primary compact" id="resume-job" type="button" hidden>Resume run</button>
-            <button class="button secondary compact" id="duplicate-job" type="button">Tailor again</button>
-          </div>
-        </header>
-        <p id="detail-action-status" role="status"></p>
-
-        <section class="job-overview" aria-label="Job status overview">
-          <div class="overview-primary">
-            <span class="overview-label">Current status</span>
-            <strong id="detail-stage"><span class="live-dot" aria-hidden="true"></span><span id="detail-stage-text">Waiting to start</span></strong>
-          </div>
-          <dl class="overview-metrics">
-            <div><dt>Elapsed</dt><dd class="tabnum" id="detail-elapsed">—</dd></div>
-            <div><dt>Queue</dt><dd class="tabnum" id="detail-position">—</dd></div>
-            <div><dt>Output</dt><dd id="detail-output">Pending</dd></div>
-            <div><dt>Provider</dt><dd id="detail-provider">—</dd></div>
-          </dl>
-        </section>
-
-        <div class="run-alert" id="detail-message" role="alert" hidden></div>
-        <div class="notice warning" id="detail-export-warning" role="status" hidden></div>
-
-        <section class="fit-recovery-card" id="fit-recovery-card" aria-labelledby="fit-recovery-card-title" hidden>
-          <div class="fit-recovery-card-copy">
-            <p class="eyebrow">One-page fit</p>
-            <h2 id="fit-recovery-card-title">Choose what to remove</h2>
-            <p id="fit-recovery-card-summary">The resume still spans two pages after automatic shortening.</p>
-          </div>
-          <button class="button warning-action" id="review-removals-btn" type="button">Review removal options</button>
-        </section>
-
-        <section class="fit-recovery-card review-card" id="bullet-review-card" aria-labelledby="bullet-review-card-title" hidden>
-          <div class="fit-recovery-card-copy">
-            <p class="eyebrow">Before rendering</p>
-            <h2 id="bullet-review-card-title">Some bullets need your call</h2>
-            <p id="bullet-review-card-summary">The model could not get these bullets right. Choose what to use for each.</p>
-          </div>
-          <button class="button warning-action" id="open-bullet-review-btn" type="button">Review bullets</button>
-        </section>
-
-        <div class="detail-tabs" role="tablist" aria-label="Job details">
-          <button type="button" role="tab" id="tab-progress" aria-selected="true" aria-controls="panel-progress" tabindex="0">Progress</button>
-          <button type="button" role="tab" id="tab-preview" aria-selected="false" aria-controls="panel-preview" tabindex="-1">Resume preview</button>
-          <button type="button" role="tab" id="tab-review" aria-selected="false" aria-controls="panel-review" tabindex="-1">Review</button>
-          <button type="button" role="tab" id="tab-files" aria-selected="false" aria-controls="panel-files" tabindex="-1">Files</button>
-        </div>
-
-        <section class="tab-panel progress-panel" id="panel-progress" role="tabpanel" aria-labelledby="tab-progress" tabindex="0">
-          <div class="progress-layout">
-            <section class="pane stage-pane" aria-labelledby="stages-title">
-              <header class="pane-head">
-                <h2 id="stages-title">Pipeline</h2>
-                <span class="pane-meta tabnum" id="progress-summary">0 of 14</span>
-              </header>
-              <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
-              <ol class="stage-list" id="stage-list"></ol>
-            </section>
-
-            <section class="pane log-pane" aria-labelledby="log-title">
-              <header class="pane-head">
-                <h2 id="log-title">Activity</h2>
-                <div class="log-tools">
-                  <div class="log-filter" role="group" aria-label="Filter activity">
-                    <button type="button" data-log-filter="all" aria-pressed="true">All</button>
-                    <button type="button" data-log-filter="issues" aria-pressed="false">Issues <span class="tabnum" id="log-issue-count">0</span></button>
-                  </div>
-                  <button class="text-button" id="log-copy" type="button">Copy</button>
-                </div>
-              </header>
-              <div class="log-scroll" id="log-scroll" tabindex="0" aria-label="Activity log">
-                <ol class="log-list" id="log-list" role="log" aria-live="polite"></ol>
-                <p class="log-empty" id="log-empty">Activity appears here once the run starts.</p>
+        <div class="desk">
+          <div class="desk-main job-side">
+            <div class="job-track" id="job-track" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+            <header class="detail-header">
+              <div class="detail-title" id="job-title">
+                <h1 id="detail-company">—</h1>
+                <p id="detail-role">—</p>
               </div>
-              <button class="log-jump" id="log-jump" type="button" hidden>Jump to latest</button>
+              <span class="status-pill" id="detail-state">Queued</span>
+            </header>
+            <p id="detail-action-status" role="status"></p>
+            <div class="run-alert" id="detail-message" role="alert" hidden></div>
+            <div class="notice warning" id="detail-export-warning" role="status" hidden></div>
+            <section class="fit-recovery-card" id="fit-recovery-card" aria-labelledby="fit-recovery-card-title" hidden>
+              <div class="fit-recovery-card-copy">
+                <p class="eyebrow">One-page fit</p>
+                <h2 id="fit-recovery-card-title">Choose what to remove</h2>
+                <p id="fit-recovery-card-summary">The resume still spans two pages after automatic shortening.</p>
+              </div>
+              <button class="button warning-action" id="review-removals-btn" type="button">Review removal options</button>
             </section>
-          </div>
-        </section>
+            <section class="fit-recovery-card review-card" id="bullet-review-card" aria-labelledby="bullet-review-card-title" hidden>
+              <div class="fit-recovery-card-copy">
+                <p class="eyebrow">Before rendering</p>
+                <h2 id="bullet-review-card-title">Some bullets need your call</h2>
+                <p id="bullet-review-card-summary">The model could not get these bullets right. Choose what to use for each.</p>
+              </div>
+              <button class="button warning-action" id="open-bullet-review-btn" type="button">Review bullets</button>
+            </section>
 
-        <section class="tab-panel preview-panel" id="panel-preview" role="tabpanel" aria-labelledby="tab-preview" tabindex="0" hidden>
-          <div class="panel-heading">
-            <div><p class="eyebrow">Generated output</p><h2>Resume preview</h2></div>
-            <a class="button secondary compact" id="dl-pdf-top" hidden>Open PDF</a>
-          </div>
-          <div class="preview-state" id="preview-pending">
-            <strong>Resume preview is not ready</strong>
-            <span>It will appear automatically after the tailoring run completes.</span>
-          </div>
-          <iframe id="preview" title="Generated resume PDF preview" hidden></iframe>
-          <div class="preview-json" id="preview-json" hidden></div>
-        </section>
+            <section class="job-running" id="job-running" aria-label="Progress">
+              <ol class="steps" id="job-steps"></ol>
+              <p class="job-meta">Elapsed <span class="tabnum" id="job-elapsed">—</span></p>
+              <p class="job-note" id="job-note" role="status"></p>
+            </section>
 
-        <section class="tab-panel review-panel" id="panel-review" role="tabpanel" aria-labelledby="tab-review" tabindex="0" hidden>
-          <div class="panel-heading"><div><p class="eyebrow">Before you apply</p><h2>Review your resume</h2></div></div>
-          <p class="help">Review the model’s analysis and check any estimated claims against your experience. Coverage is an estimate, not an ATS score.</p>
-          <p id="review-status" role="status"></p>
-          <div id="review-content"></div>
-          <button class="btn btn-outline" id="reload-review" type="button">Reload report</button>
-          <button class="btn btn-primary" id="save-review" type="button" hidden>Save review</button>
-        </section>
+            <section class="job-summary" id="job-summary" aria-label="Result" hidden>
+              <p class="summary-pct tabnum" id="summary-pct">—</p>
+              <p class="summary-label" id="summary-label">keyword match with the posting</p>
+              <p class="summary-all" id="summary-all" hidden>Everything your resume states is included</p>
+              <ul class="summary-notes" id="summary-notes"></ul>
+            </section>
 
-        <section class="tab-panel files-panel" id="panel-files" role="tabpanel" aria-labelledby="tab-files" tabindex="0" hidden>
-          <div class="panel-heading">
-            <div><p class="eyebrow">Artifacts</p><h2>Generated files</h2></div>
+            <div class="job-actions">
+              <a class="button go" id="download-pdf" hidden>Download PDF</a>
+              <button class="button primary compact" id="resume-job" type="button" hidden>Resume run</button>
+              <button class="button secondary compact" id="duplicate-job" type="button">Tailor again</button>
+              <button class="text-button danger-text" id="delete-job" type="button" hidden>Delete</button>
+            </div>
+
+            <details class="job-details" id="job-details">
+              <summary>Details</summary>
+              <section class="job-overview" aria-label="Job status overview">
+                <div class="overview-primary">
+                  <span class="overview-label">Current status</span>
+                  <strong id="detail-stage"><span class="live-dot" aria-hidden="true"></span><span id="detail-stage-text">Waiting to start</span></strong>
+                </div>
+                <dl class="overview-metrics">
+                  <div><dt>Elapsed</dt><dd class="tabnum" id="detail-elapsed">—</dd></div>
+                  <div><dt>Queue</dt><dd class="tabnum" id="detail-position">—</dd></div>
+                  <div><dt>Output</dt><dd id="detail-output">Pending</dd></div>
+                  <div><dt>Provider</dt><dd id="detail-provider">—</dd></div>
+                </dl>
+              </section>
+
+              <div class="detail-tabs" role="tablist" aria-label="Job details">
+                <button type="button" role="tab" id="tab-progress" aria-selected="true" aria-controls="panel-progress" tabindex="0">Activity</button>
+                <button type="button" role="tab" id="tab-review" aria-selected="false" aria-controls="panel-review" tabindex="-1">Review</button>
+                <button type="button" role="tab" id="tab-files" aria-selected="false" aria-controls="panel-files" tabindex="-1">Files</button>
+              </div>
+              <section class="tab-panel progress-panel" id="panel-progress" role="tabpanel" aria-labelledby="tab-progress" tabindex="0">
+                <div class="progress-layout">
+                  <section class="pane stage-pane" aria-labelledby="stages-title">
+                    <header class="pane-head">
+                      <h2 id="stages-title">Pipeline</h2>
+                      <span class="pane-meta tabnum" id="progress-summary">0 of 14</span>
+                    </header>
+                    <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
+                    <ol class="stage-list" id="stage-list"></ol>
+                  </section>
+
+                  <section class="pane log-pane" aria-labelledby="log-title">
+                    <header class="pane-head">
+                      <h2 id="log-title">Activity</h2>
+                      <div class="log-tools">
+                        <div class="log-filter" role="group" aria-label="Filter activity">
+                          <button type="button" data-log-filter="all" aria-pressed="true">All</button>
+                          <button type="button" data-log-filter="issues" aria-pressed="false">Issues <span class="tabnum" id="log-issue-count">0</span></button>
+                        </div>
+                        <button class="text-button" id="log-copy" type="button">Copy</button>
+                      </div>
+                    </header>
+                    <div class="log-scroll" id="log-scroll" tabindex="0" aria-label="Activity log">
+                      <ol class="log-list" id="log-list" role="log" aria-live="polite"></ol>
+                      <p class="log-empty" id="log-empty">Activity appears here once the run starts.</p>
+                    </div>
+                    <button class="log-jump" id="log-jump" type="button" hidden>Jump to latest</button>
+                  </section>
+                </div>
+              </section>
+              <section class="tab-panel review-panel" id="panel-review" role="tabpanel" aria-labelledby="tab-review" tabindex="0" hidden>
+                <div class="panel-heading"><div><p class="eyebrow">Before you apply</p><h2>Review your resume</h2></div></div>
+                <p class="help">Review the model’s analysis and check any estimated claims against your experience. Coverage is an estimate, not an ATS score.</p>
+                <p id="review-status" role="status"></p>
+                <div id="review-content"></div>
+                <button class="btn btn-outline" id="reload-review" type="button">Reload report</button>
+                <button class="btn btn-primary" id="save-review" type="button" hidden>Save review</button>
+              </section>
+              <section class="tab-panel files-panel" id="panel-files" role="tabpanel" aria-labelledby="tab-files" tabindex="0" hidden>
+                <div class="panel-heading">
+                  <div><p class="eyebrow">Artifacts</p><h2>Generated files</h2></div>
+                </div>
+                <p class="file-location" id="pdf-library-location" hidden></p>
+                <div class="file-list" id="downloads">
+                  <a id="dl-pdf" hidden><span><strong>Resume PDF</strong><small>Application-ready document</small></span><b>Download</b></a>
+                  <a id="dl-tex" hidden><span><strong>TeX source</strong><small>Rendered resume source</small></span><b>Download</b></a>
+                  <a id="dl-json" hidden><span><strong>Tailored JSON</strong><small>Structured resume data</small></span><b>Download</b></a>
+                  <a id="dl-match" hidden><span><strong>Match report</strong><small>Tailoring analysis</small></span><b>Download</b></a>
+                  <a id="dl-diagnostic" hidden><span><strong>Diagnostics</strong><small>Failure details</small></span><b>Download</b></a>
+                </div>
+                <div class="preview-state" id="files-empty">
+                  <strong>No files available yet</strong>
+                  <span>Generated files will appear here when the run finishes.</span>
+                </div>
+              </section>
+            </details>
           </div>
-          <p class="file-location" id="pdf-library-location" hidden></p>
-          <div class="file-list" id="downloads">
-            <a id="dl-pdf" hidden><span><strong>Resume PDF</strong><small>Application-ready document</small></span><b>Download</b></a>
-            <a id="dl-tex" hidden><span><strong>TeX source</strong><small>Rendered resume source</small></span><b>Download</b></a>
-            <a id="dl-json" hidden><span><strong>Tailored JSON</strong><small>Structured resume data</small></span><b>Download</b></a>
-            <a id="dl-match" hidden><span><strong>Match report</strong><small>Tailoring analysis</small></span><b>Download</b></a>
-            <a id="dl-diagnostic" hidden><span><strong>Diagnostics</strong><small>Failure details</small></span><b>Download</b></a>
+
+          <div class="paper-col">
+            <div class="paper" id="job-paper" aria-hidden="true">
+              <span class="paper-name"></span>
+              <span class="paper-line"></span><span class="paper-line"></span><span class="paper-line short"></span>
+              <span class="paper-line"></span><span class="paper-line"></span><span class="paper-line shorter"></span>
+              <span class="paper-line"></span><span class="paper-line"></span><span class="paper-line short"></span>
+              <span class="paper-line"></span><span class="paper-line shorter"></span>
+            </div>
+            <div class="preview-state" id="preview-pending" hidden>
+              <strong>Resume preview is not ready</strong>
+              <span>It appears here when the run finishes.</span>
+            </div>
+            <iframe id="preview" title="Generated resume PDF preview" hidden></iframe>
+            <div class="preview-json" id="preview-json" hidden></div>
           </div>
-          <div class="preview-state" id="files-empty">
-            <strong>No files available yet</strong>
-            <span>Generated files will appear here when the run finishes.</span>
-          </div>
-        </section>
+        </div>
       </article>
     </section>
 
