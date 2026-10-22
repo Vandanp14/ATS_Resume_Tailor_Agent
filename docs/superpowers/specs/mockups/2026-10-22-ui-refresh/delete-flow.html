@@ -1,0 +1,77 @@
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  .D{font-family:'Instrument Sans',system-ui;color:#1B1B1F}
+  .D .row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+  @media (max-width:1000px){.D .row{grid-template-columns:1fr 1fr}}
+  @media (max-width:600px){.D .row{grid-template-columns:1fr}}
+  .D .f{background:#F2F2F0;border-radius:12px;padding:10px}
+  .D .p{background:#FBFBFA;border:1px solid #DEDED9;border-radius:10px;padding:12px;min-height:330px;position:relative}
+  .D h4{margin:0 0 8px;font-size:13px;display:flex;justify-content:space-between;align-items:center}
+  .D .lnk{font-size:11px;font-weight:600;border:1px solid #D6D6D0;border-radius:999px;padding:3px 10px;background:#fff}
+  .D .job{display:flex;gap:9px;align-items:center;padding:8px 2px;border-bottom:1px solid #E6E6E1;font-size:11.5px}
+  .D .job .t{flex:1}.D .job small{display:block;color:#77776F;font-size:10.5px}
+  .D .box{width:16px;height:16px;border:1.5px solid #1B1B1F;border-radius:4px;flex:none;display:grid;place-items:center;font-size:11px;color:#fff;background:#fff}
+  .D .box.on{background:#1B1B1F}
+  .D .box.off{border-color:#CFCFC8;background:#F2F2F0}
+  .D .st{font-size:10px;border-radius:999px;padding:2px 7px}
+  .D .ok{background:#E3F2EB;color:#0E7C55}.D .run{background:#1B1B1F;color:#fff}.D .fail{background:#FBE7E5;color:#9A2A1F}
+  .D .del{position:absolute;left:12px;right:12px;bottom:12px;background:#9A2A1F;color:#fff;border-radius:999px;padding:8px;text-align:center;font-weight:600;font-size:12px}
+  .D .del.dim{background:#E3E3DE;color:#A3A39B}
+  .D .scrim{position:absolute;inset:0;background:rgba(27,27,31,.35);border-radius:10px;display:grid;place-items:center;padding:10px}
+  .D .dlg{background:#fff;border-radius:12px;padding:14px;font-size:11.5px;box-shadow:0 18px 40px -18px rgba(0,0,0,.5)}
+  .D .dlg b{font-size:14px;display:block;margin-bottom:6px}
+  .D .dlg ul{margin:8px 0;padding-left:16px}
+  .D .btns{display:flex;gap:6px;justify-content:flex-end;margin-top:10px}
+  .D .btns span{border-radius:999px;padding:6px 12px;font-weight:600}
+  .D .toast{position:absolute;left:12px;right:12px;bottom:12px;background:#1B1B1F;color:#fff;border-radius:10px;padding:9px 12px;font-size:11.5px}
+  .D .cap{font-size:12px;color:#55554E;margin:6px 2px 0}
+</style>
+
+<h2>Deleting old resumes, step by step</h2>
+<p class="subtitle">History screen, left to right: normal → select → confirm → done.</p>
+
+<div class="D"><div class="row">
+  <div class="f"><div class="p">
+    <h4>History <span class="lnk">Select</span></h4>
+    <div class="job"><span class="t"><b>Utah University</b><small>Web Developer · now</small></span><span class="st run">Running</span></div>
+    <div class="job"><span class="t"><b>HCLTech</b><small>Full Stack Engineer · Oct 14</small></span><span class="st ok">Ready</span></div>
+    <div class="job"><span class="t"><b>Whatnot</b><small>SWE · Oct 13</small></span><span class="st fail">Failed</span></div>
+    <div class="job"><span class="t"><b>Notion</b><small>SWE · Sep 8</small></span><span class="st ok">Ready</span></div>
+    <div class="job" style="border:0"><span class="t"><b>Amazon</b><small>SDE · Sep 8</small></span><span class="st ok">Ready</span></div>
+  </div><p class="cap">1. Normal history. Click a job to open it, or press "Select".</p></div>
+
+  <div class="f"><div class="p">
+    <h4>2 selected <span class="lnk">Cancel</span></h4>
+    <div class="job" style="color:#55554E"><span class="box"></span><span class="t">Select all finished (52)</span></div>
+    <div class="job"><span class="box off"></span><span class="t" style="color:#A3A39B"><b>Utah University</b><small>Running, can't delete</small></span><span class="st run">Running</span></div>
+    <div class="job"><span class="box on">✓</span><span class="t"><b>HCLTech</b><small>Full Stack Engineer · Oct 14</small></span><span class="st ok">Ready</span></div>
+    <div class="job"><span class="box on">✓</span><span class="t"><b>Whatnot</b><small>SWE · Oct 13</small></span><span class="st fail">Failed</span></div>
+    <div class="job"><span class="box"></span><span class="t"><b>Notion</b><small>SWE · Sep 8</small></span><span class="st ok">Ready</span></div>
+    <div class="job" style="border:0"><span class="box"></span><span class="t">Old command-line folders (11)<small>cisco, uber, product_swe_disney…</small></span></div>
+    <div class="del">Delete 2 resumes</div>
+  </div><p class="cap">2. Checkboxes appear. Tick some, or "Select all finished". Running jobs can't be ticked.</p></div>
+
+  <div class="f"><div class="p">
+    <h4>2 selected <span class="lnk">Cancel</span></h4>
+    <div class="job"><span class="box on">✓</span><span class="t"><b>HCLTech</b></span></div>
+    <div class="job"><span class="box on">✓</span><span class="t"><b>Whatnot</b></span></div>
+    <div class="scrim"><div class="dlg">
+      <b>Delete 2 resumes?</b>
+      Removes each one's PDF, its copy in your PDF library, its report, and its saved job description. This can't be undone.
+      <ul><li>HCLTech, Full Stack Engineer</li><li>Whatnot, SWE</li></ul>
+      <span style="color:#77776F">Frees about 180 KB.</span>
+      <div class="btns"><span style="background:#ECECE8">Cancel</span><span style="background:#9A2A1F;color:#fff">Delete</span></div>
+    </div></div>
+  </div><p class="cap">3. Confirm. Nothing is deleted until you press Delete here.</p></div>
+
+  <div class="f"><div class="p">
+    <h4>History <span class="lnk">Select</span></h4>
+    <div class="job"><span class="t"><b>Utah University</b><small>Web Developer · now</small></span><span class="st run">Running</span></div>
+    <div class="job"><span class="t"><b>Notion</b><small>SWE · Sep 8</small></span><span class="st ok">Ready</span></div>
+    <div class="job" style="border:0"><span class="t"><b>Amazon</b><small>SDE · Sep 8</small></span><span class="st ok">Ready</span></div>
+    <div class="toast">Deleted 2 resumes. 180 KB freed.</div>
+  </div><p class="cap">4. Done. The list updates right away and a short note confirms it.</p></div>
+</div></div>
+
+<div style="font-family:'Instrument Sans',system-ui;margin-top:14px;font-size:12px;color:#55554E">Single resume: an opened resume also has a "Delete" button next to Download PDF, with the same confirm step.</div>

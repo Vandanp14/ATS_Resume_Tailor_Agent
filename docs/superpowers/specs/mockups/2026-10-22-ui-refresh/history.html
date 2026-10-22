@@ -1,0 +1,47 @@
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  .H{font-family:'Instrument Sans',system-ui;background:#F2F2F0;color:#1B1B1F;padding:16px;border-radius:14px}
+  .H .bar{display:flex;justify-content:space-between;align-items:center;background:#FBFBFA;border:1px solid #DEDED9;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px}
+  .H .bar b{font-size:14px}
+  .H .seg{display:flex;gap:4px;background:#ECECE8;border-radius:999px;padding:3px}
+  .H .seg span{padding:4px 12px;border-radius:999px;color:#55554E}.H .seg .on{background:#fff;color:#1B1B1F;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+  .H .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:900px){.H .grid{grid-template-columns:1fr}}
+  .H .panel{background:#FBFBFA;border:1px solid #DEDED9;border-radius:10px;padding:14px}
+  .H .panel h4{margin:0 0 10px;font-size:14px;display:flex;justify-content:space-between}
+  .H .panel h4 a{font-weight:500;color:#55554E;font-size:12px}
+  .H .job{display:grid;grid-template-columns:18px 1fr auto;gap:10px;align-items:center;padding:9px 4px;border-bottom:1px solid #E6E6E1;font-size:12px}
+  .H .job small{color:#77776F;display:block}
+  .H .st{font-size:11px;border-radius:999px;padding:2px 8px}
+  .H .st.ok{background:#E3F2EB;color:#0E7C55}.H .st.run{background:#1B1B1F;color:#fff}.H .st.fail{background:#FBE7E5;color:#9A2A1F}.H .st.q{background:#ECECE8;color:#55554E}
+  .H .del{margin-top:12px;background:#9A2A1F;color:#fff;border-radius:999px;padding:9px;text-align:center;font-weight:600;font-size:12px}
+  .H .chips span{display:inline-block;border:1px solid #D6D6D0;border-radius:999px;padding:4px 10px;font-size:11px;margin:3px 4px 0 0}
+  .H .chips .on{background:#1B1B1F;color:#fff;border-color:#1B1B1F}
+</style>
+
+<h2>The rest of the app</h2>
+<p class="subtitle">Top bar switches between making a resume and your history. Left: skill check inside the new-resume form. Right: history in select mode.</p>
+
+<div class="H">
+  <div class="bar"><b>Resume Tailor</b><div class="seg"><span class="on">New resume</span><span>History 52</span></div><span style="color:#55554E">Gemini 3/15 a minute</span></div>
+  <div class="grid">
+    <div class="panel">
+      <h4>Do you know these? <a>4 not on your resume</a></h4>
+      <div class="chips"><span class="on">✓ Figma</span><span class="on">✓ Adobe XD</span><span>Siteimprove</span><span>TERMINALFOUR</span></div>
+      <p style="font-size:11px;color:#55554E;margin:10px 0 12px">Tap the ones you know; they're saved to your resume and won't be asked again.</p>
+      <div style="font-size:12px;border-top:1px solid #E6E6E1;padding-top:10px;color:#55554E">More options: College posting · Model provider · Skip PDF</div>
+      <div style="margin-top:12px;background:#1B1B1F;color:#fff;border-radius:999px;padding:9px;text-align:center;font-weight:600;font-size:12px">Tailor resume</div>
+    </div>
+    <div class="panel">
+      <h4>History <a>Cancel</a></h4>
+      <label class="job" style="color:#55554E"><input type="checkbox"> <span>Select all finished (52)</span><span></span></label>
+      <label class="job"><input type="checkbox" disabled> <span><b>Utah University</b><small>Web Developer · running</small></span><span class="st run">Running</span></label>
+      <label class="job"><input type="checkbox" checked> <span><b>HCLTech</b><small>Full Stack Engineer · Oct 14</small></span><span class="st ok">Ready</span></label>
+      <label class="job"><input type="checkbox" checked> <span><b>Whatnot</b><small>SWE · Oct 13</small></span><span class="st fail">Failed</span></label>
+      <label class="job"><input type="checkbox"> <span><b>Notion</b><small>SWE · Sep 8</small></span><span class="st ok">Ready</span></label>
+      <label class="job" style="border-bottom:0"><input type="checkbox"> <span>Old command-line folders (11)<small>cisco, uber, product_swe_disney…</small></span><span></span></label>
+      <div class="del">Delete 2 selected</div>
+    </div>
+  </div>
+</div>
