@@ -4,36 +4,31 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ATS Resume Tailor</title>
+  <link rel="preload" href="/fonts/instrument-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/ui.css">
   <link rel="stylesheet" href="/app.css">
 </head>
-<body data-mobile-view="jobs">
+<body>
   <a class="skip-link" href="#main">Skip to main content</a>
 
-  <header class="app-header">
-    <div class="header-leading">
-      <button class="icon-button mobile-only" id="show-jobs-btn" type="button" aria-label="Show jobs">
-        <span aria-hidden="true">☰</span>
-      </button>
-      <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
-      <div class="brand-copy">
-        <strong>ATS Resume Tailor</strong>
-        <span id="server-status">Connecting…</span>
-      </div>
+  <header class="topbar">
+    <div class="brand">
+      <strong>Resume Tailor</strong>
+      <span class="brand-status" id="server-status">Connecting…</span>
     </div>
-
-    <div class="header-actions">
-      <div class="model-summary desktop-meta">
-        <span id="model-provider">Model unavailable</span>
-        <span id="master-identity">Master unavailable</span>
-      </div>
+    <nav class="view-switch" aria-label="Views">
+      <button type="button" id="nav-new" aria-pressed="true">New resume</button>
+      <button type="button" id="nav-history" aria-pressed="false">History <span class="tabnum" id="history-count">0</span></button>
+    </nav>
+    <div class="topbar-actions">
+      <a class="topbar-running" id="topbar-running" href="#history" hidden></a>
       <button class="usage-trigger" id="tracker" type="button" popovertarget="tracker-detail">
         <span class="status-dot" id="tracker-dot" aria-hidden="true"></span>
-        <span class="desktop-label">Gemini usage</span>
+        <span class="desktop-label">Gemini</span>
         <strong class="tabnum" id="tracker-copy">—</strong>
       </button>
-      <button class="button primary header-new" id="header-new-job" type="button">New tailoring</button>
-      <button class="btn btn-ghost" id="logout-btn" type="button" hidden>Sign out</button>
+      <button class="text-button" id="pause-btn" type="button" hidden>Pause queue</button>
+      <button class="text-button" id="logout-btn" type="button" hidden>Sign out</button>
     </div>
   </header>
 
@@ -62,75 +57,85 @@
     <p class="usage-note" id="tracker-note">Usage recorded by this web app. Daily quota resets at midnight Pacific.</p>
   </div>
 
-  <div class="app-shell">
-    <aside class="job-rail" id="job-rail" aria-label="Tailoring jobs">
-      <div class="rail-top">
-        <div class="rail-heading">
-          <div>
-            <p class="eyebrow">Workspace</p>
-            <h2>Tailoring jobs</h2>
-          </div>
-          <button class="icon-button rail-close mobile-only" id="hide-jobs-btn" type="button" aria-label="Close jobs">
-            <span aria-hidden="true">×</span>
-          </button>
+  <main class="workspace" id="main" tabindex="-1">
+    <section class="view view-new" id="view-new" aria-labelledby="new-title">
+      <div class="desk">
+        <div class="desk-main">
+          <h1 class="view-title" id="new-title">New resume</h1>
+          <form id="job-form" novalidate>
+            <div class="form-body">
+              <div class="field">
+                <label for="jd-text">Job description</label>
+                <p class="help" id="jd-help">Paste the full description. Your draft is kept in this browser tab until submitted or cleared.</p>
+                <textarea id="jd-text" name="jd_text" rows="14" maxlength="100000" aria-describedby="jd-help jd-error" required></textarea>
+                <p class="error-slot" id="jd-error" role="alert"></p>
+                <button class="btn btn-ghost btn-sm" id="suggest-details" type="button">Use company and role from description</button>
+                <p class="help" id="suggest-status" role="status"></p>
+              </div>
+              <div class="field">
+                <label for="company">Company</label>
+                <input id="company" name="company" type="text" maxlength="80" autocomplete="organization" aria-describedby="company-error" required>
+                <p class="error-slot" id="company-error" role="alert"></p>
+              </div>
+              <div class="field">
+                <label for="role">Role</label>
+                <input id="role" name="role" type="text" maxlength="80" autocomplete="organization-title" aria-describedby="role-error" required>
+                <p class="error-slot" id="role-error" role="alert"></p>
+              </div>
+              <details class="advanced more-options" id="more-options">
+                <summary>More options</summary>
+                <fieldset class="provider-field" id="provider-field" aria-describedby="provider-help">
+                  <legend>Model provider</legend>
+                  <div class="provider-segment" role="radiogroup" aria-label="Model provider">
+                    <label><input type="radio" name="provider_mode" value="gemini" checked><span>Gemini</span></label>
+                    <label><input type="radio" name="provider_mode" value="freellm"><span>FreeLLMAPI</span></label>
+                    <label><input type="radio" name="provider_mode" value="freellm_gemini"><span>Free → Gemini</span></label>
+                    <label><input type="radio" name="provider_mode" value="gemini_freellm"><span>Gemini → Free</span></label>
+                  </div>
+                  <div class="provider-model" id="freellm-model-row" hidden>
+                    <label for="freellm-model">FreeLLMAPI model</label>
+                    <select id="freellm-model" name="freellm_model"><option value="auto">auto</option></select>
+                  </div>
+                  <p class="help" id="provider-help" role="status">Gemini uses the models configured in .env.</p>
+                </fieldset>
+                <label class="check"><input type="checkbox" id="bridge-skills"> <span><strong>Bridge skills</strong><small>Include transferable-skill planning.</small></span></label>
+                <label class="check"><input type="checkbox" id="research-company"> <span><strong>Research company</strong><small>When the JD is vague, look up the company's stack and hiring signals to guide selection (Gemini only).</small></span></label>
+                <label class="check"><input type="checkbox" id="college-mode"> <span><strong>College posting</strong><small>Two pages, qualification checklist, summary.</small></span></label>
+                <label class="check"><input type="checkbox" id="no-pdf"> <span><strong>Skip PDF</strong><small>Generate structured files without rendering a PDF.</small></span></label>
+              </details>
+              <section class="skill-check" id="skill-check" aria-labelledby="skill-check-title" hidden>
+                <h3 class="skill-check-title" id="skill-check-title">Do you know these? <span class="skill-check-count" id="skill-check-count"></span></h3>
+                <div class="skill-chips" id="skill-chips" role="group" aria-labelledby="skill-check-title"></div>
+                <p class="help">Tap to toggle. Saved to master resume.</p>
+              </section>
+              <details class="advanced remembered-skills" id="remembered-skills" hidden>
+                <summary>Remembered skills</summary>
+                <p class="help remembered-help">Highlighted means you know it. Tap to change; saved right away.</p>
+                <div class="skill-chips" id="remembered-chips" role="group" aria-label="Remembered skills"></div>
+              </details>
+              <p class="form-status" id="enqueue-status" aria-live="polite"></p>
+            </div>
+            <footer class="form-actions">
+              <button class="text-button" id="clear-draft" type="button">Clear draft</button>
+              <button class="button secondary" id="skip-check-btn" type="button" hidden>Tailor without checking</button>
+              <button class="button primary" type="submit" id="check-skills-btn">Check skills</button>
+            </footer>
+          </form>
         </div>
-        <button class="button rail-new" id="rail-new-job" type="button">New tailoring</button>
-
-        <section class="queue-banner" id="queue-banner" aria-live="polite">
-          <div class="queue-banner-copy">
-            <span class="status-dot" id="queue-status-dot" aria-hidden="true"></span>
-            <div><strong id="queue-status-title">Queue loading</strong><span id="queue-status-copy">Checking worker status…</span></div>
-          </div>
-          <button class="rail-action" id="pause-btn" type="button" hidden>Pause</button>
-        </section>
-
-        <div class="rail-segment" aria-label="Job list filter">
-          <button type="button" id="filter-queue" aria-pressed="true">Queue <span class="tabnum" id="queue-count">0</span></button>
-          <button type="button" id="filter-recent" aria-pressed="false">Recent</button>
-        </div>
-        <div class="job-filters">
-          <label for="job-search">Find a tailoring</label>
-          <input class="input" id="job-search" type="search" placeholder="Company or role" autocomplete="off">
-          <label for="job-status-filter">Status</label>
-          <select class="select" id="job-status-filter">
-            <option value="all">All statuses</option>
-            <option value="completed">Completed</option>
-            <option value="failed">Failed</option>
-            <option value="action_required">Needs attention</option>
-          </select>
+        <div class="paper" aria-hidden="true">
+          <span class="paper-name"></span>
+          <span class="paper-line"></span><span class="paper-line"></span><span class="paper-line short"></span>
+          <span class="paper-line"></span><span class="paper-line"></span><span class="paper-line shorter"></span>
+          <span class="paper-line"></span><span class="paper-line short"></span>
         </div>
       </div>
+    </section>
 
-      <div class="rail-list-area">
-        <div class="list-state skeleton-stack" id="queue-loading" aria-label="Loading jobs" hidden>
-          <span></span><span></span><span></span>
-        </div>
-        <div class="list-state error-state" id="queue-error" role="alert" hidden>
-          <strong>Jobs could not be loaded</strong>
-          <span id="queue-error-copy"></span>
-          <button class="rail-action" id="retry-jobs-btn" type="button">Try again</button>
-        </div>
-        <div class="list-state empty-state" id="queue-empty" hidden>
-          <strong>No queued jobs</strong>
-          <span>Paste a job description to start tailoring.</span>
-          <button class="rail-action" id="add-jd-action" type="button">New tailoring</button>
-        </div>
-        <ul class="job-list" id="queue-list" aria-label="Queued and running jobs"></ul>
-
-        <div class="list-state empty-state" id="recent-empty" hidden>
-          <strong>No recent runs</strong>
-          <span>Completed and failed jobs will appear here.</span>
-        </div>
-        <ul class="job-list" id="recent-list" aria-label="Recent jobs" hidden></ul>
-      </div>
-    </aside>
-
-    <main class="main-workspace" id="main" tabindex="-1">
+    <section class="view view-job" id="view-job" hidden>
       <section class="workspace-state detail-empty" id="detail-empty">
         <p class="eyebrow">Resume workspace</p>
         <h1>Tailor your next resume</h1>
         <p>Add a job description, then follow its progress and review the generated resume here.</p>
-        <button class="button primary" id="empty-new-job" type="button">New tailoring</button>
       </section>
 
       <section class="workspace-state detail-loading" id="detail-loading" aria-label="Loading selected job" hidden>
@@ -149,7 +154,6 @@
 
       <article class="job-detail" id="detail-body" hidden>
         <header class="detail-header">
-          <button class="back-button mobile-only" id="detail-back-btn" type="button">Jobs</button>
           <div class="detail-title">
             <p class="eyebrow">Selected job</p>
             <h1 id="detail-company">—</h1>
@@ -275,78 +279,52 @@
           </div>
         </section>
       </article>
-    </main>
-  </div>
+    </section>
 
-  <dialog class="new-job-dialog" id="new-job-dialog" aria-labelledby="new-job-title">
-    <div class="dialog-shell">
-      <header class="dialog-header">
-        <div><p class="eyebrow">Queue a resume</p><h2 id="new-job-title">New tailoring</h2></div>
-        <button class="icon-button" id="close-job-dialog" type="button" aria-label="Close new tailoring form"><span aria-hidden="true">×</span></button>
-      </header>
-
-      <form id="job-form" novalidate>
-        <div class="dialog-body">
-          <div class="field">
-            <label for="jd-text">Job description</label>
-            <p class="help" id="jd-help">Paste the full description. Your draft is kept in this browser tab until submitted or cleared.</p>
-            <textarea id="jd-text" name="jd_text" rows="10" maxlength="100000" aria-describedby="jd-help jd-error" required></textarea>
-            <p class="error-slot" id="jd-error" role="alert"></p>
-            <button class="btn btn-ghost btn-sm" id="suggest-details" type="button">Use company and role from description</button>
-            <p class="help" id="suggest-status" role="status"></p>
-          </div>
-          <div class="field">
-            <label for="company">Company</label>
-            <input id="company" name="company" type="text" maxlength="80" autocomplete="organization" aria-describedby="company-error" required>
-            <p class="error-slot" id="company-error" role="alert"></p>
-          </div>
-          <div class="field">
-            <label for="role">Role</label>
-            <input id="role" name="role" type="text" maxlength="80" autocomplete="organization-title" aria-describedby="role-error" required>
-            <p class="error-slot" id="role-error" role="alert"></p>
-          </div>
-          <fieldset class="provider-field" id="provider-field" aria-describedby="provider-help">
-            <legend>Model provider</legend>
-            <div class="provider-segment" role="radiogroup" aria-label="Model provider">
-              <label><input type="radio" name="provider_mode" value="gemini" checked><span>Gemini</span></label>
-              <label><input type="radio" name="provider_mode" value="freellm"><span>FreeLLMAPI</span></label>
-              <label><input type="radio" name="provider_mode" value="freellm_gemini"><span>Free → Gemini</span></label>
-              <label><input type="radio" name="provider_mode" value="gemini_freellm"><span>Gemini → Free</span></label>
-            </div>
-            <div class="provider-model" id="freellm-model-row" hidden>
-              <label for="freellm-model">FreeLLMAPI model</label>
-              <select id="freellm-model" name="freellm_model"><option value="auto">auto</option></select>
-            </div>
-            <p class="help" id="provider-help" role="status">Gemini uses the models configured in .env.</p>
-          </fieldset>
-          <details class="advanced">
-            <summary>Advanced options</summary>
-            <label class="check"><input type="checkbox" id="bridge-skills"> <span><strong>Bridge skills</strong><small>Include transferable-skill planning.</small></span></label>
-            <label class="check"><input type="checkbox" id="research-company"> <span><strong>Research company</strong><small>When the JD is vague, look up the company's stack and hiring signals to guide selection (Gemini only).</small></span></label>
-            <label class="check"><input type="checkbox" id="college-mode"> <span><strong>College posting</strong><small>Two pages, qualification checklist, summary.</small></span></label>
-            <label class="check"><input type="checkbox" id="no-pdf"> <span><strong>Skip PDF</strong><small>Generate structured files without rendering a PDF.</small></span></label>
-          </details>
-          <section class="skill-check" id="skill-check" aria-labelledby="skill-check-title" hidden>
-            <h3 class="skill-check-title" id="skill-check-title">Do you know these? <span class="skill-check-count" id="skill-check-count"></span></h3>
-            <div class="skill-chips" id="skill-chips" role="group" aria-labelledby="skill-check-title"></div>
-            <p class="help">Tap to toggle. Saved to master resume.</p>
-          </section>
-          <details class="advanced remembered-skills" id="remembered-skills" hidden>
-            <summary>Remembered skills</summary>
-            <p class="help remembered-help">Highlighted means you know it. Tap to change; saved right away.</p>
-            <div class="skill-chips" id="remembered-chips" role="group" aria-label="Remembered skills"></div>
-          </details>
-          <p class="form-status" id="enqueue-status" aria-live="polite"></p>
+    <section class="view view-history" id="view-history" aria-labelledby="history-title" hidden>
+      <h1 class="view-title" id="history-title">History</h1>
+      <p class="view-note" id="history-note" role="status"></p>
+      <div class="history-tools">
+        <div class="rail-segment" aria-label="Job list filter">
+          <button type="button" id="filter-queue" aria-pressed="true">Queue <span class="tabnum" id="queue-count">0</span></button>
+          <button type="button" id="filter-recent" aria-pressed="false">Recent</button>
         </div>
-        <footer class="dialog-footer">
-          <button class="btn btn-ghost" id="clear-draft" type="button">Clear draft</button>
-          <button class="button secondary" id="cancel-job-dialog" type="button">Cancel</button>
-          <button class="button secondary" id="skip-check-btn" type="button" hidden>Tailor without checking</button>
-          <button class="button primary" type="submit" id="check-skills-btn">Check skills</button>
-        </footer>
-      </form>
-    </div>
-  </dialog>
+        <div class="job-filters">
+          <label for="job-search">Find a resume</label>
+          <input class="input" id="job-search" type="search" placeholder="Company or role" autocomplete="off">
+          <label for="job-status-filter">Status</label>
+          <select class="select" id="job-status-filter">
+            <option value="all">All statuses</option>
+            <option value="completed">Ready</option>
+            <option value="failed">Failed</option>
+            <option value="action_required">Needs you</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="history-area">
+        <div class="list-state skeleton-stack" id="queue-loading" aria-label="Loading jobs" hidden>
+          <span></span><span></span><span></span>
+        </div>
+        <div class="list-state error-state" id="queue-error" role="alert" hidden>
+          <strong>Jobs could not be loaded</strong>
+          <span id="queue-error-copy"></span>
+          <button class="rail-action" id="retry-jobs-btn" type="button">Try again</button>
+        </div>
+        <div class="list-state empty-state" id="queue-empty" hidden>
+          <strong>No queued jobs</strong>
+          <span>Paste a job description to start tailoring.</span>
+        </div>
+        <ul class="job-list" id="queue-list" aria-label="Queued and running jobs"></ul>
+
+        <div class="list-state empty-state" id="recent-empty" hidden>
+          <strong>No recent runs</strong>
+          <span>Completed and failed jobs will appear here.</span>
+        </div>
+        <ul class="job-list" id="recent-list" aria-label="Recent jobs" hidden></ul>
+      </div>
+    </section>
+  </main>
 
   <dialog class="recovery-dialog" id="fit-recovery-dialog" aria-labelledby="fit-recovery-title" aria-describedby="fit-recovery-description">
     <div class="recovery-dialog-shell">
@@ -424,6 +402,7 @@
     </div>
   </dialog>
 
+  <script src="/view-model.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

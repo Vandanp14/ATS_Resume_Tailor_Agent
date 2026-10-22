@@ -170,9 +170,6 @@ function renderMeta() {
   $("server-status").textContent = meta.ready
     ? `Ready · PDF ${meta.pdf_available === false ? "unavailable" : "available"}`
     : "Starting…";
-  $("model-provider").textContent = `Model · ${meta.model || "Unavailable"}`;
-  const identity = [meta.master_name, meta.master_email].filter(Boolean).join(" · ");
-  $("master-identity").textContent = `Master · ${identity || "Unavailable"}`;
   if (meta.pdf_available === false) lockSkipPdf();
 }
 
@@ -265,13 +262,6 @@ async function fetchJobs() {
   state.jobs = new Map(jobs.map((job) => [job.job_id, job]));
   if (previous && !state.jobs.has(previous)) state.selectedId = null;
   renderJobLists();
-
-  if (!state.selectedId) {
-    const active = jobs.find((job) => job.active);
-    const newest = jobs.find((job) => ["completed", "failed", "action_required"].includes(job.state));
-    const initial = active || newest;
-    if (initial) selectJob(initial.job_id, { reveal: false });
-  }
 }
 
 function jobRow(job, position = null) {
@@ -298,7 +288,7 @@ function jobRow(job, position = null) {
   else if (job.state === "action_required") aside = "Action needed";
   else aside = formatWhen(job.finished_at || job.created_at);
   select.appendChild(el("span", "job-aside", aside));
-  select.addEventListener("click", () => selectJob(job.job_id, { reveal: true }));
+  select.addEventListener("click", () => go(`#job/${encodeURIComponent(job.job_id)}`));
   item.appendChild(select);
 
   if (job.state === "queued" && !job.active) {
@@ -314,32 +304,10 @@ function jobRow(job, position = null) {
 function renderQueueBanner() {
   if (!state.queue) return;
   const snapshot = state.queue;
-  const active = snapshot.active_job_id ? state.jobs.get(snapshot.active_job_id) : null;
   const paused = snapshot.state === "paused";
-  const title = $("queue-status-title");
-  const copy = $("queue-status-copy");
-  const dot = $("queue-status-dot");
   const action = $("pause-btn");
-  dot.className = "status-dot";
-
-  if (paused) {
-    title.textContent = "Queue paused";
-    copy.textContent = `${snapshot.queue_count} waiting ${snapshot.queue_count === 1 ? "job" : "jobs"} kept safely.`;
-    dot.classList.add("paused");
-    action.textContent = "Resume queue";
-  } else if (active) {
-    title.textContent = "Tailoring in progress";
-    copy.textContent = active.current_stage || jobLabel(active);
-    action.textContent = "Pause after current job";
-  } else if (snapshot.queue_count > 0) {
-    title.textContent = "Queue ready";
-    copy.textContent = `${snapshot.queue_count} waiting ${snapshot.queue_count === 1 ? "job" : "jobs"}.`;
-    action.textContent = "Pause queue";
-  } else {
-    title.textContent = "Queue ready";
-    copy.textContent = "No jobs are waiting.";
-  }
-  action.hidden = !paused && !active && snapshot.queue_count === 0;
+  action.textContent = paused ? "Resume queue" : "Pause queue";
+  action.hidden = !paused && !snapshot.active_job_id && snapshot.queue_count === 0;
 }
 
 function renderJobLists() {
@@ -384,6 +352,7 @@ function renderJobLists() {
   $("recent-empty").querySelector("span").textContent = search || statusFilter !== "all" ? "Try another search or change the status filter." : "Completed and failed jobs will appear here.";
 
   $("queue-count").textContent = String(state.queue.queue_count || 0);
+  $("history-count").textContent = String(state.jobs.size);
   $("queue-empty").hidden = state.listFilter !== "queue" || Boolean(active) || state.queue.waiting.length > 0;
   $("recent-empty").hidden = state.listFilter !== "recent" || recent.length > 0;
   renderQueueBanner();
@@ -437,7 +406,7 @@ function renderDetailState() {
   $("detail-error-copy").textContent = state.detailError;
 }
 
-function selectJob(jobId, { reveal = true } = {}) {
+function selectJob(jobId) {
   if (!jobId) {
     state.selectedId = null;
     state.currentDetail = null;
@@ -452,7 +421,6 @@ function selectJob(jobId, { reveal = true } = {}) {
   if (changed && job) state.listFilter = ["queued", "running"].includes(job.state) ? "queue" : "recent";
   if (changed) state.activeTab = job && job.state === "completed" && (job.artifacts || []).includes("resume.pdf") ? "preview" : "progress";
   renderJobLists();
-  if (reveal) showMobileView("detail");
   fetchDetail(jobId);
 }
 
@@ -1185,18 +1153,6 @@ function validateField(name) {
   return !message;
 }
 
-function openJobDialog() {
-  const dialog = $("new-job-dialog");
-  if (!dialog.open) dialog.showModal();
-  fetchProviders();
-  requestAnimationFrame(() => formFields.jd.focus());
-}
-
-function closeJobDialog() {
-  const dialog = $("new-job-dialog");
-  if (dialog.open) dialog.close();
-}
-
 /* Skill check: confirm posting skills the master resume lacks, then tailor. */
 
 const SKILL_CHECK_TIMEOUT_MS = 180000;
@@ -1360,9 +1316,8 @@ async function enqueueJob(draft) {
   for (const name of Object.keys(formFields)) validateField(name);
   rememberProvider();
   status.textContent = "Added to the queue.";
-  closeJobDialog();
   await loadJobData();
-  selectJob(result.job_id, { reveal: true });
+  go(`#job/${encodeURIComponent(result.job_id)}`);
 }
 
 /* Model provider */
@@ -1515,14 +1470,14 @@ async function duplicateJob() {
     if (state.selectedId !== jobId) return;
     if (formFields.jd.value.trim()) {
       $("detail-action-status").textContent = "A draft is already open. Finish it or clear it before tailoring this job again.";
-      openJobDialog();
+      go("#new");
       return;
     }
     fillDraft(request);
     state.submission = null;
     saveDraft();
     $("detail-action-status").textContent = "Review the saved description and options before adding a new run.";
-    openJobDialog();
+    go("#new");
   } catch (error) { if (state.selectedId === jobId) $("detail-action-status").textContent = error.message; }
   finally { button.disabled = false; }
 }
@@ -1715,12 +1670,35 @@ async function loadAll() {
   await Promise.allSettled([fetchMeta(), loadJobData()]);
 }
 
-function showMobileView(name) {
-  document.body.dataset.mobileView = name;
-  requestAnimationFrame(() => {
-    if (name === "jobs") $("show-jobs-btn").focus();
-    else $("main").focus();
-  });
+/* Views: #new (home), #job/<id>, #history. The URL hash is the source of truth,
+   so reload and the browser's back button keep working. */
+
+const VIEWS = ["new", "job", "history"];
+
+function parseRoute() {
+  const hash = location.hash.replace(/^#/, "");
+  if (hash.startsWith("job/")) return { view: "job", jobId: decodeURIComponent(hash.slice(4)) };
+  if (hash === "history") return { view: "history", jobId: null };
+  return { view: "new", jobId: null };
+}
+
+function go(hash) {
+  if (location.hash === hash) route();
+  else location.hash = hash;
+}
+
+function route() {
+  const { view, jobId } = parseRoute();
+  state.view = view;
+  for (const name of VIEWS) $(`view-${name}`).hidden = name !== view;
+  $("nav-new").setAttribute("aria-pressed", String(view === "new"));
+  $("nav-history").setAttribute("aria-pressed", String(view === "history"));
+  if (view === "job" && jobId) {
+    if (jobId !== state.selectedId || state.detailStatus === "error") selectJob(jobId);
+  } else if (view === "new") {
+    fetchProviders();
+  }
+  $("main").focus({ preventScroll: true });
 }
 
 function bindEvents() {
@@ -1770,10 +1748,9 @@ function bindEvents() {
       sessionStorage.removeItem("tailoring-draft"); location.replace("/login");
     } catch (error) { $("server-status").textContent = error.message; }
   });
-  const openers = ["header-new-job", "rail-new-job", "empty-new-job", "add-jd-action"];
-  for (const id of openers) $(id).addEventListener("click", openJobDialog);
-  $("close-job-dialog").addEventListener("click", closeJobDialog);
-  $("cancel-job-dialog").addEventListener("click", closeJobDialog);
+  $("nav-new").addEventListener("click", () => go("#new"));
+  $("nav-history").addEventListener("click", () => go("#history"));
+  window.addEventListener("hashchange", route);
   $("job-form").addEventListener("submit", submitJob);
   formFields.jd.addEventListener("input", () => { if (state.skillCheck || state.skipSkillCheck) resetSkillCheck(); });
   // College mode also offers posted standards (Section 508, ADA): check again.
@@ -1802,9 +1779,6 @@ function bindEvents() {
     state.recovery.requestSignature = "";
     state.recovery.idempotencyKey = "";
   });
-  $("show-jobs-btn").addEventListener("click", () => showMobileView("jobs"));
-  $("hide-jobs-btn").addEventListener("click", () => showMobileView("detail"));
-  $("detail-back-btn").addEventListener("click", () => showMobileView("jobs"));
   $("retry-jobs-btn").addEventListener("click", loadJobData);
   $("retry-detail-btn").addEventListener("click", () => state.selectedId && fetchDetail(state.selectedId));
   $("pause-btn").addEventListener("click", () => {
@@ -1842,6 +1816,7 @@ function boot() {
   bindEvents();
   renderDetailState();
   renderJobLists();
+  route();
   loadAll();
   fetchProviders();
   openStream();

@@ -188,7 +188,7 @@ def test_security_boundary_and_headers(web_client):
 
 def test_static_shell_contract():
     index = (REPO_ROOT / "static" / "index.html").read_text(encoding="utf-8")
-    assert '<dialog class="new-job-dialog"' in index
+    assert 'id="view-new"' in index and 'id="job-form"' in index
     assert 'for="company"' in index and 'for="role"' in index and 'for="jd-text"' in index
     assert 'id="jd-help"' in index and 'id="jd-error"' in index
     assert 'role="tablist"' in index and 'role="tabpanel"' in index
@@ -207,7 +207,6 @@ def test_static_shell_contract():
     assert ":focus-visible" in app_css
     assert "prefers-reduced-motion" in app_css
     assert "100dvh" in app_css
-    assert "grid-template-columns: 280px minmax(0, 1fr)" in app_css
     assert "360px 320px" not in app_css
 
 
@@ -328,3 +327,29 @@ def test_legacy_cli_folders_are_not_listed(make_app, tmp_path):
         jobs = client.get("/api/jobs").json()
     assert isinstance(jobs, list)
     assert all(entry["job_id"] != "product_swe_disney" for entry in jobs)
+
+
+def test_shell_has_views_and_topbar():
+    index = (REPO_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    for marker in (
+        'class="topbar"', 'id="nav-new"', 'id="nav-history"', 'id="history-count"',
+        'id="topbar-running"', 'id="tracker"', 'id="pause-btn"', 'id="logout-btn"',
+        'id="view-new"', 'id="view-job"', 'id="view-history"', 'id="more-options"',
+        'id="jd-text"', 'id="company"', 'id="role"', 'id="skill-check"', 'id="check-skills-btn"',
+        'id="college-mode"', 'id="bridge-skills"', 'id="research-company"', 'id="no-pdf"',
+        'class="paper"',
+    ):
+        assert marker in index, marker
+    assert "new-job-dialog" not in index
+    assert index.index('src="/view-model.js"') < index.index('src="/app.js"')
+    app_css = (REPO_ROOT / "static" / "app.css").read_text(encoding="utf-8")
+    for token in ("#F2F2F0", "#0E7C55", "Instrument Sans", "Source Serif 4"):
+        assert token in app_css, token
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert "function route(" in app_js and "function go(" in app_js
+
+
+def test_csp_allows_same_origin_fonts(web_client):
+    csp = web_client.get("/").headers["content-security-policy"]
+    assert "font-src 'self'" in csp
+    assert "fonts.googleapis.com" not in csp

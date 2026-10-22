@@ -74,7 +74,7 @@ _HEADERS = {
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Resource-Policy": "same-site",
     "Content-Security-Policy": (
-        "default-src 'none'; script-src 'self'; style-src 'self'; "
+        "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; "
         "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
         "frame-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'"
     ),
