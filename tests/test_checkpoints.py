@@ -206,3 +206,43 @@ def test_old_version_checkpoint_ignored(tmp_path):
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"fingerprint": "v1-hash", "payload": {}}), encoding="utf-8")
     assert store.load("jd_parse") is None
+
+
+def test_restored_proxies_are_revalidated_against_current_facts():
+    from models import JDProfile, KeywordWeight, RequirementProxy
+    from pipeline_core import master_fact_index
+    from resume_tailor.skill_answers import apply_answers, replace_answers
+
+    jd = JDProfile(
+        role="Designer",
+        must_have_skills=["Sketch"],
+        nice_to_have_skills=[],
+        keywords=[KeywordWeight(term="Sketch", weight=5, category="tool", evidence_span="Sketch")],
+    )
+    confirmed = apply_answers(master(), ["Figma"], [])
+    facts = master_fact_index(confirmed)
+    figma_fact = next(fid for fid, fact in facts.items() if fact["text"] == "Figma")
+    plan = RequirementProxyPlan(
+        proxies=[
+            RequirementProxy(
+                requirement="Sketch",
+                requirement_type="must_have",
+                category="tool",
+                proximity="same_family",
+                proxy_terms=["Figma"],
+                source_fact_ids=[figma_fact],
+                transfer_basis="Both are UI design tools.",
+                relevance=80,
+                list_as_transferable_skill=True,
+            )
+        ]
+    )
+    pipeline = tailor.TailorPipeline(model="gemini-3.1-flash-lite", call_interval=0, provider=MagicMock())
+    kept_requirements, kept = pipeline._restore_requirement_map(jd, facts, plan.model_copy(deep=True))
+    assert len(kept.proxies) == 1 and kept_requirements[0]["status"] == "proxy"
+    declined = replace_answers(confirmed, [], ["Figma"])
+    requirements, kept = pipeline._restore_requirement_map(
+        jd, master_fact_index(declined), plan.model_copy(deep=True)
+    )
+    assert kept.proxies == []
+    assert requirements[0]["status"] == "missing"

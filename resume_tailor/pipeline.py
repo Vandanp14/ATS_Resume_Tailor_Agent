@@ -1349,14 +1349,30 @@ class TailorPipeline:
                 jd_json, requirement_map(jd, facts), facts, global_evidence_json
             ),
             lambda value: {"proxy_plan": value[1].model_dump(mode="json")},
-            # The map itself is code: rebuild it from current facts so skills
-            # confirmed since the save count as stated.
-            lambda payload: restore_requirements(
-                jd,
-                facts,
-                RequirementProxyPlan.model_validate(payload["proxy_plan"]),
+            lambda payload: self._restore_requirement_map(
+                jd, facts, RequirementProxyPlan.model_validate(payload["proxy_plan"])
             ),
         )
+
+    def _restore_requirement_map(
+        self, jd: JDProfile, facts: dict[str, dict], plan: RequirementProxyPlan
+    ) -> tuple[list[dict], RequirementProxyPlan]:
+        """Rebuild the map in code and re-check the saved proxies.
+
+        Skills confirmed since the save become stated; a proxy whose cited fact
+        changed (a skill answer was flipped) is repaired or dropped, exactly as
+        a fresh plan would be.
+        """
+        base = requirement_map(jd, facts)
+        try:
+            notes = validate_requirement_proxy_plan(plan, base, facts, repair=True)
+        except ContractError as exc:
+            self.tracker.warn(f"Saved proxy plan no longer fits; dropped it: {exc}")
+            plan = RequirementProxyPlan(proxies=[])
+            notes = []
+        for note in notes:
+            self.tracker.warn(f"Dropped saved proxy evidence: {note}")
+        return attach_proxies(base, plan.proxies), plan
 
     def check_skills(
         self, master: JSONResume, jd_text: str, out_dir: Path
