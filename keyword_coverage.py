@@ -233,6 +233,11 @@ def _variant_pattern(variant: str) -> re.Pattern[str]:
     )
 
 
+def term_variants(term: str) -> tuple[str, ...]:
+    """Every spelling an ATS treats as the same term."""
+    return _expand_variants(term)
+
+
 def mentions(text: str | None, variants: Sequence[str]) -> bool:
     if not text:
         return False

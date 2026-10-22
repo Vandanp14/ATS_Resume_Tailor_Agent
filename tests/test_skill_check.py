@@ -94,3 +94,85 @@ def test_confirmed_skill_is_direct_and_allowed_in_bullet():
     assert "Figma" not in forbidden_claim_terms(requirements)
     terms = [term for term, _ in bullet_tech_requirements(requirements, master)]
     assert terms == ["Python"]
+
+
+# -- check_skills: parse + requirement map before the run ----------------------
+
+from unittest.mock import MagicMock  # noqa: E402
+
+import resume_tailor.pipeline as pipeline_module  # noqa: E402
+import tailor  # noqa: E402
+from models import RequirementProxyPlan  # noqa: E402
+from tests.test_holistic_review import Stub  # noqa: E402
+from tests.test_tailor import master as tailor_master  # noqa: E402
+
+CHECK_JD = "Hiring a web developer with Python, Figma, Siteimprove, Kubernetes."
+
+
+class GapStub(Stub):
+    """Stub whose parsed JD names tool gaps and a soft skill."""
+
+    def __call__(self, template, response_model, **context):
+        if response_model is JDProfile:
+            self.calls.append((template, response_model, context))
+
+            def kw(term, category):
+                return KeywordWeight(term=term, weight=4, category=category, evidence_span=term)
+
+            return JDProfile(
+                role="Web Developer",
+                must_have_skills=["Python", "Figma"],
+                nice_to_have_skills=["Siteimprove", "Kubernetes"],
+                keywords=[
+                    kw("Python", "language"),
+                    kw("Figma", "tool"),
+                    kw("Siteimprove", "tool"),
+                    kw("Kubernetes", "platform"),
+                    kw("communication", "soft_skill"),
+                ],
+            )
+        return super().__call__(template, response_model, **context)
+
+
+def _pipeline(monkeypatch, stub):
+    instance = tailor.TailorPipeline(
+        model="gemini-3.1-flash-lite", call_interval=0, provider=MagicMock()
+    )
+    monkeypatch.setattr(instance, "_call_once", stub)
+    return instance
+
+
+def _count(stub, model):
+    return sum(1 for _, response_model, _ in stub.calls if response_model is model)
+
+
+def test_check_skills_returns_only_unanswered_tech_gaps(monkeypatch, tmp_path):
+    answered = apply_answers(tailor_master(), [], ["Siteimprove"])
+    result = _pipeline(monkeypatch, GapStub()).check_skills(answered, CHECK_JD, tmp_path)
+    assert [chip.term for chip in result.chips] == ["Figma", "Kubernetes"]
+    assert {chip.status for chip in result.chips} == {"missing"}
+    assert result.remembered_declined == ["Siteimprove"]
+    assert result.remembered_confirmed == []
+
+
+def test_alias_answer_suppresses_chip(monkeypatch, tmp_path):
+    answered = apply_answers(tailor_master(), [], ["k8s"])
+    result = _pipeline(monkeypatch, GapStub()).check_skills(answered, CHECK_JD, tmp_path)
+    assert "Kubernetes" not in [chip.term for chip in result.chips]
+
+
+def test_check_then_run_makes_no_repeat_parse_call(monkeypatch, tmp_path):
+    monkeypatch.setattr(pipeline_module, "render", MagicMock())
+    stub = GapStub()
+    check_dir, run_dir = tmp_path / "check", tmp_path / "run"
+    _pipeline(monkeypatch, stub).check_skills(tailor_master(), CHECK_JD, check_dir)
+    (run_dir / "checkpoints").mkdir(parents=True)
+    for path in (check_dir / "checkpoints").glob("*.json"):
+        (run_dir / "checkpoints" / path.name).write_bytes(path.read_bytes())
+    answered = apply_answers(tailor_master(), ["Figma"], ["Siteimprove", "Kubernetes"])
+    code = _pipeline(monkeypatch, stub).run(
+        answered, CHECK_JD, run_dir, no_pdf=True, resume=True
+    )
+    assert code == 0
+    assert _count(stub, JDProfile) == 1
+    assert _count(stub, RequirementProxyPlan) == 1

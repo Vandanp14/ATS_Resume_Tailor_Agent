@@ -12,6 +12,8 @@ from typing import Any
 from pydantic import BaseModel
 
 from models import (
+    SkillChip,
+    SkillCheckResult,
     BulletConcision,
     CandidateSelection,
     CompanyHiringSignals,
@@ -30,6 +32,9 @@ from models import (
     WorkRewriteResponse,
 )
 from keyword_coverage import (
+    TECH_CATEGORIES,
+    normalize_term,
+    term_variants,
     restore_requirements,
     expand_example_lists,
     attach_proxies,
@@ -110,7 +115,12 @@ from .llm import (
 from .progress import JobContext, ProgressReporter, ProgressTracker, Stage
 from .bullet_review import live_flags, persist_bullet_review
 from .checkpoints import CheckpointStore, stage_fingerprint
-from .skill_answers import bullet_tech_requirements
+from .skill_answers import (
+    answered_keys,
+    bullet_tech_requirements,
+    confirmed_terms,
+    declined_terms,
+)
 from .privacy import PrivacyGuard, strip_prompt_context, unrestored_placeholders
 from .fit_recovery import (
     FitRecoveryRequired,
@@ -1288,6 +1298,115 @@ class TailorPipeline:
             )
         return rewritten
 
+    def _checkpoint_store(
+        self, master: JSONResume, jd_text: str, out_dir: Path
+    ) -> CheckpointStore:
+        master_json = master.model_dump_json()
+        return CheckpointStore(
+            out_dir,
+            lambda stage: stage_fingerprint(
+                stage,
+                master_json=master_json,
+                jd_text=jd_text,
+                bridge_skills=self.bridge_skills,
+                research_company=self.research_company,
+                allow_fit_recovery=self.allow_fit_recovery,
+            ),
+        )
+
+    def _parsed_jd(self, jd_text: str) -> JDProfile:
+        """Parse the posting, drop invented keywords, split umbrella lists."""
+        jd = self._checkpointed(
+            "jd_parse",
+            lambda: self._parse_jd(jd_text),
+            lambda value: value.model_dump(mode="json"),
+            JDProfile.model_validate,
+        )
+        jd, dropped_keywords = sanitize_jd_profile(jd, jd_text)
+        if dropped_keywords:
+            self.tracker.warn(
+                "Dropped JD keywords the posting never states: "
+                + ", ".join(dropped_keywords)
+            )
+        jd, expanded_terms = expand_example_lists(jd)
+        if expanded_terms:
+            self.tracker.detail("Expanded JD lists: " + ", ".join(expanded_terms))
+        return jd
+
+    def _mapped_requirements(
+        self,
+        jd: JDProfile,
+        jd_json: str,
+        facts: dict[str, dict],
+        global_evidence_json: str,
+    ) -> tuple[list[dict], RequirementProxyPlan]:
+        return self._checkpointed(
+            "requirement_map",
+            lambda: self._map_requirements(
+                jd_json, requirement_map(jd, facts), facts, global_evidence_json
+            ),
+            lambda value: {"proxy_plan": value[1].model_dump(mode="json")},
+            # The map itself is code: rebuild it from current facts so skills
+            # confirmed since the save count as stated.
+            lambda payload: restore_requirements(
+                jd,
+                facts,
+                RequirementProxyPlan.model_validate(payload["proxy_plan"]),
+            ),
+        )
+
+    def check_skills(
+        self, master: JSONResume, jd_text: str, out_dir: Path
+    ) -> SkillCheckResult:
+        """Posting technologies the master lacks and the user has not answered.
+
+        Runs the parse and requirement map with checkpoints in ``out_dir``, so
+        a job that copies them reuses both instead of calling the model again.
+        """
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self._unavailable_models = {}
+        self._reused = []
+        self._checkpoints = self._checkpoint_store(master, jd_text, out_dir)
+        self._resuming = True
+        self.privacy.protect(master)
+        with self.tracker.stage(Stage.PARSE_JD):
+            jd = self._parsed_jd(jd_text)
+            jd_json = jd.model_dump_json(indent=2)
+        evidence = global_evidence_payload(master)
+        facts = master_fact_index(master, evidence=evidence)
+        with self.tracker.stage(Stage.MAP_REQUIREMENTS):
+            requirements, _ = self._mapped_requirements(
+                jd, jd_json, facts, json.dumps(evidence, indent=2)
+            )
+        answered = answered_keys(master)
+        spans = {
+            normalize_term(item.term): item.evidence_span for item in jd.keywords
+        }
+        chips: dict[str, SkillChip] = {}
+        for item in requirements:
+            if item["status"] not in {"missing", "proxy"}:
+                continue
+            if item.get("category") not in TECH_CATEGORIES:
+                continue
+            term = item["term"]
+            if any(normalize_term(value) in answered for value in term_variants(term)):
+                continue
+            chips.setdefault(
+                normalize_term(term),
+                SkillChip(
+                    term=term,
+                    status=item["status"],
+                    evidence_span=spans.get(normalize_term(term)),
+                    close_to=list(item.get("proxy_terms") or []),
+                ),
+            )
+        return SkillCheckResult(
+            chips=list(chips.values()),
+            remembered_confirmed=confirmed_terms(master),
+            remembered_declined=declined_terms(master),
+        )
+
     def run(
         self,
         master: JSONResume,
@@ -1303,18 +1422,7 @@ class TailorPipeline:
         self._bullet_flags = []
         self._reused = []
         self._grounding_exhausted = False
-        master_json = master.model_dump_json()
-        self._checkpoints = CheckpointStore(
-            out_dir,
-            lambda stage: stage_fingerprint(
-                stage,
-                master_json=master_json,
-                jd_text=jd_text,
-                bridge_skills=self.bridge_skills,
-                research_company=self.research_company,
-                allow_fit_recovery=self.allow_fit_recovery,
-            ),
-        )
+        self._checkpoints = self._checkpoint_store(master, jd_text, out_dir)
         self._resuming = resume
         self.privacy.protect(master)
         try:
@@ -1327,23 +1435,7 @@ class TailorPipeline:
                     ensure_tectonic()
 
             with self.tracker.stage(Stage.PARSE_JD):
-                jd = self._checkpointed(
-                    "jd_parse",
-                    lambda: self._parse_jd(jd_text),
-                    lambda value: value.model_dump(mode="json"),
-                    JDProfile.model_validate,
-                )
-                jd, dropped_keywords = sanitize_jd_profile(jd, jd_text)
-                if dropped_keywords:
-                    self.tracker.warn(
-                        "Dropped JD keywords the posting never states: "
-                        + ", ".join(dropped_keywords)
-                    )
-                jd, expanded_terms = expand_example_lists(jd)
-                if expanded_terms:
-                    self.tracker.detail(
-                        "Expanded JD lists: " + ", ".join(expanded_terms)
-                    )
+                jd = self._parsed_jd(jd_text)
                 jd_json = jd.model_dump_json(indent=2)
 
             company_stack_json: str | None = None
@@ -1406,19 +1498,8 @@ class TailorPipeline:
             facts = master_fact_index(master, evidence=evidence)
             global_evidence_json = json.dumps(evidence, indent=2)
             with self.tracker.stage(Stage.MAP_REQUIREMENTS):
-                requirements, proxy_plan = self._checkpointed(
-                    "requirement_map",
-                    lambda: self._map_requirements(
-                        jd_json, requirement_map(jd, facts), facts, global_evidence_json
-                    ),
-                    lambda value: {"proxy_plan": value[1].model_dump(mode="json")},
-                    # The map itself is code: rebuild it from current facts so
-                    # skills confirmed since the save count as stated.
-                    lambda payload: restore_requirements(
-                        jd,
-                        facts,
-                        RequirementProxyPlan.model_validate(payload["proxy_plan"]),
-                    ),
+                requirements, proxy_plan = self._mapped_requirements(
+                    jd, jd_json, facts, global_evidence_json
                 )
                 transferable_skill_plan = TransferableSkillPlan(skills=[])
                 if self.bridge_skills and proxy_plan.proxies:

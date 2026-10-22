@@ -61,11 +61,15 @@ def master_without_answers(master_json: str) -> str:
 def stage_fingerprint(
     stage: str, *, master_json: str, jd_text: str, **options: object
 ) -> str:
-    """Fingerprint of exactly the inputs one stage depends on."""
+    """Fingerprint of exactly the inputs one stage depends on.
+
+    The parse and the requirement map read no run options, so a skill check
+    (which has none) and the job that follows share them.
+    """
     if stage in _JD_ONLY_STAGES:
-        return run_fingerprint("", jd_text, **options)
+        return run_fingerprint("", jd_text)
     if stage in _ANSWER_BLIND_STAGES:
-        return run_fingerprint(master_without_answers(master_json), jd_text, **options)
+        return run_fingerprint(master_without_answers(master_json), jd_text)
     return run_fingerprint(master_json, jd_text, **options)
 
 

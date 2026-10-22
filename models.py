@@ -148,6 +148,21 @@ class SkillCheckAnswers(BaseModel):
     declined: list[str] = Field(default_factory=list)
 
 
+class SkillChip(BaseModel):
+    """A posting technology the master resume lacks, offered for confirmation."""
+
+    term: str
+    status: Literal["proxy", "missing"]
+    evidence_span: str | None = None
+    close_to: list[str] = Field(default_factory=list)
+
+
+class SkillCheckResult(BaseModel):
+    chips: list[SkillChip]
+    remembered_confirmed: list[str]
+    remembered_declined: list[str]
+
+
 class JSONResume(BaseModel):
     basics: Basics | None = None
     work: list[Work] | None = None
