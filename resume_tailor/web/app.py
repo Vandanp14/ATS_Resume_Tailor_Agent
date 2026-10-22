@@ -397,6 +397,7 @@ def create_app(
                 no_pdf=body.no_pdf,
                 provider_mode=body.provider_mode,
                 freellm_model=body.freellm_model,
+                college_mode=body.college_mode,
             ),
         )
         existing = registry.find_idempotent(key)

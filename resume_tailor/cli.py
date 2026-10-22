@@ -38,6 +38,14 @@ def _common_flags(parser: argparse.ArgumentParser) -> None:
         help="add up to four JD-grounded skills in a labeled transferable group",
     )
     parser.add_argument(
+        "--college",
+        action="store_true",
+        help=(
+            "college/university staff posting: target each minimum and preferred "
+            "qualification line, allow two pages, and add a summary"
+        ),
+    )
+    parser.add_argument(
         "--research-company",
         action="store_true",
         help=(

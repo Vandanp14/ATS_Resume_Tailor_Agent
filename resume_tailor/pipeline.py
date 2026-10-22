@@ -406,8 +406,12 @@ class TailorPipeline:
         fallback_models: Sequence[str] | None = None,
         writing_models: Sequence[str] | None = None,
         fix_models: Sequence[str] | None = None,
+        college_mode: bool = False,
     ) -> None:
         self.model = model
+        # College/university staff postings: qualification checklist, two pages,
+        # and a summary (see docs/superpowers/specs/2026-10-21-college-mode-design.md).
+        self.college_mode = college_mode
         self.bridge_skills = bridge_skills
         self.allow_fit_recovery = allow_fit_recovery
         self.research_company = research_company
@@ -1316,6 +1320,8 @@ class TailorPipeline:
                 bridge_skills=self.bridge_skills,
                 research_company=self.research_company,
                 allow_fit_recovery=self.allow_fit_recovery,
+                # Only when on, so big-company checkpoints keep their keys.
+                **({"college_mode": True} if self.college_mode else {}),
             ),
         )
 

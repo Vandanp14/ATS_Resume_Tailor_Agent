@@ -63,6 +63,7 @@ def pipeline_from_args(
         reporter=reporter,
         bridge_skills=getattr(args, "bridge_skills", False),
         research_company=getattr(args, "research_company", False),
+        college_mode=getattr(args, "college", False),
     )
 
 

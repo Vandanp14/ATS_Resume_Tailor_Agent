@@ -589,6 +589,7 @@ class QueueRegistry:
             **self._model_kwargs(options),
             call_interval=self.call_interval,
             provider=self.provider,
+            **({"college_mode": True} if request.college_mode else {}),
         )
         result = pipeline.check_skills(self.load_master(), request.jd_text, directory)
         atomic_write_text(
@@ -631,6 +632,7 @@ class QueueRegistry:
             no_pdf=request.no_pdf,
             provider_mode=request.provider_mode,
             freellm_model=request.freellm_model,
+            college_mode=request.college_mode,
         )
         payload = QueuePayload(
             company=request.company,
@@ -641,6 +643,7 @@ class QueueRegistry:
             no_pdf=request.no_pdf,
             provider_mode=request.provider_mode,
             freellm_model=request.freellm_model,
+            college_mode=request.college_mode,
             idempotency_key=idempotency_key,
             request_fingerprint=job_fingerprint(request, options),
         )
@@ -1020,6 +1023,7 @@ class QueueRegistry:
                 bridge_skills=payload.bridge_skills,
                 research_company=payload.research_company,
                 allow_fit_recovery=True,
+                **({"college_mode": True} if payload.college_mode else {}),
             )
             exit_code = pipeline.run(
                 master,

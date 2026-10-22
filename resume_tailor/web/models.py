@@ -75,6 +75,7 @@ class SkillCheckRequest(BaseModel):
     jd_text: str = Field(min_length=1, max_length=MAX_JD_LENGTH)
     provider_mode: ProviderModeName = "gemini"
     freellm_model: str | None = Field(default=None, pattern=FREELLM_MODEL_PATTERN)
+    college_mode: bool = False
 
     @field_validator("jd_text")
     @classmethod
@@ -131,6 +132,8 @@ class CreateJobRequest(BaseModel):
     freellm_model: str | None = Field(default=None, pattern=FREELLM_MODEL_PATTERN)
     # A finished skill check for this JD: its parse and map are reused.
     skill_check_id: str | None = Field(default=None, pattern=SKILL_CHECK_ID_PATTERN)
+    # College/university staff posting: qualification checklist, two pages.
+    college_mode: bool = False
 
     @model_validator(mode="after")
     def _research_needs_gemini(self) -> "CreateJobRequest":
@@ -165,6 +168,7 @@ class JobOptions(BaseModel):
     no_pdf: bool = False
     provider_mode: ProviderModeName = "gemini"
     freellm_model: str | None = None
+    college_mode: bool = False
 
 
 class PersistedJob(BaseModel):
@@ -203,6 +207,7 @@ class QueuePayload(BaseModel):
     no_pdf: bool = False
     provider_mode: ProviderModeName = "gemini"
     freellm_model: str | None = None
+    college_mode: bool = False
     created_at: str = Field(default_factory=utc_now_iso)
     idempotency_key: str | None = None
     request_fingerprint: str | None = None
@@ -519,6 +524,8 @@ def job_fingerprint(request: CreateJobRequest, options: JobOptions) -> str:
     if options.provider_mode != "gemini":
         # Appended only when set, so Gemini-run fingerprints stay as before.
         seed += (options.provider_mode, options.freellm_model)
+    if options.college_mode:
+        seed += ("college_mode",)
     return uuid.uuid5(uuid.NAMESPACE_URL, repr(seed)).hex
 
 

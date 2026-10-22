@@ -1268,7 +1268,7 @@ async function runSkillCheck(draft) {
   return fetchJson("/api/skill-check", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jd_text: draft.jd_text, provider_mode: draft.provider_mode, freellm_model: draft.freellm_model ?? null }),
+    body: JSON.stringify({ jd_text: draft.jd_text, provider_mode: draft.provider_mode, freellm_model: draft.freellm_model ?? null, college_mode: draft.college_mode }),
     signal: AbortSignal.timeout(SKILL_CHECK_TIMEOUT_MS),
   });
 }
@@ -1476,6 +1476,7 @@ function currentDraft() {
     company: formFields.company.value.trim(), role: formFields.role.value.trim(),
     jd_text: formFields.jd.value.trim(), bridge_skills: $("bridge-skills").checked,
     research_company: $("research-company").checked, no_pdf: $("no-pdf").checked,
+    college_mode: $("college-mode").checked,
     ...providerChoice(),
   };
 }
@@ -1484,7 +1485,7 @@ function fillDraft(draft) {
   formFields.company.value = typeof draft.company === "string" ? draft.company : "";
   formFields.role.value = typeof draft.role === "string" ? draft.role : "";
   formFields.jd.value = typeof draft.jd_text === "string" ? draft.jd_text : "";
-  for (const [id, key] of [["bridge-skills", "bridge_skills"], ["research-company", "research_company"], ["no-pdf", "no_pdf"]]) $(id).checked = draft[key] === true;
+  for (const [id, key] of [["bridge-skills", "bridge_skills"], ["research-company", "research_company"], ["no-pdf", "no_pdf"], ["college-mode", "college_mode"]]) $(id).checked = draft[key] === true;
   if (PROVIDER_MODES.includes(draft.provider_mode)) setProviderChoice(draft.provider_mode, draft.freellm_model);
   if (state.meta?.pdf_available === false) lockSkipPdf();
 }

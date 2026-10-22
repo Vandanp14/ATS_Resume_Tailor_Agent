@@ -66,10 +66,12 @@ def stage_fingerprint(
     The parse and the requirement map read no run options, so a skill check
     (which has none) and the job that follows share them.
     """
+    # College mode changes what the parse extracts, so it keys those stages too.
+    mode = {"college_mode": True} if options.get("college_mode") else {}
     if stage in _JD_ONLY_STAGES:
-        return run_fingerprint("", jd_text)
+        return run_fingerprint("", jd_text, **mode)
     if stage in _ANSWER_BLIND_STAGES:
-        return run_fingerprint(master_without_answers(master_json), jd_text)
+        return run_fingerprint(master_without_answers(master_json), jd_text, **mode)
     return run_fingerprint(master_json, jd_text, **options)
 
 
