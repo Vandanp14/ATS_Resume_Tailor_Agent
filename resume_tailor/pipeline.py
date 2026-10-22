@@ -35,6 +35,7 @@ from models import (
     WorkRewriteResponse,
 )
 from keyword_coverage import (
+    mentions,
     qualification_requirements,
     TECH_CATEGORIES,
     normalize_term,
@@ -1445,6 +1446,23 @@ class TailorPipeline:
                     close_to=list(item.get("proxy_terms") or []),
                 ),
             )
+        if self.college_mode:
+            # Standards and tools a qualification line names (Section 508, ADA)
+            # are checked by HR literally, so they are offered too.
+            fact_text = "\n".join(fact["text"] for fact in facts.values())
+            for line in (*jd.minimum_qualifications, *jd.preferred_qualifications):
+                for term in line.named_terms:
+                    variants = term_variants(term)
+                    if (
+                        len(term) > MAX_CHIP_TERM_LENGTH
+                        or normalize_term(term) in chips
+                        or mentions(fact_text, variants)
+                        or any(normalize_term(value) in answered for value in variants)
+                    ):
+                        continue
+                    chips[normalize_term(term)] = SkillChip(
+                        term=term, status="missing", evidence_span=line.text
+                    )
         return SkillCheckResult(
             chips=list(chips.values()),
             remembered_confirmed=confirmed_terms(master),

@@ -218,3 +218,37 @@ def test_confirmed_group_heading_never_reaches_the_page():
     assert [group.name for group in relabeled] == ["Languages", CONFIRMED_SKILL_HEADING]
     assert relabeled[1].keywords == ["Figma"]
     assert CONFIRMED_SKILL_HEADING != CONFIRMED_SKILL_GROUP
+
+
+class StandardsStub(GapStub):
+    def __call__(self, template, response_model, **context):
+        result = super().__call__(template, response_model, **context)
+        if response_model is JDProfile:
+            from models import QualificationLine
+
+            result.minimum_qualifications.append(
+                QualificationLine(
+                    text="Strong understanding of Section 508/ADA Accessibility compliance.",
+                    type="technical",
+                    named_terms=["Section 508", "ADA", "Python"],
+                )
+            )
+        return result
+
+
+STANDARDS_JD = CHECK_JD + " Strong understanding of Section 508/ADA Accessibility compliance."
+
+
+def test_college_check_offers_standards_from_lines(monkeypatch, tmp_path):
+    college = tailor.TailorPipeline(
+        model="gemini-3.1-flash-lite", call_interval=0, provider=MagicMock(), college_mode=True
+    )
+    monkeypatch.setattr(college, "_call_once", StandardsStub())
+    terms = [chip.term for chip in college.check_skills(tailor_master(), STANDARDS_JD, tmp_path / "c").chips]
+    assert "Section 508" in terms and "ADA" in terms and "Python" not in terms
+    plain = _pipeline(monkeypatch, StandardsStub()).check_skills(tailor_master(), STANDARDS_JD, tmp_path / "p")
+    assert "Section 508" not in [chip.term for chip in plain.chips]
+    answered = apply_answers(tailor_master(), [], ["ADA"])
+    monkeypatch.setattr(college, "_call_once", StandardsStub())
+    again = [chip.term for chip in college.check_skills(answered, STANDARDS_JD, tmp_path / "a").chips]
+    assert "ADA" not in again and "Section 508" in again
