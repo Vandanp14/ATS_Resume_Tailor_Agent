@@ -341,3 +341,78 @@ def test_college_run_reports_rows_and_does_not_block(monkeypatch, tmp_path):
     report = json.loads((tmp_path / "match_report.json").read_text())
     texts = [row["text"] for row in report["qualification_coverage"]]
     assert len(texts) == 3 and texts[0].startswith("Two years")
+
+
+# -- Task 6: two pages and more content ----------------------------------------
+
+
+def _one_role_scored():
+    from models import ScoredBullet
+    from render import ScoredResume, ScoredWork
+
+    return ScoredResume(
+        basics={"name": "Test User"},
+        work=[ScoredWork(name="Example Corp", position="Engineer", relevance=80, source_id="work[0]",
+                         highlights=[ScoredBullet(text="Built reporting services for operations.", relevance=60)])],
+    )
+
+
+def test_fit_accepts_two_pages_when_allowed(tmp_path):
+    import pytest
+
+    from render import RenderError, fit_to_one_page
+
+    plain = fit_to_one_page(_one_role_scored(), tmp_path, page_counter=lambda _: 2, max_pages=2)
+    assert plain.work[0].highlights == ["Built reporting services for operations."]
+    with pytest.raises(RenderError):
+        fit_to_one_page(_one_role_scored(), tmp_path, page_counter=lambda _: 2)
+
+
+def test_fit_recovery_bundle_respects_max_pages():
+    import pytest
+    from pydantic import ValidationError
+
+    from resume_tailor.fit_recovery import FitRecoveryBundle
+
+    base = dict(revision=1, concision_attempts=0, candidates=[], recommended_candidate_ids=[],
+                scored_resume=_one_role_scored(), pending_report={}, trim_log=[], concision_log=[],
+                candidate_locations={})
+    assert FitRecoveryBundle(page_count=3, max_pages=2, **base).max_pages == 2
+    with pytest.raises(ValidationError):
+        FitRecoveryBundle(page_count=2, max_pages=2, **base)
+    assert FitRecoveryBundle(page_count=2, **base).max_pages == 1
+
+
+def test_resumed_bullet_review_keeps_two_page_limit(tmp_path):
+    import json
+
+    from resume_tailor.bullet_review import apply_bullet_review, load_bullet_review, persist_bullet_review
+
+    flag = {"section": "work", "source_id": "work[0]", "label": "Engineer · Example Corp",
+            "assignment_id": "allocation-1", "issues": ["x"], "original_text": "Built reporting services in Kotlin.",
+            "safe_text": "Built reporting services for operations.", "safe_kind": "edited", "can_keep": True,
+            "source_fact_ids": ["work[0].highlights[0]"]}
+    persist_bullet_review(
+        tmp_path, _one_role_scored(), [flag], pending_report={}, no_pdf=False, jd_profile_json="{}",
+        forbidden_terms=[], tech_requirements=[], fact_index={}, max_pages=2,
+    )
+    bundle = load_bullet_review(tmp_path)
+    assert bundle.max_pages == 2
+    assert apply_bullet_review(tmp_path, {bundle.flags[0].flag_id: "safe"}, page_counter=lambda _: 2) == 0
+    assert json.loads((tmp_path / "tailored.json").read_text())["work"]
+
+
+def test_college_selects_more_entries():
+    from pipeline_core import WORK_BULLET_BUDGET, work_bullet_targets
+    from resume_tailor.runtime import selection_caps
+
+    assert selection_caps(False) == (3, 2, WORK_BULLET_BUDGET, 1)
+    work_cap, project_cap, budget, pages = selection_caps(True)
+    assert (work_cap, project_cap, budget, pages) == (5, 4, 16, 2)
+    sources = [
+        {"source_id": f"work[{index}]", "endDate": "2024-12", "selection_relevance": 50,
+         "selection_bullet_budget": budget,
+         "source_facts": {"highlights": [{"source_id": f"work[{index}].highlights[{n}]"} for n in range(6)]}}
+        for index in range(5)
+    ]
+    assert sum(work_bullet_targets(sources).values()) == 16

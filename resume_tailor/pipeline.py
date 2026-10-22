@@ -141,8 +141,7 @@ from .rendering import (
 )
 from .runtime import (
     DEFAULT_CALL_INTERVAL,
-    MAX_SELECTED_PROJECTS,
-    MAX_SELECTED_WORK,
+    selection_caps,
     PROJECT_REWRITE_BATCH_SIZE,
     ModelUnavailableError,
     PacedProvider,
@@ -1575,6 +1574,9 @@ class TailorPipeline:
 
             all_work = evidence["work"]
             all_projects = evidence["projects"]
+            work_cap, project_cap, bullet_budget, max_pages = selection_caps(
+                self.college_mode
+            )
             with self.tracker.stage(Stage.SELECT_WORK):
                 selected_work = tuple(
                     self._checkpointed(
@@ -1584,7 +1586,7 @@ class TailorPipeline:
                             "work",
                             jd_json,
                             all_work,
-                            MAX_SELECTED_WORK,
+                            work_cap,
                             company_stack_json,
                             company_signals_json,
                             requirements=requirements,
@@ -1605,7 +1607,7 @@ class TailorPipeline:
                             "projects",
                             jd_json,
                             all_projects,
-                            MAX_SELECTED_PROJECTS,
+                            project_cap,
                             company_stack_json,
                             company_signals_json,
                             requirements=requirements,
@@ -1615,6 +1617,11 @@ class TailorPipeline:
                         list,
                         list,
                     )
+                )
+            if self.college_mode:
+                selected_work = tuple(
+                    {**item, "selection_bullet_budget": bullet_budget}
+                    for item in selected_work
                 )
             selected = SelectedEvidence(work=selected_work, projects=selected_projects)
 
@@ -2025,6 +2032,7 @@ class TailorPipeline:
                     forbidden_terms=forbidden_terms,
                     tech_requirements=tech_requirements,
                     fact_index=facts,
+                    max_pages=max_pages,
                 )
                 self.tracker.detail(
                     f"{len(flagged)} bullet(s) need your review before rendering"
@@ -2048,6 +2056,8 @@ class TailorPipeline:
                             in inspect.signature(fit_to_one_page).parameters
                         ):
                             fit_kwargs["exhaustion_handler"] = concision
+                        if max_pages != 1:
+                            fit_kwargs["max_pages"] = max_pages
                         final_plain = fit_to_one_page(
                             final_scored, out_dir, **fit_kwargs
                         )
@@ -2062,6 +2072,7 @@ class TailorPipeline:
                             pending_report=report_payload,
                             trim_log=recovery.trim_log,
                             concision_log=recovery.concision_log,
+                            max_pages=max_pages,
                         )
                         for name in ("resume.tex", "resume.pdf"):
                             (out_dir / name).unlink(missing_ok=True)

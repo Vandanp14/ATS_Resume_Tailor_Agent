@@ -19,6 +19,11 @@ DEFAULT_CALL_INTERVAL = 4.5
 QUOTA_EXIT_CODE = 75
 MAX_SELECTED_WORK = 3
 MAX_SELECTED_PROJECTS = 2
+# College postings: up to two pages, more roles and projects.
+COLLEGE_MAX_SELECTED_WORK = 5
+COLLEGE_MAX_SELECTED_PROJECTS = 4
+COLLEGE_WORK_BULLET_BUDGET = 16
+COLLEGE_MAX_PAGES = 2
 PROJECT_REWRITE_BATCH_SIZE = 5
 FINAL_ARTIFACTS = (
     ".fit_recovery.json",
@@ -30,6 +35,20 @@ FINAL_ARTIFACTS = (
     "resume.tex",
     "resume.pdf",
 )
+
+
+def selection_caps(college_mode: bool) -> tuple[int, int, int, int]:
+    """(work entries, projects, work bullets, pages) for a run."""
+    from pipeline_core import WORK_BULLET_BUDGET
+
+    if college_mode:
+        return (
+            COLLEGE_MAX_SELECTED_WORK,
+            COLLEGE_MAX_SELECTED_PROJECTS,
+            COLLEGE_WORK_BULLET_BUDGET,
+            COLLEGE_MAX_PAGES,
+        )
+    return MAX_SELECTED_WORK, MAX_SELECTED_PROJECTS, WORK_BULLET_BUDGET, 1
 
 
 class StageFailure(RuntimeError):

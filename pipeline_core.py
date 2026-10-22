@@ -624,12 +624,18 @@ def work_bullet_targets(sources: Sequence[dict]) -> dict[str, int]:
     """
 
     ids = [source["source_id"] for source in sources]
+    # A college run annotates its larger budget on every selected entry, so all
+    # callers that only see the entries agree on the same targets.
+    budget = next(
+        (int(source["selection_bullet_budget"]) for source in sources if source.get("selection_bullet_budget")),
+        WORK_BULLET_BUDGET,
+    )
     caps = {source["source_id"]: _bullet_cap(source) for source in sources}
     strength = {
         source["source_id"]: max(_bullet_strength(source), 1.0) for source in sources
     }
     counts = {source_id: min(MIN_WORK_BULLETS, caps[source_id]) for source_id in ids}
-    while sum(counts.values()) < WORK_BULLET_BUDGET:
+    while sum(counts.values()) < budget:
         open_ids = [source_id for source_id in ids if counts[source_id] < caps[source_id]]
         if not open_ids:
             break

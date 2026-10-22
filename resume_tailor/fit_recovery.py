@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from models import JSONResume, ScoredBullet
 from render import ScoredResume, count_pages, render, scored_to_plain
@@ -47,6 +47,8 @@ class FitCandidateLocation(_StrictModel):
 class FitRecoveryBundle(_StrictModel):
     revision: int = Field(ge=1)
     page_count: int = Field(ge=2)
+    # Pages the run allows: 1, or 2 for a college posting.
+    max_pages: int = Field(default=1, ge=1)
     concision_attempts: int = Field(ge=0)
     candidates: list[FitRecoveryCandidate]
     recommended_candidate_ids: list[str]
@@ -55,6 +57,14 @@ class FitRecoveryBundle(_StrictModel):
     trim_log: list[str]
     concision_log: list[dict[str, object]]
     candidate_locations: dict[str, FitCandidateLocation]
+
+    @model_validator(mode="after")
+    def _over_the_limit(self) -> "FitRecoveryBundle":
+        if self.page_count <= self.max_pages:
+            raise ValueError(
+                f"recovery needs more than {self.max_pages} page(s); got {self.page_count}"
+            )
+        return self
 
 
 class FitRecoveryRequired(RuntimeError):
@@ -202,6 +212,7 @@ def _recommend(
     candidates: list[FitRecoveryCandidate],
     locations: dict[str, FitCandidateLocation],
     page_counter: Callable[[JSONResume], int],
+    max_pages: int = 1,
 ) -> tuple[list[FitRecoveryCandidate], list[str]]:
     ranked = sorted(
         candidates,
@@ -213,7 +224,7 @@ def _recommend(
         recommended.append(candidate.candidate_id)
         simulation = resume.model_copy(deep=True)
         _apply_locations(simulation, [locations[item] for item in recommended])
-        if page_counter(scored_to_plain(simulation)) == 1:
+        if page_counter(scored_to_plain(simulation)) <= max_pages:
             fits = True
             break
 
@@ -221,7 +232,7 @@ def _recommend(
     rows: list[FitRecoveryCandidate] = []
     for candidate in candidates:
         if candidate.candidate_id in selected:
-            suffix = "; this verified set reaches one page" if fits else ""
+            suffix = "; this verified set fits the page limit" if fits else ""
             rows.append(
                 candidate.model_copy(
                     update={
@@ -270,6 +281,7 @@ def persist_fit_recovery(
     concision_log: Sequence[dict[str, object]],
     revision: int = 1,
     page_counter: Callable[[JSONResume], int] | None = None,
+    max_pages: int = 1,
 ) -> FitRecoveryBundle:
     """Build recommendations, persist private state, and return the bundle."""
     job_dir = Path(job_dir)
@@ -281,14 +293,16 @@ def persist_fit_recovery(
                 candidates,
                 locations,
                 _real_page_counter(Path(raw)),
+                max_pages,
             )
     else:
         rows, recommended = _recommend(
-            scored_resume, candidates, locations, page_counter
+            scored_resume, candidates, locations, page_counter, max_pages
         )
     bundle = FitRecoveryBundle(
         revision=revision,
         page_count=page_count,
+        max_pages=max_pages,
         concision_attempts=len(concision_log),
         candidates=rows,
         recommended_candidate_ids=recommended,
@@ -344,7 +358,7 @@ def apply_fit_recovery(
         *removals,
     ]
 
-    if pages == 1:
+    if pages <= bundle.max_pages:
         if page_counter is not None:
             render(plain, job_dir, compile_pdf=False)
         if report.get("qualification_coverage"):
@@ -368,6 +382,7 @@ def apply_fit_recovery(
         concision_log=bundle.concision_log,
         revision=bundle.revision + 1,
         page_counter=page_counter,
+        max_pages=bundle.max_pages,
     )
     for name in ("resume.tex", "resume.pdf"):
         (job_dir / name).unlink(missing_ok=True)

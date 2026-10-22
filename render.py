@@ -732,8 +732,9 @@ def fit_to_one_page(
     exhaustion_handler: (
         Callable[[ScoredResume, int, tuple[str, ...]], str | None] | None
     ) = None,
+    max_pages: int = 1,
 ) -> JSONResume:
-    """Trim ``scored_resume`` until it renders to exactly one page.
+    """Trim ``scored_resume`` until it renders to at most ``max_pages`` pages.
 
     Renders the current resume, counts its pages, and while it spans more than
     one page drops a single lowest-relevance item per iteration in the spec's
@@ -761,7 +762,7 @@ def fit_to_one_page(
             progress_callback(
                 f"One-page fit iteration {iteration + 1}: rendered {pages} page(s)"
             )
-        if pages == 1:
+        if 1 <= pages <= max_pages:
             return plain
         if pages < 1:
             raise RenderError(f"PDF page counter returned invalid page count: {pages}")

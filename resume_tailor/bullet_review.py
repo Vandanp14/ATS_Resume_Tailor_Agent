@@ -56,6 +56,8 @@ class BulletReviewBundle(_StrictModel):
     jd_profile_json: str
     forbidden_terms: list[str]
     tech_requirements: list[list[object]] = Field(default_factory=list)
+    # Pages the run allows: 1, or 2 for a college posting.
+    max_pages: int = Field(default=1, ge=1)
 
 
 class BulletReviewSelectionError(ValueError):
@@ -93,6 +95,7 @@ def persist_bullet_review(
     forbidden_terms: Sequence[str],
     tech_requirements: Sequence[tuple[str, Sequence[str]]],
     fact_index: Mapping[str, dict],
+    max_pages: int = 1,
 ) -> BulletReviewBundle:
     bundle = BulletReviewBundle(
         revision=1,
@@ -114,6 +117,7 @@ def persist_bullet_review(
         jd_profile_json=jd_profile_json,
         forbidden_terms=list(forbidden_terms),
         tech_requirements=[[term, list(variants)] for term, variants in tech_requirements],
+        max_pages=max_pages,
     )
     write_json(Path(job_dir) / BULLET_REVIEW_FILENAME, bundle)
     return bundle
@@ -196,6 +200,7 @@ def apply_bullet_review(
                 page_counter=page_counter,
                 progress_callback=progress,
                 exhaustion_handler=_raise_fit_recovery,
+                max_pages=bundle.max_pages,
             )
     except FitRecoveryRequired as recovery:
         report["pipeline_status"] = "action_required"
@@ -207,6 +212,7 @@ def apply_bullet_review(
             trim_log=recovery.trim_log,
             concision_log=[],
             page_counter=page_counter,
+            max_pages=bundle.max_pages,
         )
         (job_dir / BULLET_REVIEW_FILENAME).unlink(missing_ok=True)
         for name in ("resume.tex", "resume.pdf"):
