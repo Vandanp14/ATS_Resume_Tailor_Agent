@@ -32,6 +32,7 @@ from models import (
     WorkRewriteResponse,
 )
 from keyword_coverage import (
+    qualification_requirements,
     TECH_CATEGORIES,
     normalize_term,
     term_variants,
@@ -1533,6 +1534,11 @@ class TailorPipeline:
                 requirements, proxy_plan = self._mapped_requirements(
                     jd, jd_json, facts, global_evidence_json
                 )
+                if self.college_mode:
+                    requirements = [
+                        *requirements,
+                        *qualification_requirements(jd, len(requirements)),
+                    ]
                 transferable_skill_plan = TransferableSkillPlan(skills=[])
                 if self.bridge_skills and proxy_plan.proxies:
                     candidate_plan = transferable_plan_from_proxies(proxy_plan)
@@ -1640,6 +1646,7 @@ class TailorPipeline:
                     EvidencePlan,
                     selected_ids=list(targets),
                     validator=validate_plan,
+                    college_mode=self.college_mode,
                     jd_profile_json=jd_json,
                     global_evidence_json=global_evidence_json,
                     requirement_map_json=requirement_map_json,

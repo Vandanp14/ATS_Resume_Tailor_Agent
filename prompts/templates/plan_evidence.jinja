@@ -37,6 +37,14 @@ accomplishment narrative.
 
 <<<REQUIRED_BULLET_TARGETS>>>
 {{ bullet_targets_json }}
+{% if college_mode %}
+
+College posting: requirements with status `qualification` are posting
+qualification lines (minimum_qualification and preferred_qualification). Assign
+at least one bullet whose source fact shows each minimum qualification, and put
+that requirement's id (e.g. "Q3") in `matched_requirements`. Keep the fact's own
+wording; never claim a qualification no fact shows.
+{% endif %}
 <<<END_REQUIRED_BULLET_TARGETS>>>
 
 {% if feedback %}

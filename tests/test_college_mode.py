@@ -119,3 +119,59 @@ def test_no_headings_is_fine():
     old = {"role": "Engineer", "must_have_skills": [], "nice_to_have_skills": [], "keywords": []}
     profile = JDProfile.model_validate(old)
     assert profile.minimum_qualifications == [] and profile.allows_substitution is False
+
+
+# -- Task 4: qualification lines as requirements -------------------------------
+
+
+def _line(text, type_, **extra):
+    from models import QualificationLine
+
+    return QualificationLine(text=text, type=type_, **extra)
+
+
+def test_interpersonal_lines_become_qualification_requirements():
+    from keyword_coverage import qualification_requirements
+    from models import JDProfile
+
+    jd = JDProfile(
+        role="UX/UI Developer", must_have_skills=[], nice_to_have_skills=[], keywords=[],
+        minimum_qualifications=[
+            _line("Two years recent web development/programming experience.", "experience_length", years=2),
+            _line("Requires ability to work cordially with other University personnel.", "interpersonal"),
+        ],
+        preferred_qualifications=[_line("Experience looking at web analytics reports.", "other")],
+    )
+    rows = qualification_requirements(jd, start_index=7)
+    assert [(row["id"], row["weight"], row["status"]) for row in rows] == [
+        ("Q8", 6, "qualification"),
+        ("Q9", 3, "qualification"),
+    ]
+    assert rows[0]["requirement_type"] == "minimum_qualification"
+    assert rows[0]["term"].startswith("Requires ability to work cordially")
+
+
+def test_qualification_items_never_forbidden_proxied_or_counted_as_keywords():
+    from keyword_coverage import (
+        forbidden_claim_terms,
+        missing_requirements,
+        priority_proxies,
+        resume_coverage,
+    )
+
+    row = {
+        "id": "Q1", "term": "Requires ability to work cordially with other University personnel.",
+        "requirement_type": "minimum_qualification", "weight": 6, "importance": 6,
+        "category": "qualification", "variants": [], "status": "qualification", "matched_fact_ids": [],
+    }
+    assert forbidden_claim_terms([row]) == ()
+    assert missing_requirements([row]) == []
+    assert priority_proxies([row]) == []
+    assert resume_coverage({"work": [], "projects": [], "skills": []}, [row])["requirements"] == []
+
+
+def test_plan_prompt_mentions_qualification_only_in_college_mode():
+    college = _pipeline(college_mode=True)._messages("plan_evidence", college_mode=True)
+    plain = _pipeline()._messages("plan_evidence", college_mode=False)
+    assert "status `qualification`" in college[-1]["content"]
+    assert "status `qualification`" not in plain[-1]["content"]

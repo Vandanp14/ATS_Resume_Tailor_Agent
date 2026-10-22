@@ -300,6 +300,41 @@ def restore_requirements(
     return attach_proxies(requirements, kept.proxies), kept
 
 
+QUALIFICATION_STATUS = "qualification"
+_QUALIFICATION_WEIGHT = {"minimum_qualification": 6, "preferred_qualification": 3}
+
+
+def qualification_requirements(jd: JDProfile, start_index: int) -> list[dict]:
+    """College lines no keyword can match (interpersonal, other) as requirements.
+
+    The evidence planner targets them like any requirement; coverage is then
+    checked from bullet provenance, never by matching the sentence as a term.
+    """
+    rows: list[dict] = []
+    for requirement_type, lines in (
+        ("minimum_qualification", jd.minimum_qualifications),
+        ("preferred_qualification", jd.preferred_qualifications),
+    ):
+        for line in lines:
+            if line.type not in {"interpersonal", "other"}:
+                continue
+            weight = _QUALIFICATION_WEIGHT[requirement_type]
+            rows.append(
+                {
+                    "id": f"Q{start_index + len(rows) + 1}",
+                    "term": line.text,
+                    "requirement_type": requirement_type,
+                    "weight": weight,
+                    "importance": weight,
+                    "category": "qualification",
+                    "variants": [],
+                    "status": QUALIFICATION_STATUS,
+                    "matched_fact_ids": [],
+                }
+            )
+    return rows
+
+
 def missing_requirements(requirements: Sequence[dict]) -> list[dict]:
     return [item for item in requirements if item["status"] == "missing"]
 
@@ -481,6 +516,9 @@ def resume_coverage(resume: Mapping, requirements: Sequence[dict]) -> dict:
     rows: list[dict] = []
     total = covered_weight = supported_total = supported_covered = 0
     for item in requirements:
+        if item["status"] == QUALIFICATION_STATUS:
+            # A qualification sentence is checked from provenance, not as a keyword.
+            continue
         variants = item.get("variants") or [item["term"]]
         in_skills = mentions(skills_text, variants)
         in_experience = mentions(experience_text, variants)
