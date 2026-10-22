@@ -325,12 +325,23 @@
             <label class="check"><input type="checkbox" id="research-company"> <span><strong>Research company</strong><small>When the JD is vague, look up the company's stack and hiring signals to guide selection (Gemini only).</small></span></label>
             <label class="check"><input type="checkbox" id="no-pdf"> <span><strong>Skip PDF</strong><small>Generate structured files without rendering a PDF.</small></span></label>
           </details>
+          <section class="skill-check" id="skill-check" aria-labelledby="skill-check-title" hidden>
+            <h3 class="skill-check-title" id="skill-check-title">Do you know these? <span class="skill-check-count" id="skill-check-count"></span></h3>
+            <div class="skill-chips" id="skill-chips" role="group" aria-labelledby="skill-check-title"></div>
+            <p class="help">Tap to toggle. Saved to master resume.</p>
+          </section>
+          <details class="advanced remembered-skills" id="remembered-skills" hidden>
+            <summary>Remembered skills</summary>
+            <p class="help remembered-help">Highlighted means you know it. Tap to change; saved right away.</p>
+            <div class="skill-chips" id="remembered-chips" role="group" aria-label="Remembered skills"></div>
+          </details>
           <p class="form-status" id="enqueue-status" aria-live="polite"></p>
         </div>
         <footer class="dialog-footer">
           <button class="btn btn-ghost" id="clear-draft" type="button">Clear draft</button>
           <button class="button secondary" id="cancel-job-dialog" type="button">Cancel</button>
-          <button class="button primary" type="submit" id="add-btn">Add to queue</button>
+          <button class="button secondary" id="skip-check-btn" type="button" hidden>Tailor without checking</button>
+          <button class="button primary" type="submit" id="check-skills-btn">Check skills</button>
         </footer>
       </form>
     </div>

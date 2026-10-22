@@ -646,6 +646,16 @@
   .advanced[open] summary { border-block-end: 1px solid var(--border-subtle); }
   .check { min-block-size: 58px; display: flex; align-items: center; gap: 11px; padding: 10px 13px; cursor: pointer; }
   .check + .check { border-block-start: 1px solid var(--border-subtle); }
+  .skill-check { margin-block: 4px 12px; padding: 13px; border: 1px solid var(--border-subtle); border-radius: var(--radius-card); background: var(--surface-2); }
+  .skill-check-title { margin: 0 0 10px; font-size: 14px; font-weight: 700; }
+  .skill-check-count { color: var(--text-2); font-weight: 450; }
+  .skill-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .remembered-skills .skill-chips, .remembered-help { padding-inline: 13px; }
+  .remembered-skills .skill-chips { padding-block-end: 13px; }
+  .skill-chip { min-block-size: 32px; padding: 5px 12px; border: 1px solid var(--border-strong); border-radius: 999px; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+  .skill-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); font-weight: 600; }
+  .skill-chip[aria-pressed="true"]::before { content: "✓ "; }
+  .skill-chip:disabled { opacity: 0.6; cursor: progress; }
   .check input { inline-size: 17px; block-size: 17px; accent-color: var(--accent); }
   .check span { display: grid; gap: 1px; }
   .check strong { font-size: 12px; }

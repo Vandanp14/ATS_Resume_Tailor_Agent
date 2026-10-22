@@ -298,3 +298,12 @@ def test_job_with_missing_or_mismatched_check_runs_normally(web_client):
         assert request["resume"] is False
         assert not (web_client.output_dir / job_id / "checkpoints").exists()
         assert wait_for(web_client, job_id)["state"] == "completed"
+
+
+def test_index_has_skill_check_controls():
+    index = (REPO_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    for marker in ('id="check-skills-btn"', 'id="skill-chips"', 'id="remembered-skills"', 'id="skip-check-btn"'):
+        assert marker in index
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert '"/api/skill-check"' in app_js and '"/api/skill-answers"' in app_js
+    assert "aria-pressed" in app_js

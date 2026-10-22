@@ -1195,6 +1195,93 @@ function closeJobDialog() {
   if (dialog.open) dialog.close();
 }
 
+/* Skill check: confirm posting skills the master resume lacks, then tailor. */
+
+const SKILL_CHECK_TIMEOUT_MS = 180000;
+
+function resetSkillCheck() {
+  state.skillCheck = null;
+  state.skipSkillCheck = false;
+  $("skill-check").hidden = true;
+  $("skip-check-btn").hidden = true;
+  $("skill-chips").replaceChildren();
+  $("check-skills-btn").textContent = "Check skills";
+}
+
+function skillChip(term, pressed, onToggle) {
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "skill-chip";
+  chip.textContent = term;
+  chip.setAttribute("aria-pressed", String(pressed));
+  chip.addEventListener("click", () => {
+    chip.setAttribute("aria-pressed", String(chip.getAttribute("aria-pressed") !== "true"));
+    if (onToggle) onToggle();
+  });
+  return chip;
+}
+
+function chipTerms(container, pressed) {
+  return [...container.querySelectorAll(".skill-chip")]
+    .filter((chip) => (chip.getAttribute("aria-pressed") === "true") === pressed)
+    .map((chip) => chip.textContent);
+}
+
+async function saveRememberedSkills() {
+  const container = $("remembered-chips");
+  const chips = [...container.querySelectorAll(".skill-chip")];
+  chips.forEach((chip) => { chip.disabled = true; });
+  try {
+    await fetchJson("/api/skill-answers", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed: chipTerms(container, true), declined: chipTerms(container, false) }),
+    });
+    $("enqueue-status").textContent = "Remembered skills saved.";
+  } catch (error) {
+    $("enqueue-status").textContent = `Remembered skills could not be saved. ${String(error.message || error)}`;
+  } finally {
+    chips.forEach((chip) => { chip.disabled = false; });
+  }
+}
+
+function renderRememberedSkills(confirmed, declined) {
+  const container = $("remembered-chips");
+  container.replaceChildren(
+    ...confirmed.map((term) => skillChip(term, true, saveRememberedSkills)),
+    ...declined.map((term) => skillChip(term, false, saveRememberedSkills)),
+  );
+  $("remembered-skills").hidden = confirmed.length + declined.length === 0;
+}
+
+function renderSkillCheck(check) {
+  const chips = $("skill-chips");
+  chips.replaceChildren(...check.chips.map((chip) => skillChip(chip.term, false)));
+  $("skill-check-count").textContent = `(${check.chips.length} not in your resume)`;
+  $("skill-check").hidden = false;
+  renderRememberedSkills(check.remembered_confirmed, check.remembered_declined);
+  $("check-skills-btn").textContent = "Tailor resume";
+  $("skill-check").scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+}
+
+async function runSkillCheck(draft) {
+  return fetchJson("/api/skill-check", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jd_text: draft.jd_text, provider_mode: draft.provider_mode, freellm_model: draft.freellm_model ?? null }),
+    signal: AbortSignal.timeout(SKILL_CHECK_TIMEOUT_MS),
+  });
+}
+
+async function saveSkillAnswers(check) {
+  const chips = $("skill-chips");
+  await fetchJson(`/api/skill-check/${check.check_id}/answers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirmed: chipTerms(chips, true), declined: chipTerms(chips, false) }),
+  });
+}
+
 async function submitJob(event) {
   event.preventDefault();
   if (state.submitting) return;
@@ -1207,38 +1294,67 @@ async function submitJob(event) {
   }
 
   state.submitting = true;
-  const button = $("add-btn");
+  const button = $("check-skills-btn");
   const status = $("enqueue-status");
   button.disabled = true;
-  button.textContent = "Adding…";
-  status.textContent = "Adding the job to the queue.";
   try {
-    const body = JSON.stringify(currentDraft());
-    if (!state.submission || state.submission.body !== body) state.submission = { body, key: crypto.randomUUID() };
-    saveDraft();
-    const result = await fetchJson("/api/jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Idempotency-Key": state.submission.key },
-      body,
-    });
-    state.submission = null;
-    try { sessionStorage.removeItem("tailoring-draft"); } catch { /* Storage may be unavailable. */ }
-    $("job-form").reset();
-    if (state.meta && state.meta.pdf_available === false) lockSkipPdf();
-    touchedFields.clear();
-    for (const name of Object.keys(formFields)) validateField(name);
-    rememberProvider();
-    status.textContent = "Added to the queue.";
-    closeJobDialog();
-    await loadJobData();
-    selectJob(result.job_id, { reveal: true });
+    const draft = currentDraft();
+    let check = state.skillCheck && state.skillCheck.jd === draft.jd_text ? state.skillCheck : null;
+    if (!check && !state.skipSkillCheck) {
+      button.textContent = "Checking skills…";
+      status.textContent = "Reading the job description for skills your resume doesn't list.";
+      try {
+        check = { ...(await runSkillCheck(draft)), jd: draft.jd_text };
+      } catch (error) {
+        status.textContent = `Skill check failed. ${String(error.message || error)}`;
+        $("skip-check-btn").hidden = false;
+        return;
+      }
+      state.skillCheck = check;
+      if (check.chips.length) {
+        renderSkillCheck(check);
+        status.textContent = "Tap the skills you know, then tailor.";
+        return;
+      }
+    } else if (check && check.chips.length) {
+      button.textContent = "Saving answers…";
+      await saveSkillAnswers(check);
+    }
+    await enqueueJob(check ? { ...draft, skill_check_id: check.check_id } : draft);
   } catch (error) {
     status.textContent = `Submission could not be confirmed. Retry to check the same request. ${String(error.message || error)}`;
   } finally {
     state.submitting = false;
     button.disabled = false;
-    button.textContent = "Add to queue";
+    button.textContent = state.skillCheck?.chips.length ? "Tailor resume" : "Check skills";
   }
+}
+
+async function enqueueJob(draft) {
+  const button = $("check-skills-btn");
+  const status = $("enqueue-status");
+  button.textContent = "Adding…";
+  status.textContent = "Adding the job to the queue.";
+  const body = JSON.stringify(draft);
+  if (!state.submission || state.submission.body !== body) state.submission = { body, key: crypto.randomUUID() };
+  saveDraft();
+  const result = await fetchJson("/api/jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": state.submission.key },
+    body,
+  });
+  state.submission = null;
+  try { sessionStorage.removeItem("tailoring-draft"); } catch { /* Storage may be unavailable. */ }
+  $("job-form").reset();
+  resetSkillCheck();
+  if (state.meta && state.meta.pdf_available === false) lockSkipPdf();
+  touchedFields.clear();
+  for (const name of Object.keys(formFields)) validateField(name);
+  rememberProvider();
+  status.textContent = "Added to the queue.";
+  closeJobDialog();
+  await loadJobData();
+  selectJob(result.job_id, { reveal: true });
 }
 
 /* Model provider */
@@ -1621,7 +1737,7 @@ function bindEvents() {
   $("clear-draft").addEventListener("click", () => {
     if (state.submitting) return;
     if (!window.confirm("Clear this saved draft?")) return;
-    $("job-form").reset(); state.submission = null; touchedFields.clear();
+    $("job-form").reset(); state.submission = null; touchedFields.clear(); resetSkillCheck();
     restoreProvider(); renderProviders();
     for (const name of Object.keys(formFields)) { const error = $(name === "jd" ? "jd-error" : `${name}-error`); error.textContent = ""; formFields[name].removeAttribute("aria-invalid"); }
     $("enqueue-status").textContent = "Draft cleared.";
@@ -1647,6 +1763,12 @@ function bindEvents() {
   $("close-job-dialog").addEventListener("click", closeJobDialog);
   $("cancel-job-dialog").addEventListener("click", closeJobDialog);
   $("job-form").addEventListener("submit", submitJob);
+  formFields.jd.addEventListener("input", () => { if (state.skillCheck || state.skipSkillCheck) resetSkillCheck(); });
+  $("skip-check-btn").addEventListener("click", () => {
+    state.skipSkillCheck = true;
+    $("skip-check-btn").hidden = true;
+    $("job-form").requestSubmit();
+  });
   for (const radio of document.querySelectorAll('input[name="provider_mode"]')) radio.addEventListener("change", syncProviderUi);
   $("freellm-model").addEventListener("change", syncProviderUi);
   $("review-removals-btn").addEventListener("click", openRecoveryDialog);
