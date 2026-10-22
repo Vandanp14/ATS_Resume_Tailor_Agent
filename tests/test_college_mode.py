@@ -61,3 +61,61 @@ def test_index_has_college_toggle():
     assert 'id="college-mode"' in index
     app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
     assert "college_mode" in app_js
+
+
+# -- Task 2: qualification lines in the parse ----------------------------------
+
+SUU_JD = (REPO_ROOT / "jds" / "uiux_developer_utah_university.txt").read_text(encoding="utf-8")
+
+
+def _pipeline(**kwargs):
+    from unittest.mock import MagicMock
+
+    import tailor
+
+    return tailor.TailorPipeline(
+        model="gemini-3.1-flash-lite", call_interval=0, provider=MagicMock(), **kwargs
+    )
+
+
+def test_college_parse_prompt_asks_for_lines():
+    college = _pipeline(college_mode=True)._messages("jd_parse", jd_text="x", college_mode=True)
+    plain = _pipeline()._messages("jd_parse", jd_text="x", college_mode=False)
+    assert "minimum_qualifications" in college[-1]["content"]
+    assert "minimum_qualifications" not in plain[-1]["content"]
+
+
+def _suu_profile(lines, **extra):
+    from models import JDProfile, QualificationLine
+
+    return JDProfile(
+        role="UX/UI Developer",
+        must_have_skills=["HTML"],
+        nice_to_have_skills=[],
+        keywords=[],
+        minimum_qualifications=[QualificationLine(**line) for line in lines],
+        **extra,
+    )
+
+
+def test_sanitize_drops_invented_lines():
+    from keyword_coverage import sanitize_jd_profile
+
+    profile = _suu_profile(
+        [
+            {"text": "Two years recent web development/programming experience.", "type": "experience_length", "years": 2, "domain": "web development/programming"},
+            {"text": "Five years of Kubernetes administration.", "type": "experience_length", "years": 5},
+        ]
+    )
+    cleaned, _ = sanitize_jd_profile(profile, SUU_JD)
+    assert [line.text for line in cleaned.minimum_qualifications] == [
+        "Two years recent web development/programming experience."
+    ]
+
+
+def test_no_headings_is_fine():
+    from models import JDProfile
+
+    old = {"role": "Engineer", "must_have_skills": [], "nice_to_have_skills": [], "keywords": []}
+    profile = JDProfile.model_validate(old)
+    assert profile.minimum_qualifications == [] and profile.allows_substitution is False

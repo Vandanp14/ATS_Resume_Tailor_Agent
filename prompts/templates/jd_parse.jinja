@@ -43,6 +43,31 @@ Return ONLY a JSON object with this structure:
 - Extract keywords the way an ATS would: concrete technologies, methodologies, and responsibilities actually named in the posting. Do not invent keywords the posting never uses.
 - When the posting names concrete examples of a category ("such as A, B, or C", "e.g.", "including", or a parenthesised list), list each example as its own keyword with its own evidence span, and put the examples (not the category) in `must_have_skills` / `nice_to_have_skills`. The category label may stay only as a weight-1 keyword. Example: "experience with cloud platforms such as AWS or Azure" gives keywords `AWS` and `Azure`, not "Cloud Platforms".
 
+{% if college_mode %}
+## College posting: qualification lines
+
+This is a college or university staff posting. Also return these fields:
+
+- `minimum_qualifications`: every line listed under minimum, required, or
+  essential qualifications, one object per line: `{"text": <the line copied
+  verbatim>, "type": "experience_length" | "degree" | "technical" |
+  "interpersonal" | "other", "years": <number or null>, "domain": <what the
+  experience is in, e.g. "web development/programming", or null>,
+  "named_terms": [<tools and standards the line names, e.g. "Section 508",
+  "ADA", "Cascade CMS">]}`.
+- `preferred_qualifications`: the same for preferred or desired lines.
+- A line naming both a degree and years of experience is `degree` with `years`
+  and `domain` set. Use `experience_length` for lines about years of work.
+  Use `technical` for lines about knowing tools, languages, or standards;
+  `interpersonal` for working with people, communication, deadlines, or
+  priorities; `other` for anything else.
+- `allows_substitution`: true when the posting lets education count toward
+  experience ("equivalent combination of education and experience", "education
+  may substitute", "in lieu of"); copy that phrase into `substitution_phrase`.
+- When the posting has no qualification headings, return empty lists.
+- Tools and standards in `named_terms` also appear in `keywords`.
+{% endif %}
+
 ## Worked example
 
 Example job description:

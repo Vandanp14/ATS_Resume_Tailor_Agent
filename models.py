@@ -207,6 +207,22 @@ class KeywordWeight(StrictModel):
     evidence_span: str | None = None
 
 
+QualificationType = Literal[
+    "experience_length", "degree", "technical", "interpersonal", "other"
+]
+
+
+class QualificationLine(StrictModel):
+    """One posted minimum or preferred qualification, verbatim (college mode)."""
+
+    text: str = Field(min_length=1)
+    type: QualificationType
+    years: float | None = Field(default=None, ge=0)
+    domain: str | None = None
+    # Tools and standards the line names ("Section 508", "Cascade CMS").
+    named_terms: list[str] = Field(default_factory=list)
+
+
 class JDProfile(StrictModel):
     role: str = Field(min_length=1)
     seniority: str | None = None
@@ -217,6 +233,11 @@ class JDProfile(StrictModel):
     keywords: list[KeywordWeight]
     title_aliases: list[str] = Field(default_factory=list)
     responsibilities: list[str] = Field(default_factory=list)
+    # College mode only; empty for other postings and older checkpoints.
+    minimum_qualifications: list[QualificationLine] = Field(default_factory=list)
+    preferred_qualifications: list[QualificationLine] = Field(default_factory=list)
+    allows_substitution: bool = False
+    substitution_phrase: str | None = None
 
 
 # Company research (grounded web search; unconstrained decoding — see llm_utils

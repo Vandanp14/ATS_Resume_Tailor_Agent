@@ -883,7 +883,9 @@ class TailorPipeline:
         return result.text
 
     def _parse_jd(self, jd_text: str) -> JDProfile:
-        return self._simple_stage("jd_parse", JDProfile, jd_text=jd_text)
+        return self._simple_stage(
+            "jd_parse", JDProfile, jd_text=jd_text, college_mode=self.college_mode
+        )
 
     def _call_grounded[_Result: BaseModel](
         self,

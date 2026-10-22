@@ -575,9 +575,18 @@ def sanitize_jd_profile(jd: JDProfile, jd_text: str) -> tuple[JDProfile, list[st
             kept.append(item)
         else:
             dropped.append(item.term)
+    lines: dict[str, list] = {}
+    for field_name in ("minimum_qualifications", "preferred_qualifications"):
+        kept_lines = []
+        for line in getattr(jd, field_name):
+            if normalize_term(line.text.rstrip(".")) in normalized_text:
+                kept_lines.append(line)
+            else:
+                dropped.append(line.text)
+        lines[field_name] = kept_lines
     if not dropped:
         return jd, []
-    return jd.model_copy(update={"keywords": kept}), dropped
+    return jd.model_copy(update={"keywords": kept, **lines}), dropped
 
 
 _EXAMPLE_MARKER_RE = re.compile(
