@@ -74,3 +74,11 @@ test("historyTag", () => {
   assert.deepEqual(VM.historyTag("queued"), { text: "Queued", tone: "grey" });
   assert.deepEqual(VM.historyTag("action_required"), { text: "Needs you", tone: "amber" });
 });
+
+test("parseRoute reads views and survives a malformed job id", () => {
+  assert.deepEqual(VM.parseRoute("#history"), { view: "history", jobId: null });
+  assert.deepEqual(VM.parseRoute(""), { view: "new", jobId: null });
+  assert.deepEqual(VM.parseRoute("#job/abc%20d"), { view: "job", jobId: "abc d" });
+  // A broken escape must not throw: it is just an id no job has.
+  assert.deepEqual(VM.parseRoute("#job/%E0%A4"), { view: "job", jobId: "%E0%A4" });
+});

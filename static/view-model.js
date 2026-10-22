@@ -96,7 +96,21 @@
     return { text: tag.text, tone: tag.tone };
   }
 
-  const ViewModel = { STEP_GROUPS, progressSteps, friendlyNote, summary, historyTag };
+  // "#job/<id>" | "#history" | anything else → New resume. A broken escape in
+  // the id is kept raw: it matches no job, so the job view falls back to History.
+  function parseRoute(hash) {
+    const route = String(hash || "").replace(/^#/, "");
+    if (route.startsWith("job/")) {
+      const raw = route.slice(4);
+      let jobId = raw;
+      try { jobId = decodeURIComponent(raw); } catch { /* keep raw */ }
+      return { view: "job", jobId };
+    }
+    if (route === "history") return { view: "history", jobId: null };
+    return { view: "new", jobId: null };
+  }
+
+  const ViewModel = { STEP_GROUPS, progressSteps, friendlyNote, summary, historyTag, parseRoute };
   globalThis.ViewModel = ViewModel;
   if (typeof module !== "undefined" && module.exports) module.exports = ViewModel;
 })();

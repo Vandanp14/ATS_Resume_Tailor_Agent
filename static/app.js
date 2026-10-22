@@ -498,6 +498,7 @@ function renderDetail(job) {
     state.review = null;
     state.reviewJobId = job.job_id;
     clear($("review-content"));
+    renderSummary(null);
   }
   activateTab(state.activeTab, false);
   if (job.state === "completed" && !state.review && state.reviewLoadingId !== job.job_id) loadReview();
@@ -1193,8 +1194,16 @@ function renderJobView(job) {
   if (hasPdf) $("download-pdf").href = `/api/jobs/${encodeURIComponent(job.job_id)}/files/resume.pdf`;
 }
 
-function renderSummary(review) {
-  const view = ViewModel.summary(review || {});
+// review: null while loading, {} when the job has no report, or the report.
+function renderSummary(review, message = "Loading the summary…") {
+  if (review === null) {
+    $("summary-pct").hidden = true;
+    $("summary-label").textContent = message;
+    $("summary-all").hidden = true;
+    clear($("summary-notes"));
+    return;
+  }
+  const view = ViewModel.summary(review);
   const missing = view.pct === null || view.pct === undefined;
   $("summary-pct").hidden = missing;
   $("summary-pct").textContent = missing ? "" : `${Math.round(view.pct)}%`;
@@ -1289,6 +1298,14 @@ function openDeleteDialog(jobIds, includeLegacy, source) {
   $("delete-dialog").showModal();
 }
 
+// "Company, Role" for a job id; old folders are already named by their folder.
+function itemName(id) {
+  const listed = state.inventory && state.inventory.jobs.find((item) => item.id === id);
+  if (listed) return listed.label;
+  const job = state.jobs.get(id);
+  return job ? jobLabel(job) : id;
+}
+
 function showToast(message) {
   const toast = $("toast");
   toast.textContent = message;
@@ -1311,7 +1328,7 @@ async function confirmDelete() {
     state.deleting = null;
     const removed = result.deleted_jobs.length + result.deleted_legacy.length;
     let message = `Deleted ${removed} ${removed === 1 ? "resume" : "resumes"}. ${formatBytes(result.freed_bytes)} freed.`;
-    if (result.skipped.length) message += ` Skipped: ${result.skipped.map((item) => `${item.id} (${item.label})`).join("; ")}.`;
+    if (result.skipped.length) message += ` Skipped: ${result.skipped.map((item) => `${itemName(item.id)} (${item.label})`).join("; ")}.`;
     for (const id of result.deleted_jobs) state.jobs.delete(id);
     if (result.deleted_jobs.includes(state.selectedId)) {
       state.selectedId = null;
@@ -1820,6 +1837,7 @@ async function loadReview(force = false) {
     $("review-status").textContent = error.message;
     // No report for this job: show the plain "no summary" state and stop asking.
     if (error.status === 404) { state.review = {}; renderSummary(state.review); }
+    else renderSummary(null, "Couldn't load the summary. Open Details, then Review, to try again.");
   } finally { if (state.reviewLoadingId === id) state.reviewLoadingId = null; }
 }
 
@@ -1922,12 +1940,6 @@ async function loadAll() {
 
 const VIEWS = ["new", "job", "history"];
 
-function parseRoute() {
-  const hash = location.hash.replace(/^#/, "");
-  if (hash.startsWith("job/")) return { view: "job", jobId: decodeURIComponent(hash.slice(4)) };
-  if (hash === "history") return { view: "history", jobId: null };
-  return { view: "new", jobId: null };
-}
 
 function go(hash) {
   if (location.hash === hash) route();
@@ -1935,7 +1947,7 @@ function go(hash) {
 }
 
 function route() {
-  const { view, jobId } = parseRoute();
+  const { view, jobId } = ViewModel.parseRoute(location.hash);
   state.view = view;
   if (view !== "history") {
     $("history-note").textContent = "";

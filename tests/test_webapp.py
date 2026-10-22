@@ -399,3 +399,17 @@ def test_running_bar_does_not_cover_delete_on_phones():
     assert "body.selecting .topbar-running" in css
     app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
     assert 'document.body.classList.toggle("selecting"' in app_js
+
+
+def test_summary_is_reset_between_jobs():
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    reset = app_js.split("if (state.reviewJobId !== job.job_id) {", 1)[1].split("}", 1)[0]
+    assert "renderSummary(null)" in reset
+    assert "Loading the summary" in app_js
+    assert "Couldn't load the summary" in app_js
+
+
+def test_skipped_items_are_named_not_ids():
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert "function itemName(id)" in app_js
+    assert "${itemName(item.id)} (${item.label})" in app_js
