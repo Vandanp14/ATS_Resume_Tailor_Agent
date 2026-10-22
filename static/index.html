@@ -304,6 +304,7 @@
       <div class="history-head">
         <h1 class="view-title" id="history-title">History</h1>
         <button class="button secondary compact" id="select-btn" type="button">Select</button>
+        <button class="button secondary compact" id="select-cancel" type="button" hidden>Cancel</button>
       </div>
       <p class="view-note" id="history-note" role="status"></p>
       <div class="history-tools">
@@ -335,10 +336,36 @@
           <strong>No resumes yet</strong>
           <span>Paste a job description on New resume to make one.</span>
         </div>
+        <label class="select-row select-all" id="select-all-row" hidden>
+          <input type="checkbox" id="select-all"> <span id="select-all-label">Select all finished</span>
+        </label>
         <ul class="job-list" id="history-list" aria-label="Resumes"></ul>
+        <label class="select-row select-legacy" id="select-legacy-row" hidden>
+          <input type="checkbox" id="select-legacy">
+          <span><span id="select-legacy-label">Old command-line folders</span><small id="select-legacy-names"></small></span>
+        </label>
+      </div>
+      <div class="delete-bar" id="delete-bar" hidden>
+        <button class="button danger" id="delete-selected" type="button" disabled>Delete resumes</button>
       </div>
     </section>
   </main>
+
+  <dialog class="delete-dialog" id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-copy">
+    <div class="delete-shell">
+      <h2 id="delete-title">Delete resumes?</h2>
+      <p id="delete-copy">Removes each one's PDF, its copy in your PDF library, its report, and its saved job description. This can't be undone.</p>
+      <ul class="delete-list" id="delete-list"></ul>
+      <p class="delete-size tabnum" id="delete-size"></p>
+      <p class="error-slot" id="delete-error" role="alert"></p>
+      <div class="delete-actions">
+        <button class="button secondary" id="delete-cancel" type="button">Cancel</button>
+        <button class="button danger" id="delete-confirm" type="button">Delete</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
   <dialog class="recovery-dialog" id="fit-recovery-dialog" aria-labelledby="fit-recovery-title" aria-describedby="fit-recovery-description">
     <div class="recovery-dialog-shell">

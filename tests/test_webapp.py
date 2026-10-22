@@ -378,3 +378,17 @@ def test_history_markup():
         assert gone not in index, gone
     app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
     assert "ViewModel.historyTag" in app_js
+
+
+def test_delete_flow_markup():
+    index = (REPO_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    for marker in (
+        'id="select-cancel"', 'id="select-all"', 'id="select-legacy"', 'id="delete-selected"',
+        '<dialog class="delete-dialog" id="delete-dialog"', 'id="delete-list"', 'id="delete-size"',
+        'id="delete-confirm"', 'id="delete-cancel"', 'id="toast" role="status"',
+        "Removes each one's PDF, its copy in your PDF library, its report, and its saved job description. This can't be undone.",
+    ):
+        assert marker in index, marker
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert '"/api/cleanup"' in app_js
+    assert "Running, can't delete" in app_js

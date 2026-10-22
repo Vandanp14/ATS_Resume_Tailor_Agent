@@ -47,6 +47,11 @@ const state = {
   detailError: "",
   activeTab: "progress",
   submitting: false,
+  selecting: false,
+  selected: new Set(),
+  selectLegacy: false,
+  inventory: null,
+  deleting: null,
   submission: null,
   review: null,
   reviewJobId: null,
@@ -265,7 +270,35 @@ async function fetchJobs() {
   renderJobLists();
 }
 
+const DELETABLE_STATES = ["completed", "failed", "action_required"];
+
+function selectRow(job) {
+  const item = el("li", "job-item");
+  const label = el("label", "job-select select-row");
+  const box = el("input");
+  box.type = "checkbox";
+  const deletable = DELETABLE_STATES.includes(job.state);
+  box.disabled = !deletable;
+  box.checked = state.selected.has(job.job_id);
+  box.addEventListener("change", () => {
+    if (box.checked) state.selected.add(job.job_id);
+    else state.selected.delete(job.job_id);
+    renderSelection();
+  });
+  label.appendChild(box);
+  const copy = el("span", "job-copy");
+  copy.appendChild(el("strong", null, job.company || "Untitled company"));
+  copy.appendChild(el("span", null, deletable ? [job.role, formatWhen(job.finished_at || job.created_at)].filter(Boolean).join(" · ") : (job.state === "queued" ? "Queued, can't delete" : "Running, can't delete")));
+  label.appendChild(copy);
+  const tag = ViewModel.historyTag(job.state);
+  label.appendChild(el("span", `status-pill ${tag.tone}`, tag.text));
+  if (!deletable) label.classList.add("disabled");
+  item.appendChild(label);
+  return item;
+}
+
 function jobRow(job, position = null) {
+  if (state.selecting) return selectRow(job);
   const item = el("li", "job-item");
   item.dataset.jobId = job.job_id;
 
@@ -338,6 +371,7 @@ function renderJobLists() {
   }
 
   const { rows, positions, filtered, total } = historyJobs();
+  state.visibleDeletable = rows.filter((job) => DELETABLE_STATES.includes(job.state)).map((job) => job.job_id);
   for (const job of rows) list.appendChild(jobRow(job, positions.get(job.job_id)));
   const empty = $("history-empty");
   empty.hidden = rows.length > 0;
@@ -349,6 +383,7 @@ function renderJobLists() {
   $("history-count").textContent = String(total);
   renderTopbarRunning(active);
   renderQueueBanner();
+  renderSelection();
 }
 
 async function loadJobData() {
@@ -1154,6 +1189,7 @@ function renderJobView(job) {
   $("job-note").textContent = running ? latestNote(job) : "";
   const hasPdf = (job.artifacts || []).includes("resume.pdf");
   $("download-pdf").hidden = !(finished && hasPdf);
+  $("delete-job").hidden = !DELETABLE_STATES.includes(job.state);
   if (hasPdf) $("download-pdf").href = `/api/jobs/${encodeURIComponent(job.job_id)}/files/resume.pdf`;
 }
 
@@ -1177,6 +1213,132 @@ function renderTopbarRunning(active) {
   if (!active) return;
   link.textContent = `${active.company || "Resume"}: ${currentStepLabel(active)}`;
   link.href = `#job/${encodeURIComponent(active.job_id)}`;
+}
+
+/* Cleanup: select finished resumes (and old command-line folders), confirm, delete. */
+
+function formatBytes(bytes) {
+  if (!bytes) return "0 KB";
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function enterSelect() {
+  try {
+    state.inventory = await fetchJson("/api/cleanup");
+  } catch (error) {
+    $("history-note").textContent = `Couldn't load what can be deleted. ${error.message}`;
+    return;
+  }
+  state.selecting = true;
+  state.selected.clear();
+  state.selectLegacy = false;
+  renderJobLists();
+}
+
+function exitSelect() {
+  state.selecting = false;
+  state.selected.clear();
+  state.selectLegacy = false;
+  renderJobLists();
+}
+
+function renderSelection() {
+  const selecting = state.selecting;
+  $("select-btn").hidden = selecting;
+  $("select-cancel").hidden = !selecting;
+  $("delete-bar").hidden = !selecting;
+  $("select-all-row").hidden = !selecting;
+  const legacy = (state.inventory && state.inventory.legacy) || [];
+  $("select-legacy-row").hidden = !selecting || legacy.length === 0;
+  const count = state.selected.size + (state.selectLegacy ? legacy.length : 0);
+  $("history-title").textContent = selecting ? `${count} selected` : "History";
+  if (!selecting) return;
+  const finished = state.visibleDeletable || [];
+  $("select-all-label").textContent = `Select all finished (${finished.length})`;
+  $("select-all").checked = finished.length > 0 && finished.every((id) => state.selected.has(id));
+  $("select-legacy-label").textContent = `Old command-line folders (${legacy.length})`;
+  $("select-legacy-names").textContent = legacy.slice(0, 4).map((item) => item.id).join(", ") + (legacy.length > 4 ? ", …" : "");
+  $("select-legacy").checked = state.selectLegacy;
+  const button = $("delete-selected");
+  button.disabled = count === 0;
+  button.textContent = count === 1 ? "Delete 1 resume" : `Delete ${count} resumes`;
+}
+
+function openDeleteDialog(jobIds, includeLegacy, source) {
+  const inventory = state.inventory || { jobs: [], legacy: [] };
+  const byId = new Map(inventory.jobs.map((item) => [item.id, item]));
+  const items = jobIds.map((id) => byId.get(id) || { id, label: jobLabel(state.jobs.get(id) || { company: id }), bytes: 0 });
+  const legacy = includeLegacy ? inventory.legacy : [];
+  const total = items.length + legacy.length;
+  state.deleting = { jobIds, includeLegacy, source };
+  $("delete-title").textContent = total === 1 ? "Delete 1 resume?" : `Delete ${total} resumes?`;
+  $("delete-copy").textContent = total === 1
+    ? "Removes its PDF, its copy in your PDF library, its report, and its saved job description. This can't be undone."
+    : "Removes each one's PDF, its copy in your PDF library, its report, and its saved job description. This can't be undone.";
+  const list = $("delete-list");
+  clear(list);
+  for (const item of items.slice(0, 8)) list.appendChild(el("li", null, item.label));
+  if (items.length > 8) list.appendChild(el("li", null, `and ${items.length - 8} more`));
+  if (legacy.length) list.appendChild(el("li", null, `Old command-line folders (${legacy.length})`));
+  const bytes = [...items, ...legacy].reduce((sum, item) => sum + (item.bytes || 0), 0);
+  $("delete-size").textContent = `Frees about ${formatBytes(bytes)}.`;
+  $("delete-error").textContent = "";
+  $("delete-confirm").disabled = false;
+  $("delete-dialog").showModal();
+}
+
+function showToast(message) {
+  const toast = $("toast");
+  toast.textContent = message;
+  toast.hidden = false;
+  window.clearTimeout(state.toastTimer);
+  state.toastTimer = window.setTimeout(() => { toast.hidden = true; }, 6000);
+}
+
+async function confirmDelete() {
+  const pending = state.deleting;
+  if (!pending) return;
+  $("delete-confirm").disabled = true;
+  try {
+    const result = await fetchJson("/api/cleanup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_ids: pending.jobIds, include_legacy: pending.includeLegacy }),
+    });
+    $("delete-dialog").close();
+    state.deleting = null;
+    const removed = result.deleted_jobs.length + result.deleted_legacy.length;
+    let message = `Deleted ${removed} ${removed === 1 ? "resume" : "resumes"}. ${formatBytes(result.freed_bytes)} freed.`;
+    if (result.skipped.length) message += ` Skipped: ${result.skipped.map((item) => `${item.id} (${item.label})`).join("; ")}.`;
+    for (const id of result.deleted_jobs) state.jobs.delete(id);
+    if (result.deleted_jobs.includes(state.selectedId)) {
+      state.selectedId = null;
+      state.currentDetail = null;
+      state.detailStatus = "empty";
+    }
+    state.selecting = false;
+    state.selected.clear();
+    state.selectLegacy = false;
+    state.inventory = null;
+    showToast(message);
+    if (pending.source === "job") go("#history");
+    await loadJobData();
+  } catch (error) {
+    $("delete-error").textContent = `Couldn't delete. ${error.message}`;
+    $("delete-confirm").disabled = false;
+  }
+}
+
+async function deleteCurrentJob() {
+  const job = state.currentDetail;
+  if (!job) return;
+  try {
+    state.inventory = await fetchJson("/api/cleanup");
+  } catch {
+    state.inventory = null;
+  }
+  openDeleteDialog([job.job_id], false, "job");
 }
 
 /* Mutations and form */
@@ -1774,7 +1936,10 @@ function go(hash) {
 function route() {
   const { view, jobId } = parseRoute();
   state.view = view;
-  if (view !== "history") $("history-note").textContent = "";
+  if (view !== "history") {
+    $("history-note").textContent = "";
+    if (state.selecting) exitSelect();
+  }
   for (const name of VIEWS) $(`view-${name}`).hidden = name !== view;
   $("nav-new").setAttribute("aria-pressed", String(view === "new"));
   $("nav-history").setAttribute("aria-pressed", String(view === "history"));
@@ -1833,6 +1998,20 @@ function bindEvents() {
       sessionStorage.removeItem("tailoring-draft"); location.replace("/login");
     } catch (error) { $("server-status").textContent = error.message; }
   });
+  $("select-btn").addEventListener("click", enterSelect);
+  $("select-cancel").addEventListener("click", exitSelect);
+  $("select-all").addEventListener("change", () => {
+    for (const id of state.visibleDeletable || []) {
+      if ($("select-all").checked) state.selected.add(id);
+      else state.selected.delete(id);
+    }
+    renderJobLists();
+  });
+  $("select-legacy").addEventListener("change", () => { state.selectLegacy = $("select-legacy").checked; renderSelection(); });
+  $("delete-selected").addEventListener("click", () => openDeleteDialog([...state.selected], state.selectLegacy, "history"));
+  $("delete-cancel").addEventListener("click", () => { state.deleting = null; $("delete-dialog").close(); });
+  $("delete-confirm").addEventListener("click", confirmDelete);
+  $("delete-job").addEventListener("click", deleteCurrentJob);
   $("nav-new").addEventListener("click", () => go("#new"));
   $("nav-history").addEventListener("click", () => go("#history"));
   window.addEventListener("hashchange", route);

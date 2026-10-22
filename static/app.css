@@ -385,6 +385,26 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--i
 .paper-col { position: sticky; inset-block-start: 84px; display: grid; gap: 12px; }
 .paper-col .paper { position: static; }
 
+/* Cleanup: select, confirm, toast ------------------------------------------ */
+
+.select-row { display: flex; align-items: center; gap: 12px; cursor: pointer; }
+.select-row input[type="checkbox"] { inline-size: 18px; block-size: 18px; accent-color: var(--ink); flex: none; margin: 0; }
+.select-row.disabled { cursor: not-allowed; color: var(--text-4); }
+.select-row.disabled strong { color: var(--text-4); }
+.select-all, .select-legacy { padding: 12px 16px; font-size: 14px; color: var(--text-2); }
+.select-legacy small { display: block; font-size: 12px; color: var(--text-4); margin-block-start: 2px; }
+.delete-bar { position: sticky; inset-block-end: 16px; display: flex; justify-content: center; margin-block-start: 16px; }
+.delete-bar .button { min-inline-size: 240px; }
+.delete-dialog { margin: auto; border: 0; border-radius: 16px; padding: 0; max-inline-size: min(440px, calc(100vw - 32px)); box-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.45); }
+.delete-dialog::backdrop { background: rgba(27, 27, 31, 0.35); }
+.delete-shell { padding: 22px; display: grid; gap: 10px; }
+.delete-shell h2 { margin: 0; font-size: 19px; }
+.delete-shell p { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-2); }
+.delete-list { margin: 0; padding-inline-start: 18px; font-size: 14px; display: grid; gap: 4px; max-block-size: 220px; overflow: auto; }
+.delete-size { color: var(--text-3); }
+.delete-actions { display: flex; justify-content: flex-end; gap: 8px; margin-block-start: 6px; }
+.toast { position: fixed; inset-inline: 16px; inset-block-end: 20px; margin-inline: auto; max-inline-size: 520px; background: var(--ink); color: #fff; border-radius: 12px; padding: 12px 16px; font-size: 14px; line-height: 1.45; z-index: 40; box-shadow: 0 18px 40px -18px rgba(0, 0, 0, 0.5); }
+
 /* Dialogs ------------------------------------------------------------------- */
 
 dialog { border: 0; padding: 0; border-radius: 14px; background: var(--paper); color: var(--ink); box-shadow: 0 30px 70px -30px rgba(27, 27, 31, 0.55); max-inline-size: min(640px, calc(100vw - 32px)); }
