@@ -6,6 +6,7 @@ import json
 import inspect
 import time
 from collections.abc import Callable, Sequence
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,7 @@ from .llm import (
 from .progress import JobContext, ProgressReporter, ProgressTracker, Stage
 from .bullet_review import live_flags, persist_bullet_review
 from .checkpoints import CheckpointStore, stage_fingerprint
+from .qualifications import qualification_coverage, recheck_on_page
 from .skill_answers import (
     answered_keys,
     bullet_tech_requirements,
@@ -1967,6 +1969,16 @@ class TailorPipeline:
                 )
                 for finding in report_payload["placement_findings"]:
                     self.tracker.warn(f"Keyword placement: {finding}")
+                if self.college_mode:
+                    report_payload["qualification_coverage"] = qualification_coverage(
+                        final_scored,
+                        scored_to_plain(final_scored),
+                        jd,
+                        master,
+                        evidence_plan,
+                        requirements,
+                        date.today(),
+                    )
                 unresolved_violations, resolved_violations = (
                     partition_review_truth_violations(review, final_scored)
                 )
@@ -2060,6 +2072,17 @@ class TailorPipeline:
                         raise
                     report_payload["automatic_concisions"] = concision.log
             with self.tracker.stage(Stage.WRITE_ARTIFACTS):
+                if report_payload.get("qualification_coverage"):
+                    # Fitting may cut the bullet that proved a line.
+                    report_payload["qualification_coverage"] = recheck_on_page(
+                        report_payload["qualification_coverage"], final_scored, final_plain
+                    )
+                    for row in report_payload["qualification_coverage"]:
+                        if row["status"] not in {"covered", "covered_with_substitution"}:
+                            self.tracker.warn(
+                                f"Qualification {row['status'].replace('_', ' ')}: "
+                                f"{row['text'][:80]!r} ({row['reason']})"
+                            )
                 write_json(out_dir / "tailored.json", final_plain)
                 report_payload["pipeline_status"] = (
                     "completed_with_rejected_edits" if rejected_edits else "completed"

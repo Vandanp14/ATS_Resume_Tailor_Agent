@@ -70,6 +70,7 @@ def read_review(directory: Path) -> dict:
         "truth_violations": report.get("truth_violations", []),
         "rejected_section_edits": report.get("rejected_section_edits", []),
         "notes": report.get("notes"),
+        "qualification_coverage": report.get("qualification_coverage", []),
         "evidence_assignments": report.get("evidence_plan", {}).get("assignments", []),
         "claims": claims,
         "reviewed_ids": reviewed,

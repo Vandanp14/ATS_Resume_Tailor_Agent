@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from render import ScoredResume, fit_to_one_page, render, scored_to_plain
 
+from .qualifications import recheck_on_page
+
 from .fit_recovery import FitRecoveryRequired, persist_fit_recovery
 from .runtime import write_json
 
@@ -210,6 +212,10 @@ def apply_bullet_review(
         for name in ("resume.tex", "resume.pdf"):
             (job_dir / name).unlink(missing_ok=True)
         return 2
+    if report.get("qualification_coverage"):
+        report["qualification_coverage"] = recheck_on_page(
+            report["qualification_coverage"], resume, plain
+        )
     write_json(job_dir / "tailored.json", plain)
     report["pipeline_status"] = "completed_with_bullet_review"
     write_json(job_dir / "match_report.json", report)

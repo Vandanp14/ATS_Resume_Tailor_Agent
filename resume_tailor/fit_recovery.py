@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from models import JSONResume, ScoredBullet
 from render import ScoredResume, count_pages, render, scored_to_plain
 
+from .qualifications import recheck_on_page
+
 from .runtime import write_json
 
 
@@ -345,6 +347,10 @@ def apply_fit_recovery(
     if pages == 1:
         if page_counter is not None:
             render(plain, job_dir, compile_pdf=False)
+        if report.get("qualification_coverage"):
+            report["qualification_coverage"] = recheck_on_page(
+                report["qualification_coverage"], updated, plain
+            )
         write_json(job_dir / "tailored.json", plain)
         report["pipeline_status"] = "completed_with_manual_fit"
         write_json(job_dir / "match_report.json", report)

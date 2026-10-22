@@ -1568,6 +1568,9 @@ async function loadReview(force = false) {
     if (state.selectedId !== id) return;
     state.review = report;
     $("review-status").textContent = typeof report.coverage_pct === "number" ? `${Math.round(report.coverage_pct)}% estimated requirement coverage` : "Review the analysis below.";
+    const QUALIFICATION_LABELS = { covered: "Covered", covered_with_substitution: "Covered with education substitution", unsupported: "Not supported", supported_not_on_page: "True but not on the page" };
+    reviewSection("Qualifications", (report.qualification_coverage || []).map((row) =>
+      `${QUALIFICATION_LABELS[row.status] || row.status}${row.required ? "" : " (preferred)"}: ${row.text}${row.status === "covered" ? "" : ` — ${row.reason}`}`));
     reviewSection("Missing requirements", report.missing_must_haves);
     reviewSection("Truth concerns", report.truth_violations);
     reviewSection("Sections to improve", report.weak_sections);

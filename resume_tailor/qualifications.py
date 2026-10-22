@@ -12,7 +12,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-from models import Education, JDProfile, JSONResume, QualificationLine, Work
+from keyword_coverage import mentions, normalize_term, term_variants
+from models import EvidencePlan, Education, JDProfile, JSONResume, QualificationLine, Work
+from pipeline_core import master_fact_index
+from render import ScoredResume
 
 QualificationState = Literal[
     "covered", "covered_with_substitution", "unsupported", "supported_not_on_page"
@@ -185,3 +188,149 @@ def assess_degree(
     if line.years is not None:
         status = _worse(status, assess_experience(line, master, jd, today))
     return status
+
+
+# -- coverage of every posted line -------------------------------------------
+
+_COVERED = frozenset({"covered", "covered_with_substitution"})
+
+
+def _page_text(plain: JSONResume) -> str:
+    parts: list[str] = []
+    if plain.basics and plain.basics.summary:
+        parts.append(plain.basics.summary)
+    for entries in (plain.work or [], plain.projects or []):
+        for entry in entries:
+            parts.extend(entry.highlights or [])
+    for group in plain.skills or []:
+        parts.extend(group.keywords or [])
+    for item in plain.education or []:
+        parts.extend(filter(None, [item.studyType, item.area]))
+    return "\n".join(parts)
+
+
+def rendered_source_ids(scored: ScoredResume, plain: JSONResume) -> set[str]:
+    """Fact ids behind bullets that actually reached the page."""
+    on_page = {
+        text
+        for entries in (plain.work or [], plain.projects or [])
+        for entry in entries
+        for text in entry.highlights or []
+    }
+    return {
+        fact_id
+        for entries in (scored.work or [], scored.projects or [])
+        for entry in entries
+        for bullet in entry.highlights or []
+        if bullet.text in on_page
+        for fact_id in bullet.source_ids
+    }
+
+
+def _qualification_fact_ids(
+    line: QualificationLine, requirements: Sequence[dict], plan: EvidencePlan
+) -> list[str]:
+    keys = {normalize_term(line.text)}
+    keys.update(item["id"] for item in requirements if item["term"] == line.text)
+    return [
+        fact_id
+        for assignment in plan.assignments
+        if keys
+        & (
+            {normalize_term(value) for value in assignment.matched_requirements}
+            | set(assignment.matched_requirements)
+        )
+        for fact_id in assignment.source_fact_ids
+    ]
+
+
+def _technical(line: QualificationLine, master: JSONResume) -> QualificationStatus:
+    if not line.named_terms:
+        return QualificationStatus(
+            line.text, line.type, "unsupported", "names no tool or standard to check"
+        )
+    facts = "\n".join(fact["text"] for fact in master_fact_index(master).values())
+    absent = [term for term in line.named_terms if not mentions(facts, term_variants(term))]
+    if absent:
+        return QualificationStatus(
+            line.text,
+            line.type,
+            "unsupported",
+            "not in your resume: "
+            + ", ".join(absent)
+            + " (tick it in the skill check if you know it)",
+        )
+    return QualificationStatus(line.text, line.type, "covered", "named in your resume")
+
+
+def _row(status: QualificationStatus, required: bool, page_terms: list[str], fact_ids: list[str]) -> dict:
+    return {
+        "text": status.text,
+        "type": status.type,
+        "required": required,
+        "status": status.status,
+        "reason": status.reason,
+        "page_terms": page_terms,
+        "fact_ids": fact_ids,
+    }
+
+
+def recheck_on_page(
+    rows: Sequence[dict], scored: ScoredResume, plain: JSONResume
+) -> list[dict]:
+    """Downgrade covered lines whose proof did not survive editing or trimming."""
+    text = _page_text(plain)
+    rendered = rendered_source_ids(scored, plain)
+    result: list[dict] = []
+    for row in rows:
+        row = dict(row)
+        if row["status"] in _COVERED:
+            missing_terms = [
+                term for term in row.get("page_terms", []) if not mentions(text, term_variants(term))
+            ]
+            fact_ids = row.get("fact_ids", [])
+            if missing_terms:
+                row["status"] = "supported_not_on_page"
+                row["reason"] = "true, but the page does not show: " + ", ".join(missing_terms)
+            elif fact_ids and not rendered & set(fact_ids):
+                row["status"] = "supported_not_on_page"
+                row["reason"] = "true, but the bullet that shows it was cut"
+        result.append(row)
+    return result
+
+
+def qualification_coverage(
+    final_resume: ScoredResume,
+    plain: JSONResume,
+    jd: JDProfile,
+    master: JSONResume,
+    plan: EvidencePlan,
+    requirements: Sequence[dict],
+    today: date,
+) -> list[dict]:
+    """One row per posted minimum and preferred line: covered or why not."""
+    rows: list[dict] = []
+    for required, lines in ((True, jd.minimum_qualifications), (False, jd.preferred_qualifications)):
+        for line in lines:
+            page_terms: list[str] = []
+            fact_ids: list[str] = []
+            if line.type == "experience_length":
+                status = assess_experience(line, master, jd, today)
+                if status.status == "covered":
+                    page_terms = [years_label(experience_months(master, line.domain, today))]
+            elif line.type == "degree":
+                status = assess_degree(line, master, jd, today)
+                degree = next((item.studyType for item in master.education or [] if item.studyType), None)
+                page_terms = [degree] if degree else []
+            elif line.type == "technical":
+                status = _technical(line, master)
+                page_terms = list(line.named_terms)
+            else:
+                fact_ids = _qualification_fact_ids(line, requirements, plan)
+                status = (
+                    QualificationStatus(line.text, line.type, "covered", "shown by a bullet")
+                    if fact_ids
+                    else QualificationStatus(line.text, line.type, "unsupported", "no fact shows this")
+                )
+            rows.append(_row(status, required, page_terms, fact_ids))
+    return recheck_on_page(rows, final_resume, plain)
