@@ -93,3 +93,45 @@ def test_usage_persists_and_old_timestamp_lines_still_load(tmp_path) -> None:
     assert snapshot.requests_in_minute == 2
     assert snapshot.input_tokens_in_minute == 1234
     assert any(json.loads(line)["attempt_id"] == attempt_id for line in path.read_text().splitlines())
+
+
+# -- per-model metering: free-tier limits are per model ------------------------
+
+
+def test_models_do_not_block_each_other() -> None:
+    clock = FakeClock(1_000.0)
+    tracker = scheduler(clock)
+    for _ in range(10):
+        tracker.wait("gemini-3.8-flash")
+    assert clock.sleeps == []
+    tracker.wait("gemini-3.7-flash")
+    assert clock.sleeps == []
+    tracker.wait("gemini-3.8-flash")
+    assert sum(clock.sleeps) == 60
+
+
+def test_rpm_comes_from_model_table() -> None:
+    clock = FakeClock(1_000.0)
+    tracker = scheduler(clock, max_per_minute=3)
+    for _ in range(15):
+        tracker.wait("gemini-3.5-flash-lite")
+    assert clock.sleeps == []
+    tracker.wait("gemini-3.5-flash-lite")
+    assert sum(clock.sleeps) == 60
+
+
+def test_model_is_persisted_and_legacy_records_load(tmp_path) -> None:
+    clock = FakeClock(1_000.0)
+    path = tmp_path / "calls.jsonl"
+    path.write_text(
+        json.dumps({"attempt_id": "old", "attempted_at": "1970-01-01T00:16:30Z"}) + "\n",
+        encoding="utf-8",
+    )
+    tracker = GeminiScheduler(
+        min_interval=0, max_per_minute=15, calls_path=path, clock=clock.now, sleeper=clock.sleep
+    )
+    tracker.wait("gemini-3.7-flash")
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["model"] == "gemini-3.7-flash"
+    assert "model" not in rows[0]
+    assert tracker.snapshot().requests_in_minute == 2

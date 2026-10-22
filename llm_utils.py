@@ -109,7 +109,7 @@ class GeminiProvider:
         api_key: str,
         timeout_ms: int = 30_000,
         progress_callback: Callable[[str], None] | None = None,
-        attempt_callback: Callable[[], str | None] | None = None,
+        attempt_callback: Callable[[str], str | None] | None = None,
         usage_callback: Callable[[str | None, int | None], None] | None = None,
     ) -> None:
         from google import genai
@@ -204,7 +204,9 @@ class GeminiProvider:
         )
         for attempt in range(attempts):
             try:
-                attempt_id = self._attempt_callback() if self._attempt_callback else None
+                attempt_id = (
+                    self._attempt_callback(model) if self._attempt_callback else None
+                )
                 response = self.client.models.generate_content(
                     model=model, contents=contents, config=config
                 )

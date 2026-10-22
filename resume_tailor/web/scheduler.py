@@ -18,6 +18,7 @@ from typing import Callable, Protocol
 from zoneinfo import ZoneInfo
 
 from llm_utils import ChatProvider
+from prompt import model_rpm
 
 from .io import atomic_write_text
 from .models import (
@@ -39,6 +40,9 @@ class UsageRecord:
     attempt_id: str
     attempted_at: float
     input_tokens: int | None = None
+    # The model the attempt went to; None for records written before metering
+    # was per model, which share one bucket.
+    model: str | None = None
 
 
 def _iso(timestamp: float) -> str:
@@ -119,7 +123,15 @@ class GeminiScheduler:
                 if stamp is None or not isinstance(attempt_id, str):
                     continue
                 input_tokens = tokens if isinstance(tokens, int) and tokens >= 0 else None
-                records.append(UsageRecord(attempt_id, stamp, input_tokens))
+                model = payload.get("model")
+                records.append(
+                    UsageRecord(
+                        attempt_id,
+                        stamp,
+                        input_tokens,
+                        model if isinstance(model, str) and model else None,
+                    )
+                )
                 continue
             stamp = _timestamp(payload)
             if stamp is not None:
@@ -138,6 +150,8 @@ class GeminiScheduler:
             }
             if record.input_tokens is not None:
                 payload["input_tokens"] = record.input_tokens
+            if record.model is not None:
+                payload["model"] = record.model
             lines.append(json.dumps(payload, separators=(",", ":")))
         atomic_write_text(self._calls_path, "\n".join(lines) + ("\n" if lines else ""))
 
@@ -156,14 +170,28 @@ class GeminiScheduler:
         start, _ = _pacific_day_bounds(now)
         return [record for record in self._records if record.attempted_at >= start]
 
-    def _next_allowed_under_lock(self, now: float) -> tuple[float | None, str | None]:
+    def _next_allowed_under_lock(
+        self, now: float, model: str | None = None
+    ) -> tuple[float | None, str | None]:
+        """When the next attempt may go out.
+
+        With a model, only that model's attempts count and its RPM comes from
+        the model table (free-tier limits are per model); without one, every
+        attempt counts against the configured process-wide limits.
+        """
         candidates: list[tuple[float, str]] = []
         recent = self._recent(now)
+        today = self._today(now)
+        per_minute = self.max_per_minute
+        if model is not None:
+            recent = [record for record in recent if record.model == model]
+            today = [record for record in today if record.model == model]
+            per_minute = model_rpm(model)
         if recent and self.min_interval > 0:
             candidates.append((recent[-1].attempted_at + self.min_interval, "interval"))
 
-        if len(recent) >= self.max_per_minute:
-            expiry_index = len(recent) - self.max_per_minute
+        if len(recent) >= per_minute:
+            expiry_index = len(recent) - per_minute
             candidates.append(
                 (recent[expiry_index].attempted_at + self.window_seconds, "rpm")
             )
@@ -179,7 +207,6 @@ class GeminiScheduler:
                     )
                     break
 
-        today = self._today(now)
         if len(today) >= self.max_requests_per_day:
             _, reset = _pacific_day_bounds(now)
             candidates.append((reset, "rpd"))
@@ -197,14 +224,14 @@ class GeminiScheduler:
 
     # Pacing and response usage
 
-    def wait(self) -> str:
+    def wait(self, model: str | None = None) -> str:
         """Wait for all known limits, record an attempt, and return its id."""
         published_key: tuple[float | None, str | None] | None = None
         while True:
             with self._mutex:
                 now = self._clock()
                 self._prune(now)
-                next_allowed, reason = self._next_allowed_under_lock(now)
+                next_allowed, reason = self._next_allowed_under_lock(now, model)
                 snapshot = self._snapshot_under_lock(now)
             remaining = (next_allowed - now) if next_allowed is not None else 0.0
             if remaining <= 0:
@@ -217,7 +244,9 @@ class GeminiScheduler:
 
         attempt_id = str(uuid.uuid4())
         with self._mutex:
-            self._records.append(UsageRecord(attempt_id, self._clock()))
+            self._records.append(
+                UsageRecord(attempt_id, self._clock(), model=model)
+            )
             self._records.sort(key=lambda record: record.attempted_at)
             self._prune(self._clock())
             self._persist()
@@ -308,7 +337,8 @@ class ScheduledProvider:
             self._provider = self._provider_factory()
         if self._provider_tracks_attempts:
             return self._provider.chat(*args, **kwargs)
-        attempt_id = self._scheduler.wait()
+        model = kwargs.get("model", args[0] if args else None)
+        attempt_id = self._scheduler.wait(model if isinstance(model, str) else None)
         result = self._provider.chat(*args, **kwargs)
         self._scheduler.record_usage(attempt_id, _input_tokens(result))
         return result

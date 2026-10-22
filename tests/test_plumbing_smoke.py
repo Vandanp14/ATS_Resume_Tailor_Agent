@@ -89,7 +89,7 @@ def test_gemini_provider_reports_every_attempt_and_response_usage(monkeypatch):
     usage = []
     provider = llm_utils.GeminiProvider(
         "secret-value",
-        attempt_callback=lambda: attempts.append("attempt-1") or "attempt-1",
+        attempt_callback=lambda model: attempts.append("attempt-1") or "attempt-1",
         usage_callback=lambda attempt_id, tokens: usage.append((attempt_id, tokens)),
     )
 
