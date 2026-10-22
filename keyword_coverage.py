@@ -581,22 +581,53 @@ def sanitize_jd_profile(jd: JDProfile, jd_text: str) -> tuple[JDProfile, list[st
 
 
 _EXAMPLE_MARKER_RE = re.compile(
-    r"\b(?:such as|e\.g\.,?|including(?:,? but not limited to)?|like)\s+", re.I
+    r"\b(?:such as|e\.g\.|for example|including(?:,?\s*but not limited to)?)"
+    r"[\s,]*:?\s*",
+    re.I,
 )
 _PAREN_LIST_RE = re.compile(r"\(([^()]+)\)")
 _LIST_END_RE = re.compile(r"[;:()]|\.(?:\s|$)")
-_LIST_SPLIT_RE = re.compile(r",|\s+or\s+|\s+and\s+", re.I)
-_ITEM_PREFIX_RE = re.compile(r"^(?:or|and|a|an|the)\s+", re.I)
+_LIST_SPLIT_RE = re.compile(r",|\s+and/or\s+|\s+or\s+|\s+and\s+", re.I)
+_ITEM_PREFIX_RE = re.compile(r"^(?:and/or|or|and|a|an|the)\s+", re.I)
 _ITEM_SUFFIX_RE = re.compile(r"[\s,]*(?:etc\.?|and more|and others)?[\s.,]*$", re.I)
+# Words that name a category of tools; only such labels are expanded.
+_CATEGORY_WORDS = frozenset(
+    {
+        "platform", "platforms", "tool", "tools", "technology", "technologies",
+        "framework", "frameworks", "language", "languages", "database",
+        "databases", "library", "libraries", "service", "services", "system",
+        "systems", "suite", "suites", "software", "stack", "stacks", "cloud",
+        "environment", "environments", "methodologies", "practices", "cms",
+    }
+)
+# A list item is a placeholder ("or similar") or the start of a new clause.
+_PLACEHOLDER_ITEMS = frozenset({"similar", "equivalent", "other", "others", "etc", "more"})
+_CLAUSE_WORDS = frozenset(
+    {"experience", "knowledge", "ability", "understanding", "proficiency",
+     "familiarity", "with", "to", "using", "including"}
+)
 
 
 def _list_items(raw: str) -> list[str]:
     items: list[str] = []
     for part in _LIST_SPLIT_RE.split(raw):
         item = _ITEM_SUFFIX_RE.sub("", _ITEM_PREFIX_RE.sub("", part.strip())).strip()
-        if item and len(item.split()) <= 4:
-            items.append(item)
+        words = item.casefold().split()
+        if not item or item.casefold() in _PLACEHOLDER_ITEMS:
+            continue
+        if _CLAUSE_WORDS & set(words) or len(words) > 4:
+            # The list ended; the rest is another clause ("and experience with").
+            break
+        items.append(item)
     return items
+
+
+def _is_category_label(term: str, lead: str) -> bool:
+    """The term is named before the list and reads as a category of tools."""
+    if normalize_term(term) not in normalize_term(lead):
+        return False
+    words = set(re.findall(r"[a-z]+", f"{term} {lead[-40:]}".casefold()))
+    return bool(words & _CATEGORY_WORDS)
 
 
 def _example_items(term: str, span: str | None) -> list[str]:
@@ -606,12 +637,14 @@ def _example_items(term: str, span: str | None) -> list[str]:
         return []
     found: list[str] = []
     marker = _EXAMPLE_MARKER_RE.search(span)
-    if marker:
+    if marker and _is_category_label(term, span[: marker.start()]):
         rest = span[marker.end() :]
         end = _LIST_END_RE.search(rest)
         found = _list_items(rest[: end.start()] if end else rest)
     if not found:
         for match in _PAREN_LIST_RE.finditer(span):
+            if not _is_category_label(term, span[: match.start()]):
+                continue
             items = _list_items(match.group(1))
             # "(or equivalent)" is a qualifier, not a list of tools.
             if len(items) >= 2:
@@ -623,6 +656,11 @@ def _example_items(term: str, span: str | None) -> list[str]:
         key = normalize_term(item)
         if key != umbrella:
             unique.setdefault(key, item)
+    # A listed tool that shares the sentence is itself an item, not a category.
+    if umbrella in unique or any(
+        umbrella in {normalize_term(v) for v in _expand_variants(item)} for item in found
+    ):
+        return []
     return list(unique.values())
 
 
@@ -644,7 +682,8 @@ def expand_example_lists(jd: JDProfile) -> tuple[JDProfile, list[str]]:
         if not examples:
             keywords.append(item)
             continue
-        keywords.append(item.model_copy(update={"weight": 1}))
+        # The label stays searchable but is no longer a technology to claim.
+        keywords.append(item.model_copy(update={"weight": 1, "category": "other"}))
         replacements[normalize_term(item.term)] = examples
         for example in examples:
             key = normalize_term(example)

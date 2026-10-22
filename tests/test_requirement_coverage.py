@@ -678,7 +678,8 @@ def test_cloud_platforms_such_as_expands():
     weights = {item.term: item.weight for item in expanded.keywords}
     assert weights["Cloud Platforms"] == 1
     assert weights["AWS"] == 2
-    assert {item.category for item in expanded.keywords} == {"platform"}
+    categories = {item.term: item.category for item in expanded.keywords}
+    assert categories == {"Cloud Platforms": "other", "AWS": "platform", "Azure": "platform", "Google Cloud": "platform"}
 
 
 def test_single_item_and_but_not_limited_to():
@@ -731,3 +732,83 @@ def test_existing_keyword_not_duplicated():
     expanded, added = expand_example_lists(jd)
     assert added == ["Azure"]
     assert [item.term for item in expanded.keywords].count("AWS") == 1
+
+
+# -- review fixes: shared spans, fragments, and umbrella labels ----------------
+
+
+def _shared_span_jd(entries, must=(), nice=()):
+    from models import JDProfile, KeywordWeight
+
+    return JDProfile(
+        role="Engineer",
+        must_have_skills=list(must),
+        nice_to_have_skills=list(nice),
+        keywords=[
+            KeywordWeight(term=term, weight=weight, category=category, evidence_span=span)
+            for term, weight, category, span in entries
+        ],
+    )
+
+
+def test_listed_items_sharing_the_span_are_not_demoted():
+    from keyword_coverage import expand_example_lists
+
+    span = "cloud platforms such as AWS or Azure"
+    jd = _shared_span_jd(
+        [("AWS", 4, "platform", span), ("Azure", 4, "platform", span)], nice=["AWS", "Azure"]
+    )
+    expanded, added = expand_example_lists(jd)
+    assert added == []
+    assert {item.term: item.weight for item in expanded.keywords} == {"AWS": 4, "Azure": 4}
+    assert expanded.nice_to_have_skills == ["AWS", "Azure"]
+
+
+def test_concrete_term_before_marker_is_kept():
+    from keyword_coverage import expand_example_lists
+
+    span = "Python, including frameworks like Django or Flask"
+    jd = _shared_span_jd([("Python", 5, "language", span)], must=["Python"])
+    expanded, added = expand_example_lists(jd)
+    assert "Python" in expanded.must_have_skills
+    assert all(" " not in term or term in {"Google Cloud"} for term in added)
+    assert "frameworks like Django" not in added
+
+
+def test_like_is_not_a_marker():
+    from keyword_coverage import expand_example_lists
+
+    jd = _shared_span_jd(
+        [("Python", 5, "language", "We would like candidates with strong Python")], must=["Python"]
+    )
+    expanded, added = expand_example_lists(jd)
+    assert added == [] and expanded == jd
+
+
+def test_fragments_never_become_terms():
+    from keyword_coverage import expand_example_lists
+
+    cases = {
+        "databases including but not limited to: PostgreSQL, MySQL": ["PostgreSQL", "MySQL"],
+        "languages (Python, Go, Rust, or similar)": ["Python", "Go", "Rust"],
+        "ML libraries such as PyTorch, scikit-learn, or equivalent": ["PyTorch", "scikit-learn"],
+        "languages such as Java, C++, and/or Python": ["Java", "C++", "Python"],
+        "languages such as Java or C# and experience with SQL databases": ["Java", "C#"],
+        "databases, including, but not limited to, Oracle and SQL Server": ["Oracle", "SQL Server"],
+        "cloud platforms such as: AWS, GCP": ["AWS", "GCP"],
+    }
+    for span, expected in cases.items():
+        umbrella = span.split(" ")[0].strip(",").title()
+        _, added = expand_example_lists(_shared_span_jd([(umbrella, 3, "tool", span)]))
+        assert added == expected, span
+
+
+def test_expanded_umbrella_is_not_a_technology():
+    from keyword_coverage import expand_example_lists
+
+    jd = _shared_span_jd(
+        [("Cloud Platforms", 2, "platform", "cloud platforms such as AWS, Azure")], nice=["Cloud Platforms"]
+    )
+    expanded, _ = expand_example_lists(jd)
+    umbrella = next(item for item in expanded.keywords if item.term == "Cloud Platforms")
+    assert umbrella.weight == 1 and umbrella.category == "other"
