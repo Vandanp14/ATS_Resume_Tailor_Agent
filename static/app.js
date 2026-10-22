@@ -129,6 +129,7 @@ function stageStatus(stageName, job) {
     !job.options.research_company
   )
     return "skipped";
+  if (stageName === "Write summary" && job.options && !job.options.college_mode) return "skipped";
   if (job.current_stage === stageName && job.state === "running") return "active";
   const events = state.events.get(job.job_id) || [];
   for (const event of [...events].reverse()) {
@@ -1775,6 +1776,8 @@ function bindEvents() {
   $("cancel-job-dialog").addEventListener("click", closeJobDialog);
   $("job-form").addEventListener("submit", submitJob);
   formFields.jd.addEventListener("input", () => { if (state.skillCheck || state.skipSkillCheck) resetSkillCheck(); });
+  // College mode also offers posted standards (Section 508, ADA): check again.
+  $("college-mode").addEventListener("change", () => { if (state.skillCheck || state.skipSkillCheck) resetSkillCheck(); });
   $("skip-check-btn").addEventListener("click", () => {
     state.skipSkillCheck = true;
     $("skip-check-btn").hidden = true;

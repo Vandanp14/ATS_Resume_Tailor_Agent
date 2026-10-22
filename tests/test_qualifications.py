@@ -131,3 +131,34 @@ def test_expected_degree_needs_imminent_wording():
         type="degree",
     )
     assert assess_degree(preferred, _master(), _jd(preferred), TODAY).status == "covered"
+
+
+# -- review fixes ------------------------------------------------------------------
+
+
+def test_no_domain_counts_only_technical_roles():
+    # Help Desk and Project Analyst are not software experience.
+    assert experience_months(_master(), None, TODAY) == 28
+
+
+def test_programming_domain_counts_technical_roles():
+    assert experience_months(_master(), "programming", TODAY) == 28
+
+
+def test_data_domain_does_not_count_help_desk():
+    months = experience_months(_master(), "data analysis", TODAY)
+    assert months == 9  # Data Analyst (4) + Project Analyst (5); never Help Desk
+
+
+def test_graduate_degree_is_not_met_by_a_bachelors():
+    master = _master()
+    master.education[0].endDate = "2026-05"
+    for text in ("Master's degree in Information Technology required.", "Ph.D. in Computer Science."):
+        line = QualificationLine(text=text, type="degree")
+        status = assess_degree(line, master, _jd(line), TODAY)
+        assert status.status == "unsupported" and "graduate" in status.reason
+
+
+def test_plain_completion_wording_needs_a_finished_degree():
+    line = QualificationLine(text="Requires completion of a bachelor's degree.", type="degree")
+    assert assess_degree(line, _master(), _jd(line), TODAY).status == "unsupported"

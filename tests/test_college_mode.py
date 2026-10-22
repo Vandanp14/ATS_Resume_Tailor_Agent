@@ -464,9 +464,6 @@ def test_fallback_summary_text():
         "UX/UI Developer candidate with 2+ years of web development/programming experience "
         "across ability to work cordially with other, strong understanding of HTML, JavaScript."
     )
-    assert fallback_summary("Web Developer", "2+ years", None, []) == (
-        "Web Developer candidate with 2+ years of software experience."
-    )
 
 
 def test_template_renders_summary_only_when_set():
@@ -509,3 +506,91 @@ def test_bad_summary_falls_back_to_template(monkeypatch, tmp_path):
     result = pipeline._with_summary(scored, _suu_jd(), _college_master(), _plan(["work[1].highlights[1]"]), [], {})
     assert calls and "9 years" not in result.basics.summary
     assert result.basics.summary.startswith("UX/UI Developer candidate with 2+ years of web development/programming experience")
+
+
+# -- review fixes ------------------------------------------------------------------
+
+
+def test_summary_rejects_number_words_and_unsupported_terms():
+    from models import SummaryDraft
+    from resume_tailor.qualifications import validate_summary
+
+    words = SummaryDraft(text="Web Developer with three years of web development experience.", source_fact_ids=[])
+    assert any("years" in p for p in validate_summary(words, "Web Developer", "2+ years", {}))
+    claim = SummaryDraft(text="Web Developer experienced with WCAG compliance and React.", source_fact_ids=[])
+    problems = validate_summary(claim, "Web Developer", "2+ years", {}, unsupported_terms=["WCAG"])
+    assert any("WCAG" in p for p in problems)
+
+
+def test_less_than_one_year_and_digit_titles_validate():
+    from models import SummaryDraft
+    from resume_tailor.qualifications import validate_summary
+
+    short = SummaryDraft(text="Web Developer candidate with less than 1 year of web experience.", source_fact_ids=[])
+    assert validate_summary(short, "Web Developer", "less than 1 year", {}) == []
+    titled = SummaryDraft(text="Programmer Analyst 2 candidate with 2+ years of software experience.", source_fact_ids=[])
+    assert validate_summary(titled, "Programmer Analyst 2", "2+ years", {}) == []
+
+
+def test_fallback_without_domain_never_says_software():
+    from resume_tailor.qualifications import fallback_summary
+
+    assert fallback_summary("Web Developer", "2+ years", None, []) == (
+        "Web Developer candidate with 2+ years of technical experience."
+    )
+
+
+def test_summary_never_gets_experience_or_substituted_lines(monkeypatch):
+    from models import Basics, SummaryDraft
+    from render import ScoredResume
+
+    seen = {}
+
+    def capture(template, response_model, **context):
+        seen.update(context)
+        return SummaryDraft(text="UX/UI Developer candidate with 2+ years of web development experience.", source_fact_ids=[])
+
+    pipeline = _pipeline(college_mode=True)
+    monkeypatch.setattr(pipeline, "_call_once", capture)
+    scored = ScoredResume(basics=Basics(name="Test User"), work=[], projects=[])
+    pipeline._with_summary(scored, _suu_jd(), _college_master(), _plan(["work[1].highlights[1]"]), [], {})
+    assert "Two years" not in seen["qualifications_json"]
+
+
+def test_sanitize_keeps_lines_with_curly_quotes():
+    from keyword_coverage import sanitize_jd_profile
+
+    profile = _suu_profile([{"text": "Two years' recent web development experience.", "type": "experience_length", "years": 2}])
+    cleaned, _ = sanitize_jd_profile(profile, "Minimum: Two years’ recent web development experience.")
+    assert len(cleaned.minimum_qualifications) == 1
+
+
+def test_degree_with_years_needs_years_on_page():
+    from render import scored_to_plain
+    from resume_tailor.qualifications import qualification_coverage
+
+    from models import JDProfile
+
+    line = _line("Bachelor's degree and two years of web development experience.", "degree", years=2,
+                 domain="web development")
+    jd = JDProfile(role="Web Developer", must_have_skills=[], nice_to_have_skills=[], keywords=[],
+                   minimum_qualifications=[line])
+    master = _college_master()
+    master.education[0].endDate = "2026-05"
+    scored = _scored([], summary=None)
+    rows = qualification_coverage(scored, scored_to_plain(scored), jd, master, _plan(["x"]), [], TODAY)
+    assert rows[0]["status"] == "supported_not_on_page"
+
+
+def test_credits_only_print_in_college_mode():
+    import inspect
+
+    import resume_tailor.pipeline as pipeline_module
+
+    assert "credits_completed" in inspect.getsource(pipeline_module.TailorPipeline.run)
+
+
+def test_ui_resets_check_when_college_toggle_changes_and_skips_summary_stage():
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert '$("college-mode").addEventListener("change"' in app_js
+    assert '"Write summary"' in app_js and "college_mode" in app_js

@@ -36,7 +36,25 @@ _DOMAIN_STOPWORDS = frozenset(
 )
 _CREDITS_PER_YEAR = {"semester": 30, "quarter": 45}
 _BACHELOR_RE = re.compile(r"\bbachelor|\bb\.?\s?s\.?\b|\bb\.?\s?a\.?\b", re.I)
-_PENDING_DEGREE_RE = re.compile(r"imminent|expected|anticipated|completion", re.I)
+_GRADUATE_RE = re.compile(
+    r"\bmaster'?s?\b|\bm\.\s?s\.|\bmba\b|\bph\.?\s?d|\bdoctora", re.I
+)
+# Wording that accepts a degree still in progress; plain "completion of a
+# degree" asks for a finished one.
+_PENDING_DEGREE_RE = re.compile(
+    r"imminent|expected|anticipated|pursuing|in progress|near completion"
+    r"|completion of (?:the )?degree (?:will be )?considered",
+    re.I,
+)
+# Titles that mark a role as hands-on technical work.
+_TECHNICAL_TITLE_RE = re.compile(
+    r"develop|engineer|programm|software|\bweb\b|devops|\bdata\b|scientist", re.I
+)
+# Domains that just mean "writing software"; any technical role counts.
+_SOFTWARE_DOMAIN_WORDS = frozenset(
+    {"web", "development", "developer", "programming", "software", "coding",
+     "application", "applications", "computer", "technical"}
+)
 
 
 @dataclass
@@ -78,20 +96,26 @@ def months_between(start: str | None, end: str | None, today: date) -> int:
     return len(_month_range(start, end, today))
 
 
-def _domain_stems(domain: str | None) -> list[str]:
-    words = re.split(r"[/,\s]+|\band\b", (domain or "").casefold())
-    return [word[:5] for word in words if word and word not in _DOMAIN_STOPWORDS]
+def _is_technical_role(work: Work) -> bool:
+    return bool(_TECHNICAL_TITLE_RE.search(work.position or ""))
 
 
 def role_matches_domain(work: Work, domain: str | None) -> bool:
-    """Whether a role's title or bullets show work in the line's domain."""
-    stems = _domain_stems(domain)
-    if not stems:
-        return bool(work.position)
-    words = re.findall(
-        r"[a-z]+", " ".join([work.position or "", *(work.highlights or [])]).casefold()
-    )
-    return any(word.startswith(stem) for stem in stems for word in words)
+    """Whether a role counts toward experience in the line's domain.
+
+    Judged from the job title, never from bullet wording ("developed" appears
+    in every kind of role). No domain, or a domain that just means writing
+    software, counts technical roles only.
+    """
+    words = [
+        word
+        for word in re.split(r"[/,\s]+|\band\b", (domain or "").casefold())
+        if word and word not in _DOMAIN_STOPWORDS
+    ]
+    if not words or set(words) <= _SOFTWARE_DOMAIN_WORDS:
+        return _is_technical_role(work)
+    title = re.findall(r"[a-z]+", (work.position or "").casefold())
+    return any(word.startswith(stem[:5]) for stem in words for word in title)
 
 
 def experience_months(master: JSONResume, domain: str | None, today: date) -> int:
@@ -171,6 +195,20 @@ def assess_experience(
 def assess_degree(
     line: QualificationLine, master: JSONResume, jd: JDProfile, today: date
 ) -> QualificationStatus:
+    if _GRADUATE_RE.search(line.text):
+        graduate = [
+            item for item in master.education or [] if _GRADUATE_RE.search(item.studyType or "")
+        ]
+        if not graduate:
+            status = QualificationStatus(
+                line.text,
+                line.type,
+                "unsupported",
+                "posting asks for a graduate degree; your education lists none",
+            )
+            if line.years is not None:
+                status = _worse(status, assess_experience(line, master, jd, today))
+            return status
     degrees = [
         item for item in master.education or [] if _BACHELOR_RE.search(item.studyType or "")
     ]
@@ -330,6 +368,9 @@ def qualification_coverage(
                 status = assess_degree(line, master, jd, today)
                 degree = next((item.studyType for item in master.education or [] if item.studyType), None)
                 page_terms = [degree] if degree else []
+                if line.years is not None:
+                    # The years half must show too, not only the degree name.
+                    page_terms.append(years_label(experience_months(master, line.domain, today)))
             elif line.type == "technical":
                 status = _technical(line, master)
                 page_terms = list(line.named_terms)
@@ -346,7 +387,13 @@ def qualification_coverage(
 
 # -- summary -----------------------------------------------------------------
 
-_YEARS_RE = re.compile(r"\b\d+\+?\s+years?\b", re.I)
+_NUMBER_WORDS = (
+    "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|several|"
+    "many|multiple|numerous"
+)
+_YEARS_RE = re.compile(
+    rf"(?:less than\s+)?\b(?:\d+|{_NUMBER_WORDS})\+?\s+years?\b", re.I
+)
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 _LINE_PREFIX_RE = re.compile(r"^(?:requires|required|must have|preferred)\s+", re.I)
 _TRAILING_RE = re.compile(r"[\s,;.:]*(?:\b(?:and|or|with|of|the|a)\b[\s,;.:]*)*$", re.I)
@@ -354,9 +401,17 @@ MAX_SUMMARY_WORDS = 60
 
 
 def validate_summary(
-    draft: SummaryDraft, title: str, years: str, fact_index: Mapping[str, dict]
+    draft: SummaryDraft,
+    title: str,
+    years: str,
+    fact_index: Mapping[str, dict],
+    unsupported_terms: Sequence[str] = (),
 ) -> list[str]:
-    """Problems that keep a model-written summary off the page."""
+    """Problems that keep a summary off the page.
+
+    ``unsupported_terms`` are technologies and standards the master never
+    states; the summary may not name them.
+    """
     problems: list[str] = []
     text = draft.text
     if title.casefold() not in text.casefold():
@@ -368,7 +423,10 @@ def validate_summary(
     if unknown:
         problems.append(f"cites facts that do not exist: {unknown}")
     cited = " ".join(fact_index[fact_id]["text"] for fact_id in draft.source_fact_ids if fact_id in fact_index)
-    allowed = set(_NUMBER_RE.findall(f"{years} {cited}"))
+    claimed = [term for term in unsupported_terms if mentions(text, term_variants(term))]
+    if claimed:
+        problems.append(f"names what your resume does not show: {claimed}")
+    allowed = set(_NUMBER_RE.findall(f"{years} {cited} {title}"))
     invented = sorted(set(_NUMBER_RE.findall(text)) - allowed)
     if invented:
         problems.append(f"states numbers no fact gives: {invented}")
@@ -389,4 +447,4 @@ def fallback_summary(title: str, years: str, domain: str | None, covered: Sequen
     """Summary built in code when the model's version fails validation."""
     phrases = [phrase for phrase in (_short_phrase(line) for line in covered[:3]) if phrase]
     tail = f" across {', '.join(phrases)}" if phrases else ""
-    return f"{title} candidate with {years} of {domain or 'software'} experience{tail}."
+    return f"{title} candidate with {years} of {domain or 'technical'} experience{tail}."

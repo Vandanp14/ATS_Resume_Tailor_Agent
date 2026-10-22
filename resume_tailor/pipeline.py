@@ -1489,8 +1489,26 @@ class TailorPipeline:
             requirements,
             today,
         )
+        # Only lines proven by a fact feed the summary: years and degrees are
+        # stated from code, and substitution never becomes a page claim.
         truthful = [
-            row["text"] for row in rows if row["required"] and row["status"] != "unsupported"
+            row["text"]
+            for row in rows
+            if row["required"]
+            and row["type"] in {"technical", "interpersonal", "other"}
+            and row["status"] in {"covered", "supported_not_on_page"}
+        ]
+        unsupported_terms = [
+            *forbidden_claim_terms(requirements),
+            *declined_terms(master),
+            *(
+                term
+                for line, row in zip(
+                    (*jd.minimum_qualifications, *jd.preferred_qualifications), rows
+                )
+                if row["status"] == "unsupported"
+                for term in line.named_terms
+            ),
         ]
         domain = next(
             (
@@ -1511,7 +1529,7 @@ class TailorPipeline:
         }
 
         def validate(draft: SummaryDraft) -> None:
-            problems = validate_summary(draft, jd.role, label, cited)
+            problems = validate_summary(draft, jd.role, label, cited, unsupported_terms)
             if problems:
                 raise ContractError("summary " + "; ".join(problems))
 
@@ -1531,6 +1549,10 @@ class TailorPipeline:
         except (StageFailure, ModelUnavailableError, ContractError, LLMExtractionError) as exc:
             self.tracker.warn(f"Summary written from a template instead: {exc}")
             text = fallback_summary(jd.role, label, domain, truthful)
+            if validate_summary(
+                SummaryDraft(text=text, source_fact_ids=[]), jd.role, label, {}, unsupported_terms
+            ):
+                text = fallback_summary(jd.role, label, domain, [])
         basics = final_scored.basics or Basics(name=master.basics.name if master.basics else "")
         return final_scored.model_copy(
             update={"basics": basics.model_copy(update={"summary": text})}
@@ -2002,6 +2024,16 @@ class TailorPipeline:
                 if final_scored.skills:
                     final_scored = final_scored.model_copy(
                         update={"skills": relabel_confirmed_group(final_scored.skills)}
+                    )
+                if not self.college_mode and final_scored.education:
+                    # Completed credits matter only to college screeners.
+                    final_scored = final_scored.model_copy(
+                        update={
+                            "education": [
+                                item.model_copy(update={"credits_completed": None})
+                                for item in final_scored.education
+                            ]
+                        }
                     )
                 for style_message in scan_bullet_style(final_scored):
                     self.tracker.warn(f"Bullet style: {style_message}")

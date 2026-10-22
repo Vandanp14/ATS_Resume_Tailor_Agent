@@ -43,7 +43,7 @@ Return ONLY a JSON object with this structure:
 - Extract keywords the way an ATS would: concrete technologies, methodologies, and responsibilities actually named in the posting. Do not invent keywords the posting never uses.
 - When the posting names concrete examples of a category ("such as A, B, or C", "e.g.", "including", or a parenthesised list), list each example as its own keyword with its own evidence span, and put the examples (not the category) in `must_have_skills` / `nice_to_have_skills`. The category label may stay only as a weight-1 keyword. Example: "experience with cloud platforms such as AWS or Azure" gives keywords `AWS` and `Azure`, not "Cloud Platforms".
 
-{% if college_mode %}
+{%- if college_mode %}
 ## College posting: qualification lines
 
 This is a college or university staff posting. Also return these fields:
@@ -66,7 +66,7 @@ This is a college or university staff posting. Also return these fields:
   may substitute", "in lieu of"); copy that phrase into `substitution_phrase`.
 - When the posting has no qualification headings, return empty lists.
 - Tools and standards in `named_terms` also appear in `keywords`.
-{% endif %}
+{%- endif %}
 
 ## Worked example
 

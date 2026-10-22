@@ -598,6 +598,16 @@ def placement_findings(
     return findings
 
 
+_PUNCTUATION = str.maketrans(
+    {"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": "-", "\u2022": " "}
+)
+
+
+def _plain_punctuation(text: str) -> str:
+    """Curly quotes, dashes, and bullets as plain ASCII, so copies still match."""
+    return text.translate(_PUNCTUATION)
+
+
 def sanitize_jd_profile(jd: JDProfile, jd_text: str) -> tuple[JDProfile, list[str]]:
     """Drop weighted keywords the posting never states (invented keywords)."""
 
@@ -614,10 +624,11 @@ def sanitize_jd_profile(jd: JDProfile, jd_text: str) -> tuple[JDProfile, list[st
         else:
             dropped.append(item.term)
     lines: dict[str, list] = {}
+    plain_text = normalize_term(_plain_punctuation(jd_text))
     for field_name in ("minimum_qualifications", "preferred_qualifications"):
         kept_lines = []
         for line in getattr(jd, field_name):
-            if normalize_term(line.text.rstrip(".")) in normalized_text:
+            if normalize_term(_plain_punctuation(line.text).rstrip(".")) in plain_text:
                 kept_lines.append(line)
             else:
                 dropped.append(line.text)
