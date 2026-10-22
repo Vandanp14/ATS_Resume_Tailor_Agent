@@ -1245,6 +1245,7 @@ function exitSelect() {
 
 function renderSelection() {
   const selecting = state.selecting;
+  document.body.classList.toggle("selecting", selecting);
   $("select-btn").hidden = selecting;
   $("select-cancel").hidden = !selecting;
   $("delete-bar").hidden = !selecting;

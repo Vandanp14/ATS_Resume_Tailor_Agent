@@ -481,6 +481,8 @@ dialog::backdrop { background: rgba(27, 27, 31, 0.35); }
     position: fixed; inset-inline: 16px; inset-block-end: 16px; z-index: 30; max-inline-size: none;
     padding: 12px 16px; text-align: center; font-size: 14px; box-shadow: 0 14px 30px -14px rgba(0, 0, 0, 0.5);
   }
+  /* While selecting, the delete button owns the bottom of the screen. */
+  body.selecting .topbar-running { display: none; }
   .workspace { padding: 20px 16px 48px; }
   .desk { grid-template-columns: 1fr; gap: 20px; }
   .paper, .paper-col { position: static; max-inline-size: 360px; justify-self: center; inline-size: 100%; }

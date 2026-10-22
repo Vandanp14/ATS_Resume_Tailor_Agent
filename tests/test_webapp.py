@@ -392,3 +392,10 @@ def test_delete_flow_markup():
     app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
     assert '"/api/cleanup"' in app_js
     assert "Running, can't delete" in app_js
+
+
+def test_running_bar_does_not_cover_delete_on_phones():
+    css = (REPO_ROOT / "static" / "app.css").read_text(encoding="utf-8")
+    assert "body.selecting .topbar-running" in css
+    app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert 'document.body.classList.toggle("selecting"' in app_js
