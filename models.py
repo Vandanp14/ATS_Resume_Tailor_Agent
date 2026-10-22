@@ -226,6 +226,13 @@ class QualificationLine(StrictModel):
     named_terms: list[str] = Field(default_factory=list)
 
 
+class SummaryDraft(StrictModel):
+    """College-mode summary and the master facts it rests on."""
+
+    text: str = Field(min_length=20, max_length=400)
+    source_fact_ids: list[str]
+
+
 class JDProfile(StrictModel):
     role: str = Field(min_length=1)
     seniority: str | None = None

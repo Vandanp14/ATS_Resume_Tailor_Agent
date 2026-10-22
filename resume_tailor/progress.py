@@ -30,6 +30,7 @@ class Stage(StrEnum):
     ASSEMBLE = "Assemble draft"
     HOLISTIC_REVIEW = "Holistic review"
     VALIDATE_REVIEW = "Validate review edits"
+    WRITE_SUMMARY = "Write summary"
     RENDER = "Render and fit one page"
     EMERGENCY_CONCISION = "Emergency bullet concision"
     CONCISION_AUDIT = "Audit emergency concision"

@@ -7,13 +7,21 @@ model, so the number a screener sees is one the candidate can defend.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
 from keyword_coverage import mentions, normalize_term, term_variants
-from models import EvidencePlan, Education, JDProfile, JSONResume, QualificationLine, Work
+from models import (
+    EvidencePlan,
+    Education,
+    JDProfile,
+    JSONResume,
+    QualificationLine,
+    SummaryDraft,
+    Work,
+)
 from pipeline_core import master_fact_index
 from render import ScoredResume
 
@@ -334,3 +342,51 @@ def qualification_coverage(
                 )
             rows.append(_row(status, required, page_terms, fact_ids))
     return recheck_on_page(rows, final_resume, plain)
+
+
+# -- summary -----------------------------------------------------------------
+
+_YEARS_RE = re.compile(r"\b\d+\+?\s+years?\b", re.I)
+_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+_LINE_PREFIX_RE = re.compile(r"^(?:requires|required|must have|preferred)\s+", re.I)
+_TRAILING_RE = re.compile(r"[\s,;.:]*(?:\b(?:and|or|with|of|the|a)\b[\s,;.:]*)*$", re.I)
+MAX_SUMMARY_WORDS = 60
+
+
+def validate_summary(
+    draft: SummaryDraft, title: str, years: str, fact_index: Mapping[str, dict]
+) -> list[str]:
+    """Problems that keep a model-written summary off the page."""
+    problems: list[str] = []
+    text = draft.text
+    if title.casefold() not in text.casefold():
+        problems.append(f"must name the posting title {title!r}")
+    stated = _YEARS_RE.findall(text)
+    if stated and any(value.casefold() != years.casefold() for value in stated):
+        problems.append(f"states years {stated}; use exactly {years!r}")
+    unknown = [fact_id for fact_id in draft.source_fact_ids if fact_id not in fact_index]
+    if unknown:
+        problems.append(f"cites facts that do not exist: {unknown}")
+    cited = " ".join(fact_index[fact_id]["text"] for fact_id in draft.source_fact_ids if fact_id in fact_index)
+    allowed = set(_NUMBER_RE.findall(f"{years} {cited}"))
+    invented = sorted(set(_NUMBER_RE.findall(text)) - allowed)
+    if invented:
+        problems.append(f"states numbers no fact gives: {invented}")
+    if len(text.split()) > MAX_SUMMARY_WORDS:
+        problems.append(f"must be {MAX_SUMMARY_WORDS} words or fewer")
+    return problems
+
+
+def _short_phrase(line: str) -> str:
+    words = _LINE_PREFIX_RE.sub("", line.strip()).split()[:6]
+    phrase = _TRAILING_RE.sub("", " ".join(words))
+    if phrase[:1].isupper() and phrase[1:2].islower():
+        phrase = phrase[0].lower() + phrase[1:]
+    return phrase
+
+
+def fallback_summary(title: str, years: str, domain: str | None, covered: Sequence[str]) -> str:
+    """Summary built in code when the model's version fails validation."""
+    phrases = [phrase for phrase in (_short_phrase(line) for line in covered[:3]) if phrase]
+    tail = f" across {', '.join(phrases)}" if phrases else ""
+    return f"{title} candidate with {years} of {domain or 'software'} experience{tail}."

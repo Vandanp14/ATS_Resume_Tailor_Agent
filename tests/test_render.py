@@ -189,8 +189,9 @@ def test_render_tex_full_resume_content():
     # Header + escaped inline content.
     assert r"\scshape Ada Lovelace" in body
     assert "ada@example.com" in body
-    assert r"C\_sharp" not in body  # master summary is intentionally omitted
-    assert r"100\% uptime" not in body
+    # The renderer prints a summary only when one is set; assembly strips the
+    # master's own summary, so only a college-mode summary ever reaches it.
+    assert r"\section{Summary}" in body and r"C\_sharp" in body
 
     # Contact line: phone plain, email as a mailto \href, joined with Jake's
     # " $|$ " separator (spaces, no trailing one).

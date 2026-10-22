@@ -13,6 +13,8 @@ from typing import Any
 from pydantic import BaseModel
 
 from models import (
+    Basics,
+    SummaryDraft,
     SkillChip,
     SkillCheckResult,
     BulletConcision,
@@ -118,7 +120,14 @@ from .llm import (
 from .progress import JobContext, ProgressReporter, ProgressTracker, Stage
 from .bullet_review import live_flags, persist_bullet_review
 from .checkpoints import CheckpointStore, stage_fingerprint
-from .qualifications import qualification_coverage, recheck_on_page
+from .qualifications import (
+    experience_months,
+    fallback_summary,
+    qualification_coverage,
+    recheck_on_page,
+    validate_summary,
+    years_label,
+)
 from .skill_answers import (
     answered_keys,
     bullet_tech_requirements,
@@ -170,6 +179,7 @@ _TEMPLATE_STAGES = {
     "concise_bullet": Stage.EMERGENCY_CONCISION,
     "audit_concision": Stage.CONCISION_AUDIT,
     "regenerate_bullet": Stage.BULLET_REVIEW,
+    "write_summary": Stage.WRITE_SUMMARY,
 }
 
 
@@ -187,7 +197,7 @@ PLANNING_TEMPLATES = frozenset(
 MAX_CHIP_TERM_LENGTH = 80
 # Stages whose text lands on the page run on the writing chain.
 WRITING_TEMPLATES = frozenset(
-    {"jd_parse", "tailor_skills", "tailor_work", "tailor_projects"}
+    {"jd_parse", "tailor_skills", "tailor_work", "tailor_projects", "write_summary"}
 )
 # One-bullet repairs run on the light, steady fix chain.
 FIX_TEMPLATES = frozenset({"concise_bullet", "regenerate_bullet", "audit_concision"})
@@ -1441,6 +1451,73 @@ class TailorPipeline:
             remembered_declined=declined_terms(master),
         )
 
+    def _with_summary(
+        self,
+        final_scored: ScoredResume,
+        jd: JDProfile,
+        master: JSONResume,
+        evidence_plan: EvidencePlan,
+        requirements: Sequence[dict],
+        facts: dict[str, dict],
+    ) -> ScoredResume:
+        """College mode: put a checked summary at the top of the resume."""
+        today = date.today()
+        rows = qualification_coverage(
+            final_scored,
+            scored_to_plain(final_scored),
+            jd,
+            master,
+            evidence_plan,
+            requirements,
+            today,
+        )
+        truthful = [
+            row["text"] for row in rows if row["required"] and row["status"] != "unsupported"
+        ]
+        domain = next(
+            (
+                line.domain
+                for line in jd.minimum_qualifications
+                if line.type == "experience_length" and line.domain
+            ),
+            None,
+        )
+        label = years_label(experience_months(master, domain, today))
+        cited = {
+            fact_id: facts[fact_id]
+            for entries in (final_scored.work or [], final_scored.projects or [])
+            for entry in entries
+            for bullet in entry.highlights or []
+            for fact_id in bullet.source_ids
+            if fact_id in facts
+        }
+
+        def validate(draft: SummaryDraft) -> None:
+            problems = validate_summary(draft, jd.role, label, cited)
+            if problems:
+                raise ContractError("summary " + "; ".join(problems))
+
+        try:
+            draft = self._simple_stage(
+                "write_summary",
+                SummaryDraft,
+                validator=validate,
+                title=jd.role,
+                years_label=label,
+                qualifications_json=json.dumps(truthful, indent=2),
+                source_facts_json=json.dumps(
+                    {fact_id: fact["text"] for fact_id, fact in cited.items()}, indent=2
+                ),
+            )
+            text = draft.text
+        except (StageFailure, ModelUnavailableError, ContractError, LLMExtractionError) as exc:
+            self.tracker.warn(f"Summary written from a template instead: {exc}")
+            text = fallback_summary(jd.role, label, domain, truthful)
+        basics = final_scored.basics or Basics(name=master.basics.name if master.basics else "")
+        return final_scored.model_copy(
+            update={"basics": basics.model_copy(update={"summary": text})}
+        )
+
     def run(
         self,
         master: JSONResume,
@@ -1976,16 +2053,7 @@ class TailorPipeline:
                 )
                 for finding in report_payload["placement_findings"]:
                     self.tracker.warn(f"Keyword placement: {finding}")
-                if self.college_mode:
-                    report_payload["qualification_coverage"] = qualification_coverage(
-                        final_scored,
-                        scored_to_plain(final_scored),
-                        jd,
-                        master,
-                        evidence_plan,
-                        requirements,
-                        date.today(),
-                    )
+
                 unresolved_violations, resolved_violations = (
                     partition_review_truth_violations(review, final_scored)
                 )
@@ -2006,6 +2074,21 @@ class TailorPipeline:
                 report_payload["resolved_truth_violations"] = [
                     item.model_dump(mode="json") for item in resolved_violations
                 ]
+
+            if self.college_mode:
+                with self.tracker.stage(Stage.WRITE_SUMMARY):
+                    final_scored = self._with_summary(
+                        final_scored, jd, master, evidence_plan, requirements, facts
+                    )
+                report_payload["qualification_coverage"] = qualification_coverage(
+                    final_scored,
+                    scored_to_plain(final_scored),
+                    jd,
+                    master,
+                    evidence_plan,
+                    requirements,
+                    date.today(),
+                )
 
             if unresolved_violations:
                 report_payload["pipeline_status"] = "blocked_truth_violations"

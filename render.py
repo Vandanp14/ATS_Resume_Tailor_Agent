@@ -365,7 +365,15 @@ def _education_ctx(education: list[Education] | None) -> list[dict[str, Any]]:
                 "institution": _esc(e.institution),
                 "degree": degree,
                 "dates": _education_date_range(e.startDate, e.endDate),
-                "score": _esc(e.score),
+                "score": _join_escaped(
+                [
+                    e.score,
+                    f"{e.credits_completed} credits completed"
+                    if e.credits_completed
+                    else None,
+                ],
+                ", ",
+            ),
             }
         )
     return ctx
@@ -429,6 +437,8 @@ def build_context(resume: JSONResume) -> dict[str, Any]:
     basics = resume.basics
     return {
         "name": _esc(basics.name) if basics is not None else None,
+        # Set only by college mode; other runs leave the summary empty.
+        "summary": _esc(basics.summary) if basics is not None and basics.summary else None,
         "contact_line": _contact_line(basics),
         "education": _education_ctx(resume.education),
         "work": _work_ctx(resume.work),

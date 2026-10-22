@@ -322,7 +322,7 @@ def test_college_run_reports_rows_and_does_not_block(monkeypatch, tmp_path):
     from unittest.mock import MagicMock
 
     import resume_tailor.pipeline as pipeline_module
-    from models import JDProfile
+    from models import JDProfile, SummaryDraft
     from tests.test_holistic_review import Stub
     from tests.test_tailor import master
 
@@ -331,6 +331,12 @@ def test_college_run_reports_rows_and_does_not_block(monkeypatch, tmp_path):
             if response_model is JDProfile:
                 self.calls.append((template, response_model, context))
                 return _suu_jd()
+            if response_model is SummaryDraft:
+                self.calls.append((template, response_model, context))
+                return SummaryDraft(
+                    text=f"{context['title']} candidate with {context['years_label']} of web development experience.",
+                    source_fact_ids=[],
+                )
             return super().__call__(template, response_model, **context)
 
     monkeypatch.setattr(pipeline_module, "render", MagicMock())
@@ -341,6 +347,8 @@ def test_college_run_reports_rows_and_does_not_block(monkeypatch, tmp_path):
     report = json.loads((tmp_path / "match_report.json").read_text())
     texts = [row["text"] for row in report["qualification_coverage"]]
     assert len(texts) == 3 and texts[0].startswith("Two years")
+    tailored = json.loads((tmp_path / "tailored.json").read_text())
+    assert tailored["basics"]["summary"].startswith("UX/UI Developer candidate with")
 
 
 # -- Task 6: two pages and more content ----------------------------------------
@@ -416,3 +424,88 @@ def test_college_selects_more_entries():
         for index in range(5)
     ]
     assert sum(work_bullet_targets(sources).values()) == 16
+
+
+# -- Task 7: summary -----------------------------------------------------------
+
+
+def test_summary_rejects_uncomputed_years():
+    from models import SummaryDraft
+    from resume_tailor.qualifications import validate_summary
+
+    facts = {"work[1].highlights[0]": {"text": "Built React dashboards."}}
+    bad = SummaryDraft(text="UX/UI Developer candidate with 3 years of web development experience.",
+                       source_fact_ids=["work[1].highlights[0]"])
+    assert any("years" in problem for problem in validate_summary(bad, "UX/UI Developer", "2+ years", facts))
+    good = SummaryDraft(text="UX/UI Developer candidate with 2+ years of web development experience building React dashboards.",
+                        source_fact_ids=["work[1].highlights[0]"])
+    assert validate_summary(good, "UX/UI Developer", "2+ years", facts) == []
+
+
+def test_summary_must_name_title_and_cite_real_facts():
+    from models import SummaryDraft
+    from resume_tailor.qualifications import validate_summary
+
+    draft = SummaryDraft(text="Developer with 2+ years of experience building accessible web interfaces.",
+                         source_fact_ids=["work[9].highlights[0]"])
+    problems = validate_summary(draft, "UX/UI Developer", "2+ years", {})
+    assert any("title" in problem for problem in problems)
+    assert any("work[9]" in problem for problem in problems)
+
+
+def test_fallback_summary_text():
+    from resume_tailor.qualifications import fallback_summary
+
+    text = fallback_summary(
+        "UX/UI Developer", "2+ years", "web development/programming",
+        ["Requires ability to work cordially with other University personnel.", "Strong understanding of HTML, JavaScript, and CSS."],
+    )
+    assert text == (
+        "UX/UI Developer candidate with 2+ years of web development/programming experience "
+        "across ability to work cordially with other, strong understanding of HTML, JavaScript."
+    )
+    assert fallback_summary("Web Developer", "2+ years", None, []) == (
+        "Web Developer candidate with 2+ years of software experience."
+    )
+
+
+def test_template_renders_summary_only_when_set():
+    from models import JSONResume
+    from render import render_tex
+
+    base = {"basics": {"name": "Test User"}}
+    assert "Summary" not in render_tex(JSONResume.model_validate(base))
+    with_summary = JSONResume.model_validate({"basics": {"name": "Test User", "summary": "UX/UI Developer candidate."}})
+    tex = render_tex(with_summary)
+    assert "\\section{Summary}" in tex and "UX/UI Developer candidate." in tex
+
+
+def test_credits_render_in_education_line():
+    from models import JSONResume
+    from render import render_tex
+
+    resume = JSONResume.model_validate(
+        {"basics": {"name": "Test User"},
+         "education": [{"institution": "SUNY Oswego", "studyType": "BS", "credits_completed": 98}]}
+    )
+    assert "98 credits completed" in render_tex(resume)
+
+
+def test_bad_summary_falls_back_to_template(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+
+    from models import Basics, SummaryDraft
+    from render import ScoredResume
+
+    pipeline = _pipeline(college_mode=True)
+    calls = []
+
+    def bad(template, response_model, **context):
+        calls.append(template)
+        return SummaryDraft(text="UX/UI Developer candidate with 9 years of experience everywhere.", source_fact_ids=[])
+
+    monkeypatch.setattr(pipeline, "_call_once", bad)
+    scored = ScoredResume(basics=Basics(name="Test User"), work=[], projects=[])
+    result = pipeline._with_summary(scored, _suu_jd(), _college_master(), _plan(["work[1].highlights[1]"]), [], {})
+    assert calls and "9 years" not in result.basics.summary
+    assert result.basics.summary.startswith("UX/UI Developer candidate with 2+ years of web development/programming experience")

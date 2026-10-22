@@ -18,6 +18,7 @@ const STAGE_NAMES = [
   "Assemble draft",
   "Holistic review",
   "Validate review edits",
+  "Write summary",
   "Render and fit one page",
   "Write artifacts",
 ];
