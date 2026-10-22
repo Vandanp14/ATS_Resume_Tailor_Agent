@@ -113,3 +113,38 @@ def test_unknown_ids_are_skipped_not_errors(make_app):
         body = response.json()
         assert [item["id"] for item in body["skipped"]] == ["nope"]
         assert body["deleted_jobs"] == [] and body["freed_bytes"] == 0
+
+
+def test_symlinked_pdf_copy_is_reported_and_left_alone(make_app, tmp_path):
+    client, output_dir, _ = _client(make_app)
+    with client:
+        job_id = _finished(client)
+        pdf = next((tmp_path / "resumepdfs").glob("*.pdf"))
+        target = tmp_path / "precious.pdf"
+        target.write_bytes(b"keep")
+        pdf.unlink()
+        pdf.symlink_to(target)
+        body = client.post("/api/cleanup", json={"job_ids": [job_id]}).json()
+        assert body["deleted_jobs"] == [job_id]
+        assert any(
+            item["id"] == job_id and item["label"].startswith("Symlink, not deleted")
+            for item in body["skipped"]
+        )
+        assert pdf.is_symlink() and target.read_bytes() == b"keep"
+
+
+def test_failed_folder_removal_is_skipped_not_deleted(make_app, monkeypatch):
+    client, output_dir, _ = _client(make_app)
+    with client:
+        job_id = _finished(client)
+
+        def boom(*args, **kwargs):
+            raise OSError("denied")
+
+        monkeypatch.setattr("shutil.rmtree", boom)
+        body = client.post("/api/cleanup", json={"job_ids": [job_id]}).json()
+        assert body["deleted_jobs"] == []
+        assert body["freed_bytes"] == 0
+        assert [item["id"] for item in body["skipped"]] == [job_id]
+        assert (output_dir / job_id).is_dir()
+        assert client.get(f"/api/jobs/{job_id}").status_code == 200

@@ -996,8 +996,13 @@ class QueueRegistry:
                 if directory.is_symlink() or not _within(directory, self.output_dir):
                     skip(job_id, "Folder is a link or outside the output folder")
                     continue
+            removed = self._remove_job_files(job, skipped)
+            if removed is None:
+                skip(job_id, "Couldn't delete")
+                continue
+            with self._cond:
                 self._jobs.pop(job_id, None)
-            freed += self._remove_job_files(job)
+            freed += removed
             deleted_jobs.append(job_id)
 
         if request.include_legacy:
@@ -1023,25 +1028,40 @@ class QueueRegistry:
             freed_bytes=freed,
         )
 
-    def _remove_job_files(self, job: Job) -> int:
+    def _remove_job_files(self, job: Job, skipped: list[CleanupItem]) -> int | None:
+        """Delete a job's files; None when its folder could not be removed."""
         job_id = job.persisted.job_id
-        freed = 0
-        for path in self._pdf_copies(job):
-            if path.is_symlink() or not path.is_file() or not _within(path, self.pdf_dir):
+        size = _tree_bytes(job.directory)
+        try:
+            shutil.rmtree(job.directory)
+        except OSError:
+            return None
+        freed = size
+        candidates = [(p, self.pdf_dir) for p in self._pdf_copies(job)] + [
+            (self._queue_payload_path(job_id), self.state_dir),
+            (self.requests_dir / f"{job_id}.json", self.state_dir),
+        ]
+        for path, root in candidates:
+            if path.is_symlink():
+                skipped.append(
+                    CleanupItem(
+                        id=job_id, label=f"Symlink, not deleted: {path.name}", bytes=0
+                    )
+                )
                 continue
-            freed += _tree_bytes(path)
-            path.unlink(missing_ok=True)
-        for path in (
-            self._queue_payload_path(job_id),
-            self.requests_dir / f"{job_id}.json",
-        ):
-            root = self.state_dir
-            if path.is_symlink() or not path.is_file() or not _within(path, root):
+            if not path.is_file() or not _within(path, root):
                 continue
-            freed += _tree_bytes(path)
-            path.unlink(missing_ok=True)
-        freed += _tree_bytes(job.directory)
-        shutil.rmtree(job.directory, ignore_errors=True)
+            size = _tree_bytes(path)
+            try:
+                path.unlink()
+            except OSError:
+                skipped.append(
+                    CleanupItem(
+                        id=job_id, label=f"Couldn't delete: {path.name}", bytes=0
+                    )
+                )
+                continue
+            freed += size
         return freed
 
     # -- snapshots -------------------------------------------------------------
