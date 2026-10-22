@@ -121,6 +121,8 @@ from .skill_answers import (
     bullet_tech_requirements,
     confirmed_terms,
     declined_terms,
+    relabel_confirmed_group,
+    without_declined,
 )
 from .privacy import PrivacyGuard, strip_prompt_context, unrestored_placeholders
 from .fit_recovery import (
@@ -1863,17 +1865,25 @@ class TailorPipeline:
                 )
 
             with self.tracker.stage(Stage.VALIDATE_REVIEW):
-                jd_keywords = [
-                    *jd.must_have_skills,
-                    *jd.nice_to_have_skills,
-                    *(item.term for item in jd.keywords),
-                ]
+                # A term the user said they do not know never enters Skills.
+                jd_keywords = without_declined(
+                    [
+                        *jd.must_have_skills,
+                        *jd.nice_to_have_skills,
+                        *(item.term for item in jd.keywords),
+                    ],
+                    master,
+                )
                 edited_components, rejected_edits = apply_review_edits(
                     review, master, components, jd_keywords=jd_keywords
                 )
                 final_scored = assemble_scored(
                     master, edited_components, jd_keywords=jd_keywords
                 )
+                if final_scored.skills:
+                    final_scored = final_scored.model_copy(
+                        update={"skills": relabel_confirmed_group(final_scored.skills)}
+                    )
                 for style_message in scan_bullet_style(final_scored):
                     self.tracker.warn(f"Bullet style: {style_message}")
                 for metric_message in scan_metric_quality(final_scored):

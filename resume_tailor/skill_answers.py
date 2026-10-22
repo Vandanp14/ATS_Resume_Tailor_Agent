@@ -12,7 +12,7 @@ import os
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-from keyword_coverage import normalize_term, supported_tech_requirements
+from keyword_coverage import normalize_term, supported_tech_requirements, term_variants
 from models import CONFIRMED_SKILL_GROUP, JSONResume, Skill, SkillCheckAnswers
 
 
@@ -110,3 +110,28 @@ def save_master(master: JSONResume, path: Path) -> None:
         master.model_dump_json(indent=2, exclude_none=True) + "\n", encoding="utf-8"
     )
     os.replace(tmp, path)
+
+
+# What a confirmed-skills group is called on the page; the stored name is
+# bookkeeping a recruiter should never see.
+CONFIRMED_SKILL_HEADING = "Additional Skills"
+
+
+def without_declined(terms: Iterable[str], master: JSONResume) -> list[str]:
+    """Drop terms the user said they do not know (aliases included)."""
+    declined = {normalize_term(term) for term in declined_terms(master)}
+    return [
+        term
+        for term in terms
+        if not any(normalize_term(value) in declined for value in term_variants(term))
+    ]
+
+
+def relabel_confirmed_group(groups: Sequence[Skill]) -> list[Skill]:
+    """Rename a group still called CONFIRMED_SKILL_GROUP for the page."""
+    return [
+        group.model_copy(update={"name": CONFIRMED_SKILL_HEADING})
+        if group.name == CONFIRMED_SKILL_GROUP
+        else group
+        for group in groups
+    ]

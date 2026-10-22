@@ -197,3 +197,24 @@ def test_overlong_terms_are_not_offered_as_chips(monkeypatch, tmp_path):
     result = _pipeline(monkeypatch, LongTermStub()).check_skills(tailor_master(), jd, tmp_path)
     assert all(len(chip.term) <= 80 for chip in result.chips)
     assert "Figma" in [chip.term for chip in result.chips]
+
+
+def test_declined_terms_are_removed_from_jd_keywords():
+    from resume_tailor.skill_answers import without_declined
+
+    master = apply_answers(tailor_master(), [], ["k8s", "Figma"])
+    assert without_declined(["Kubernetes", "Python", "figma", "React"], master) == ["Python", "React"]
+
+
+def test_confirmed_group_heading_never_reaches_the_page():
+    from models import CONFIRMED_SKILL_GROUP, Skill
+    from resume_tailor.skill_answers import CONFIRMED_SKILL_HEADING, relabel_confirmed_group
+
+    groups = [
+        Skill(name="Languages", keywords=["Python"]),
+        Skill(name=CONFIRMED_SKILL_GROUP, keywords=["Figma"]),
+    ]
+    relabeled = relabel_confirmed_group(groups)
+    assert [group.name for group in relabeled] == ["Languages", CONFIRMED_SKILL_HEADING]
+    assert relabeled[1].keywords == ["Figma"]
+    assert CONFIRMED_SKILL_HEADING != CONFIRMED_SKILL_GROUP
