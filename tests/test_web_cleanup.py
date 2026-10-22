@@ -148,3 +148,16 @@ def test_failed_folder_removal_is_skipped_not_deleted(make_app, monkeypatch):
         assert [item["id"] for item in body["skipped"]] == [job_id]
         assert (output_dir / job_id).is_dir()
         assert client.get(f"/api/jobs/{job_id}").status_code == 200
+
+
+def test_job_whose_folder_was_removed_by_hand_can_still_be_deleted(make_app, tmp_path):
+    import shutil
+
+    client, output_dir, _ = _client(make_app)
+    with client:
+        job_id = _finished(client)
+        shutil.rmtree(output_dir / job_id)
+        result = client.post("/api/cleanup", json={"job_ids": [job_id]}).json()
+        assert result["deleted_jobs"] == [job_id]
+        assert not list((tmp_path / "resumepdfs").glob("*.pdf"))
+        assert client.get(f"/api/jobs/{job_id}").status_code == 404

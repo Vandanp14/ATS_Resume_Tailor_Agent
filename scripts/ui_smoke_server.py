@@ -94,6 +94,8 @@ class SmokePipe(FakePipe):
 
 
 def _seed(root: Path) -> None:
+    if (root / "master.json").exists() or (root / "output").exists():
+        raise SystemExit(f"{root} already has app data; give an empty folder (or none for a temp one).")
     (root / "master.json").write_text(
         json.dumps({"basics": {"name": "UI Test", "email": "ui@example.com"}, "skills": [{"name": "Languages", "keywords": ["Python"]}]}),
         encoding="utf-8",

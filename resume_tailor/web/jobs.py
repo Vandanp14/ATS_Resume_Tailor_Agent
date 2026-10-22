@@ -1034,6 +1034,8 @@ class QueueRegistry:
         size = _tree_bytes(job.directory)
         try:
             shutil.rmtree(job.directory)
+        except FileNotFoundError:
+            size = 0  # Removed by hand already; still clear its other files.
         except OSError:
             return None
         freed = size
