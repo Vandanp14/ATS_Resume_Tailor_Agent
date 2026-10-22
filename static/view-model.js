@@ -54,7 +54,7 @@
     const marker = "not in your resume:";
     const at = reason.toLowerCase().indexOf(marker);
     if (at >= 0) {
-      const terms = reason.slice(at + marker.length).trim();
+      const terms = reason.slice(at + marker.length).replace(/\s*\([^)]*\)\s*$/, "").trim();
       if (terms) return terms;
     }
     return row.text || "";

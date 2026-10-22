@@ -39,7 +39,7 @@ test("summary with full review", () => {
     coverage_pct: 90,
     all_stated_included: true,
     qualification_coverage: [
-      { text: "3 years of web dev", status: "unsupported", reason: "not in your resume: React, Node" },
+      { text: "3 years of web dev", status: "unsupported", reason: "not in your resume: React, Node (tick it in the skill check if you know it)" },
       { text: "Teamwork", status: "unsupported", reason: "" },
       { text: "Ships fast", status: "supported_not_on_page" },
       { text: "Degree", status: "covered_with_substitution" },
