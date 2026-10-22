@@ -125,6 +125,37 @@ def _fact(source_id: str, text: str | None, kind: str, entry_id: str) -> dict | 
     }
 
 
+def review_master(
+    master: JSONResume,
+    selected: SelectedEvidence,
+    cited_fact_ids: Iterable[str] = (),
+) -> JSONResume:
+    """The master the final reviewer needs: selected and cited entries only.
+
+    Unselected roles and projects only bloat the review prompt, but a bullet
+    may cite a fact from an unselected entry (cross-entry evidence), so every
+    cited entry stays. Other sections are kept whole.
+    """
+    keep = {item["source_id"] for item in (*selected.work, *selected.projects)}
+    keep.update(fact_id.split(".", 1)[0] for fact_id in cited_fact_ids)
+    return master.model_copy(
+        update={
+            "work": [
+                item
+                for index, item in enumerate(master.work or [])
+                if f"work[{index}]" in keep
+            ]
+            or None,
+            "projects": [
+                item
+                for index, item in enumerate(master.projects or [])
+                if f"projects[{index}]" in keep
+            ]
+            or None,
+        }
+    )
+
+
 def jd_signal_strength(jd: JDProfile) -> int:
     """Count of explicit requirement/keyword terms a parsed JD actually named."""
     return len(jd.must_have_skills) + len(jd.nice_to_have_skills) + len(jd.keywords)

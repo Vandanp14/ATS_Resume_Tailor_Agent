@@ -53,6 +53,7 @@ from llm_utils import (
     is_model_unavailable,
     is_persistent_unavailability,
 )
+from pipeline_core import review_master
 from prompts.template_manager import TemplateManager
 
 from .assembly import (
@@ -1769,7 +1770,15 @@ class TailorPipeline:
                     "holistic_review",
                     HolisticReview,
                     jd_profile_json=jd_json,
-                    master_json=master.model_dump_json(indent=2),
+                    master_json=review_master(
+                        master,
+                        selected,
+                        cited_fact_ids=[
+                            fact_id
+                            for assignment in evidence_plan.assignments
+                            for fact_id in assignment.source_fact_ids
+                        ],
+                    ).model_dump_json(indent=2),
                     tailored_resume_json=draft_plain.model_dump_json(indent=2),
                     evidence_plan_json=evidence_plan.model_dump_json(indent=2),
                     transferable_skill_plan_json=(

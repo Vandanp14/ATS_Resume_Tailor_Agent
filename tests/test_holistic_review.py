@@ -416,3 +416,27 @@ def test_one_page_failure_removes_partial_final_artifacts(monkeypatch, tmp_path)
     assert not (tmp_path / "resume.pdf").exists()
     assert not (tmp_path / "tailored.json").exists()
     assert (tmp_path / "diagnostic_report.json").exists()
+
+
+def test_review_master_keeps_selected_and_cited_entries():
+    from models import JSONResume
+    from pipeline_core import SelectedEvidence, review_master
+
+    master = JSONResume.model_validate(
+        {
+            "basics": {"name": "Test User"},
+            "skills": [{"name": "Languages", "keywords": ["Python"]}],
+            "education": [{"institution": "State U"}],
+            "work": [{"name": f"W{index}", "highlights": ["x"]} for index in range(5)],
+            "projects": [{"name": f"P{index}", "highlights": ["y"]} for index in range(15)],
+        }
+    )
+    selected = SelectedEvidence(
+        work=tuple({"source_id": f"work[{index}]"} for index in (3, 0, 1)),
+        projects=tuple({"source_id": f"projects[{index}]"} for index in (7, 2)),
+    )
+    reduced = review_master(master, selected, cited_fact_ids=["projects[9].highlights[0]"])
+    assert [item.name for item in reduced.work] == ["W0", "W1", "W3"]
+    assert [item.name for item in reduced.projects] == ["P2", "P7", "P9"]
+    assert reduced.skills == master.skills
+    assert reduced.education == master.education
