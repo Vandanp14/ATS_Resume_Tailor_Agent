@@ -64,7 +64,7 @@ def test_work_and_project_prompts_require_star_contracts_and_counts():
     ):
         assert f'"{field}"' in work
         assert f'"{field}"' in projects
-    assert "4/3/3" in work
+    assert "required bullet count" in work
     assert "exactly two" in projects
     assert "Do not return project name, dates, URL, technologies" in projects
     assert "TRANSFERABLE_SKILLS_RESERVED_FOR_SKILLS_SECTION" in work

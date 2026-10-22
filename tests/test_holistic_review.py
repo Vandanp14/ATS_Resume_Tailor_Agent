@@ -440,3 +440,13 @@ def test_review_master_keeps_selected_and_cited_entries():
     assert [item.name for item in reduced.projects] == ["P2", "P7", "P9"]
     assert reduced.skills == master.skills
     assert reduced.education == master.education
+
+
+def test_prompts_do_not_hard_code_work_bullet_counts():
+    from pathlib import Path
+
+    templates = Path(__file__).resolve().parent.parent / "prompts" / "templates"
+    for name in ("_holistic_rules.jinja", "holistic_review.jinja", "tailor_work.jinja"):
+        text = (templates / name).read_text(encoding="utf-8")
+        assert "4/3/3" not in text, name
+    assert "work_bullet_targets" in (templates / "_holistic_rules.jinja").read_text(encoding="utf-8")
