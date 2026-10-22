@@ -38,6 +38,7 @@ from ..skill_answers import (
 from .io import atomic_write_text, private_directory
 from .models import (
     SkillAnswers,
+    SkillAnswersResponse,
     SkillCheckRequest,
     SkillCheckResponse,
     ARTIFACT_ALLOWLIST,
@@ -597,9 +598,9 @@ class QueueRegistry:
         )
         return SkillCheckResponse(check_id=check_id, **result.model_dump())
 
-    def skill_answers(self) -> SkillAnswers:
+    def skill_answers(self) -> SkillAnswersResponse:
         master = self.load_master()
-        return SkillAnswers(
+        return SkillAnswersResponse(
             confirmed=confirmed_terms(master), declined=declined_terms(master)
         )
 

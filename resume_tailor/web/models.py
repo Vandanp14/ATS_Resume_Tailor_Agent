@@ -63,7 +63,7 @@ FREELLM_MODEL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}$"
 
 
 SKILL_CHECK_ID_PATTERN = r"^[0-9a-f]{32}$"
-MAX_SKILL_TERMS = 200
+MAX_SKILL_TERMS = 5000
 MAX_SKILL_TERM_LENGTH = 80
 
 
@@ -95,6 +95,13 @@ class SkillAnswers(BaseModel):
 
     confirmed: list[SkillTerm] = Field(default_factory=list, max_length=MAX_SKILL_TERMS)
     declined: list[SkillTerm] = Field(default_factory=list, max_length=MAX_SKILL_TERMS)
+
+
+class SkillAnswersResponse(BaseModel):
+    """Stored answers as read back; never limited like a request body."""
+
+    confirmed: list[str]
+    declined: list[str]
 
 
 class SkillCheckResponse(BaseModel):

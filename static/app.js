@@ -1316,9 +1316,15 @@ async function submitJob(event) {
         status.textContent = "Tap the skills you know, then tailor.";
         return;
       }
-    } else if (check && check.chips.length) {
+    } else if (check && check.chips.length && !state.skipSkillCheck) {
       button.textContent = "Saving answers…";
-      await saveSkillAnswers(check);
+      try {
+        await saveSkillAnswers(check);
+      } catch (error) {
+        status.textContent = `Your answers could not be saved. ${String(error.message || error)}`;
+        $("skip-check-btn").hidden = false;
+        return;
+      }
     }
     await enqueueJob(check ? { ...draft, skill_check_id: check.check_id } : draft);
   } catch (error) {

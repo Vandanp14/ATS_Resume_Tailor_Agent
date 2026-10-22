@@ -307,3 +307,12 @@ def test_index_has_skill_check_controls():
     app_js = (REPO_ROOT / "static" / "app.js").read_text(encoding="utf-8")
     assert '"/api/skill-check"' in app_js and '"/api/skill-answers"' in app_js
     assert "aria-pressed" in app_js
+
+
+def test_skill_answers_work_past_two_hundred_terms(web_client):
+    declined = [f"Tool{index}" for index in range(300)]
+    response = web_client.put("/api/skill-answers", json={"confirmed": ["Figma"], "declined": declined})
+    assert response.status_code == 204
+    body = web_client.get("/api/skill-answers")
+    assert body.status_code == 200
+    assert len(body.json()["declined"]) == 300

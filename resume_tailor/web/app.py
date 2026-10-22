@@ -29,6 +29,7 @@ from .jobs import Job, JobState, QueueRegistry, RecoveryRequestError
 from .models import (
     SKILL_CHECK_ID_PATTERN,
     SkillAnswers,
+    SkillAnswersResponse,
     SkillCheckRequest,
     SkillCheckResponse,
     ARTIFACT_ALLOWLIST,
@@ -426,8 +427,8 @@ def create_app(
         await asyncio.to_thread(registry.save_skill_answers, body, replace=False)
         return Response(status_code=204)
 
-    @app.get("/api/skill-answers", response_model=SkillAnswers)
-    async def get_skill_answers() -> SkillAnswers:
+    @app.get("/api/skill-answers", response_model=SkillAnswersResponse)
+    async def get_skill_answers() -> SkillAnswersResponse:
         return await asyncio.to_thread(registry.skill_answers)
 
     @app.put("/api/skill-answers", status_code=204)

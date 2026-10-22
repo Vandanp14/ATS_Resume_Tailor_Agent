@@ -176,3 +176,24 @@ def test_check_then_run_makes_no_repeat_parse_call(monkeypatch, tmp_path):
     assert code == 0
     assert _count(stub, JDProfile) == 1
     assert _count(stub, RequirementProxyPlan) == 1
+
+
+LONG_TERM = "Enterprise " * 12 + "Platform"
+
+
+class LongTermStub(GapStub):
+    def __call__(self, template, response_model, **context):
+        result = super().__call__(template, response_model, **context)
+        if response_model is JDProfile:
+            long_term = LONG_TERM
+            result.keywords.append(
+                KeywordWeight(term=long_term, weight=3, category="platform", evidence_span=long_term)
+            )
+        return result
+
+
+def test_overlong_terms_are_not_offered_as_chips(monkeypatch, tmp_path):
+    jd = f"{CHECK_JD} {LONG_TERM}"
+    result = _pipeline(monkeypatch, LongTermStub()).check_skills(tailor_master(), jd, tmp_path)
+    assert all(len(chip.term) <= 80 for chip in result.chips)
+    assert "Figma" in [chip.term for chip in result.chips]

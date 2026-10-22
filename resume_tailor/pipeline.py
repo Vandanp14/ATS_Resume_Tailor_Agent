@@ -179,6 +179,8 @@ PLANNING_TEMPLATES = frozenset(
         "holistic_review",
     }
 )
+# Longest skill-check chip; matches the web answer limit per term.
+MAX_CHIP_TERM_LENGTH = 80
 # Stages whose text lands on the page run on the writing chain.
 WRITING_TEMPLATES = frozenset(
     {"jd_parse", "tailor_skills", "tailor_work", "tailor_projects"}
@@ -1391,6 +1393,9 @@ class TailorPipeline:
             if item.get("category") not in TECH_CATEGORIES:
                 continue
             term = item["term"]
+            if len(term) > MAX_CHIP_TERM_LENGTH:
+                # Sentence-length "terms" are parse noise, not a tool to confirm.
+                continue
             if any(normalize_term(value) in answered for value in term_variants(term)):
                 continue
             chips.setdefault(
