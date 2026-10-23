@@ -166,7 +166,22 @@ a { color: inherit; }
 
 /* Form --------------------------------------------------------------------- */
 
-.form-body { display: grid; gap: 16px; }
+/* New resume: the description gets the tall left column; everything you fill or
+   decide after pasting sits on the right, with the actions always in reach. */
+.new-form { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(320px, 1fr); gap: 28px; align-items: start; }
+/* Both columns share one height so the page itself never scrolls; long skill
+   lists scroll inside the right column and the actions stay pinned under them. */
+.new-form { --form-height: clamp(360px, calc(100dvh - 220px), 920px); }
+.jd-field { block-size: var(--form-height); grid-template-rows: auto auto minmax(0, 1fr) auto; }
+.jd-field textarea { block-size: 100%; min-block-size: 0; resize: none; }
+.form-side { display: flex; flex-direction: column; max-block-size: var(--form-height); }
+.form-side-body {
+  position: relative; /* contains the visually hidden provider radios */
+  display: grid; gap: 16px; align-content: start; min-block-size: 0; overflow-y: auto;
+  padding: 3px; margin: -3px; scrollbar-gutter: stable;
+}
+.fill-field { gap: 2px; }
+.fill-field > .btn { margin-inline-start: -8px; }
 .field { display: grid; gap: 6px; }
 .field label, legend { font-weight: 600; font-size: 14px; }
 .help { font-size: 13px; color: var(--text-3); }
@@ -183,7 +198,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--i
 .error-slot:empty { display: none; }
 .form-status { font-size: 13px; color: var(--text-2); }
 .form-status:empty { display: none; }
-.form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-block-start: 18px; flex-wrap: wrap; }
+.form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-block-start: 16px; padding-block-start: 16px; border-block-start: 1px solid var(--line); flex-wrap: wrap; flex: none; }
 .form-actions #clear-draft { margin-inline-end: auto; }
 
 .advanced { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
@@ -474,6 +489,11 @@ dialog::backdrop { background: rgba(27, 27, 31, 0.35); }
 
 @media (max-width: 900px) {
   .progress-layout { grid-template-columns: 1fr; }
+  .new-form { grid-template-columns: 1fr; gap: 16px; }
+  .jd-field { block-size: auto; }
+  .jd-field textarea { block-size: auto; min-block-size: 220px; resize: vertical; }
+  .form-side { max-block-size: none; }
+  .form-side-body { overflow: visible; }
 }
 @media (max-width: 720px) {
   /* Solid bar: a backdrop-filter would trap the fixed running bar inside the header. */

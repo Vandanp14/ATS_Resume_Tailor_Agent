@@ -59,76 +59,72 @@
 
   <main class="workspace" id="main" tabindex="-1">
     <section class="view view-new" id="view-new" aria-labelledby="new-title">
-      <div class="desk">
-        <div class="desk-main">
-          <h1 class="view-title" id="new-title">New resume</h1>
-          <form id="job-form" novalidate>
-            <div class="form-body">
-              <div class="field">
-                <label for="jd-text">Job description</label>
-                <p class="help" id="jd-help">Paste the full description. Your draft is kept in this browser tab until submitted or cleared.</p>
-                <textarea id="jd-text" name="jd_text" rows="14" maxlength="100000" aria-describedby="jd-help jd-error" required></textarea>
-                <p class="error-slot" id="jd-error" role="alert"></p>
-                <button class="btn btn-ghost btn-sm" id="suggest-details" type="button">Use company and role from description</button>
-                <p class="help" id="suggest-status" role="status"></p>
-              </div>
-              <div class="field">
-                <label for="company">Company</label>
-                <input id="company" name="company" type="text" maxlength="80" autocomplete="organization" aria-describedby="company-error" required>
-                <p class="error-slot" id="company-error" role="alert"></p>
-              </div>
-              <div class="field">
-                <label for="role">Role</label>
-                <input id="role" name="role" type="text" maxlength="80" autocomplete="organization-title" aria-describedby="role-error" required>
-                <p class="error-slot" id="role-error" role="alert"></p>
-              </div>
-              <details class="advanced more-options" id="more-options">
-                <summary>More options</summary>
-                <fieldset class="provider-field" id="provider-field" aria-describedby="provider-help">
-                  <legend>Model provider</legend>
-                  <div class="provider-segment" role="radiogroup" aria-label="Model provider">
-                    <label><input type="radio" name="provider_mode" value="gemini" checked><span>Gemini</span></label>
-                    <label><input type="radio" name="provider_mode" value="freellm"><span>FreeLLMAPI</span></label>
-                    <label><input type="radio" name="provider_mode" value="freellm_gemini"><span>Free → Gemini</span></label>
-                    <label><input type="radio" name="provider_mode" value="gemini_freellm"><span>Gemini → Free</span></label>
-                  </div>
-                  <div class="provider-model" id="freellm-model-row" hidden>
-                    <label for="freellm-model">FreeLLMAPI model</label>
-                    <select id="freellm-model" name="freellm_model"><option value="auto">auto</option></select>
-                  </div>
-                  <p class="help" id="provider-help" role="status">Gemini uses the models configured in .env.</p>
-                </fieldset>
-                <label class="check"><input type="checkbox" id="bridge-skills"> <span><strong>Bridge skills</strong><small>Include transferable-skill planning.</small></span></label>
-                <label class="check"><input type="checkbox" id="research-company"> <span><strong>Research company</strong><small>When the JD is vague, look up the company's stack and hiring signals to guide selection (Gemini only).</small></span></label>
-                <label class="check"><input type="checkbox" id="college-mode"> <span><strong>College posting</strong><small>Two pages, qualification checklist, summary.</small></span></label>
-                <label class="check"><input type="checkbox" id="no-pdf"> <span><strong>Skip PDF</strong><small>Generate structured files without rendering a PDF.</small></span></label>
-              </details>
-              <section class="skill-check" id="skill-check" aria-labelledby="skill-check-title" hidden>
-                <h3 class="skill-check-title" id="skill-check-title">Do you know these? <span class="skill-check-count" id="skill-check-count"></span></h3>
-                <div class="skill-chips" id="skill-chips" role="group" aria-labelledby="skill-check-title"></div>
-                <p class="help">Tap to toggle. Saved to master resume.</p>
-              </section>
-              <details class="advanced remembered-skills" id="remembered-skills" hidden>
-                <summary>Remembered skills</summary>
-                <p class="help remembered-help">Highlighted means you know it. Tap to change; saved right away.</p>
-                <div class="skill-chips" id="remembered-chips" role="group" aria-label="Remembered skills"></div>
-              </details>
-              <p class="form-status" id="enqueue-status" aria-live="polite"></p>
+      <h1 class="view-title" id="new-title">New resume</h1>
+      <form class="new-form" id="job-form" novalidate>
+        <div class="form-jd">
+          <div class="field jd-field">
+            <label for="jd-text">Job description</label>
+            <p class="help" id="jd-help">Paste the full description. Your draft is kept in this browser tab until submitted or cleared.</p>
+            <textarea id="jd-text" name="jd_text" rows="14" maxlength="100000" aria-describedby="jd-help jd-error" required></textarea>
+            <p class="error-slot" id="jd-error" role="alert"></p>
+          </div>
+        </div>
+        <div class="form-side">
+          <div class="form-side-body">
+            <div class="field fill-field">
+              <button class="btn btn-ghost btn-sm" id="suggest-details" type="button">Use company and role from description</button>
+              <p class="help" id="suggest-status" role="status"></p>
             </div>
-            <footer class="form-actions">
-              <button class="text-button" id="clear-draft" type="button">Clear draft</button>
-              <button class="button secondary" id="skip-check-btn" type="button" hidden>Tailor without checking</button>
-              <button class="button primary" type="submit" id="check-skills-btn">Check skills</button>
-            </footer>
-          </form>
+            <div class="field">
+              <label for="company">Company</label>
+              <input id="company" name="company" type="text" maxlength="80" autocomplete="organization" aria-describedby="company-error" required>
+              <p class="error-slot" id="company-error" role="alert"></p>
+            </div>
+            <div class="field">
+              <label for="role">Role</label>
+              <input id="role" name="role" type="text" maxlength="80" autocomplete="organization-title" aria-describedby="role-error" required>
+              <p class="error-slot" id="role-error" role="alert"></p>
+            </div>
+            <section class="skill-check" id="skill-check" aria-labelledby="skill-check-title" hidden>
+              <h3 class="skill-check-title" id="skill-check-title">Do you know these? <span class="skill-check-count" id="skill-check-count"></span></h3>
+              <div class="skill-chips" id="skill-chips" role="group" aria-labelledby="skill-check-title"></div>
+              <p class="help">Tap to toggle. Saved to master resume.</p>
+            </section>
+            <details class="advanced remembered-skills" id="remembered-skills" hidden>
+              <summary>Remembered skills</summary>
+              <p class="help remembered-help">Highlighted means you know it. Tap to change; saved right away.</p>
+              <div class="skill-chips" id="remembered-chips" role="group" aria-label="Remembered skills"></div>
+            </details>
+            <details class="advanced more-options" id="more-options">
+              <summary>More options</summary>
+              <fieldset class="provider-field" id="provider-field" aria-describedby="provider-help">
+                <legend>Model provider</legend>
+                <div class="provider-segment" role="radiogroup" aria-label="Model provider">
+                  <label><input type="radio" name="provider_mode" value="gemini" checked><span>Gemini</span></label>
+                  <label><input type="radio" name="provider_mode" value="freellm"><span>FreeLLMAPI</span></label>
+                  <label><input type="radio" name="provider_mode" value="freellm_gemini"><span>Free → Gemini</span></label>
+                  <label><input type="radio" name="provider_mode" value="gemini_freellm"><span>Gemini → Free</span></label>
+                </div>
+                <div class="provider-model" id="freellm-model-row" hidden>
+                  <label for="freellm-model">FreeLLMAPI model</label>
+                  <select id="freellm-model" name="freellm_model"><option value="auto">auto</option></select>
+                </div>
+                <p class="help" id="provider-help" role="status">Gemini uses the models configured in .env.</p>
+              </fieldset>
+              <label class="check"><input type="checkbox" id="bridge-skills"> <span><strong>Bridge skills</strong><small>Include transferable-skill planning.</small></span></label>
+              <label class="check"><input type="checkbox" id="research-company"> <span><strong>Research company</strong><small>When the JD is vague, look up the company's stack and hiring signals to guide selection (Gemini only).</small></span></label>
+              <label class="check"><input type="checkbox" id="college-mode"> <span><strong>College posting</strong><small>Two pages, qualification checklist, summary.</small></span></label>
+              <label class="check"><input type="checkbox" id="no-pdf"> <span><strong>Skip PDF</strong><small>Generate structured files without rendering a PDF.</small></span></label>
+            </details>
+            <p class="form-status" id="enqueue-status" aria-live="polite"></p>
+          </div>
+          <footer class="form-actions">
+            <button class="text-button" id="clear-draft" type="button">Clear draft</button>
+            <button class="button secondary" id="skip-check-btn" type="button" hidden>Tailor without checking</button>
+            <button class="button primary" type="submit" id="check-skills-btn">Check skills</button>
+          </footer>
         </div>
-        <div class="paper" aria-hidden="true">
-          <span class="paper-name"></span>
-          <span class="paper-line"></span><span class="paper-line"></span><span class="paper-line short"></span>
-          <span class="paper-line"></span><span class="paper-line"></span><span class="paper-line shorter"></span>
-          <span class="paper-line"></span><span class="paper-line short"></span>
-        </div>
-      </div>
+      </form>
     </section>
 
     <section class="view view-job" id="view-job" hidden>
