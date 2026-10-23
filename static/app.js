@@ -1030,26 +1030,64 @@ async function copyLog() {
   setTimeout(() => { button.textContent = "Copy"; }, 1600);
 }
 
+// The right column stays hidden until there is a real resume to show, then
+// pops in: the PDF once the frame has loaded it, or the structured summary
+// when PDF rendering was skipped.
 function renderPreview(job) {
   const frame = $("preview");
-  const pending = $("preview-pending");
   const jsonView = $("preview-json");
   const hasPdf = job.artifacts.includes("resume.pdf");
   const hasJson = job.artifacts.includes("tailored.json");
-  // While running, the blank page on the right "inks in"; when done it is
-  // replaced by the real PDF, or by the structured summary when PDF was skipped.
-  frame.hidden = true;
-  jsonView.hidden = true;
-  pending.hidden = true;
   const finished = job.state === "completed";
+  if (finished && hasJson) loadCandidateName(job.job_id);
   if (finished && hasPdf) {
     const src = `/api/jobs/${job.job_id}/files/resume.pdf?download=0#navpanes=0&view=FitH`;
-    if (!frame.src.endsWith(src)) frame.src = src;
+    jsonView.hidden = true;
     frame.hidden = false;
-  } else if (finished && hasJson) {
-    renderTailoredJson(job.job_id);
+    if (frame.dataset.src !== src) {
+      frame.dataset.src = src;
+      frame.dataset.loaded = "";
+      frame.dataset.jobId = job.job_id;
+      showPreviewColumn(false);
+      frame.src = src;
+    } else if (frame.dataset.loaded === "1") {
+      showPreviewColumn(true);
+    }
+    return;
   }
-  $("job-paper").hidden = finished && (hasPdf || hasJson);
+  frame.hidden = true;
+  if (finished && hasJson) {
+    if (jsonView.dataset.jobId !== job.job_id) {
+      jsonView.dataset.jobId = job.job_id;
+      showPreviewColumn(false);
+      renderTailoredJson(job.job_id);
+    } else if (!jsonView.hidden) {
+      showPreviewColumn(true);
+    }
+    return;
+  }
+  jsonView.hidden = true;
+  jsonView.dataset.jobId = "";
+  showPreviewColumn(false);
+}
+
+function showPreviewColumn(show) {
+  const column = $("paper-col");
+  const wasHidden = column.hidden;
+  column.hidden = !show;
+  $("job-desk").classList.toggle("has-preview", show);
+  if (show && wasHidden) {
+    column.classList.remove("pop");
+    void column.offsetWidth;
+    column.classList.add("pop");
+  }
+}
+
+function onPreviewLoaded() {
+  const frame = $("preview");
+  if (!frame.dataset.src || !frame.src.endsWith(frame.dataset.src)) return;
+  frame.dataset.loaded = "1";
+  if (frame.dataset.jobId === state.selectedId && !frame.hidden) showPreviewColumn(true);
 }
 
 async function renderTailoredJson(jobId) {
@@ -1074,8 +1112,86 @@ async function renderTailoredJson(jobId) {
     }
     host.hidden = false;
   } catch {
+    if (state.selectedId !== jobId) return;
     host.textContent = "The structured preview could not be loaded. Download the JSON from Files instead.";
     host.hidden = false;
+  }
+  showPreviewColumn(true);
+}
+
+/* PDF download: Company_Role_Name_Resume.pdf, saved where the user picks. */
+
+const candidateNames = new Map();
+
+async function loadCandidateName(jobId) {
+  if (candidateNames.has(jobId)) return;
+  candidateNames.set(jobId, "");
+  try {
+    const data = await fetchJson(`/api/jobs/${jobId}/files/tailored.json?download=0`);
+    const full = String((data.basics && data.basics.name) || "").trim();
+    candidateNames.set(jobId, full.split(/\s+/)[0] || "");
+    const job = state.currentDetail;
+    if (job && job.job_id === jobId) {
+      const name = resumeFileName(job);
+      $("download-pdf").download = name;
+      $("dl-pdf").download = name;
+    }
+  } catch {
+    candidateNames.delete(jobId);
+  }
+}
+
+function filePart(value) {
+  return String(value || "")
+    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z0-9]+/g, " ").trim().split(" ").filter(Boolean).join("-");
+}
+
+function resumeFileName(job) {
+  const parts = [filePart(job.company), filePart(job.role), filePart(candidateNames.get(job.job_id)), "Resume"];
+  return `${parts.filter(Boolean).join("_")}.pdf`;
+}
+
+async function savePdf(event) {
+  const job = state.currentDetail;
+  if (!job || !(job.artifacts || []).includes("resume.pdf")) return;
+  event.preventDefault();
+  const name = resumeFileName(job);
+  const url = `/api/jobs/${encodeURIComponent(job.job_id)}/files/resume.pdf`;
+  const status = $("detail-action-status");
+  try {
+    if (window.showSaveFilePicker) {
+      // The picker must open before any await, while the click still counts.
+      let handle;
+      try {
+        handle = await window.showSaveFilePicker({
+          suggestedName: name,
+          types: [{ description: "PDF document", accept: { "application/pdf": [".pdf"] } }],
+        });
+      } catch (error) {
+        if (error && error.name === "AbortError") return;
+        throw error;
+      }
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) throw new Error(`Download failed (${response.status}).`);
+      const writable = await handle.createWritable();
+      await writable.write(await response.blob());
+      await writable.close();
+      status.textContent = `Saved ${handle.name}`;
+      return;
+    }
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) throw new Error(`Download failed (${response.status}).`);
+    const blobUrl = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+  } catch (error) {
+    status.textContent = error.message || "The PDF could not be saved.";
   }
 }
 
@@ -1095,6 +1211,7 @@ function renderFiles(job) {
     link.hidden = !exists;
     if (exists) {
       link.href = `/api/jobs/${job.job_id}/files/${filename}`;
+      if (filename === "resume.pdf") link.download = resumeFileName(job);
       count += 1;
     }
   }
@@ -1190,6 +1307,7 @@ function renderJobView(job) {
   $("job-note").textContent = running ? latestNote(job) : "";
   const hasPdf = (job.artifacts || []).includes("resume.pdf");
   $("download-pdf").hidden = !(finished && hasPdf);
+  if (hasPdf) $("download-pdf").download = resumeFileName(job);
   $("delete-job").hidden = !DELETABLE_STATES.includes(job.state);
   if (hasPdf) $("download-pdf").href = `/api/jobs/${encodeURIComponent(job.job_id)}/files/resume.pdf`;
 }
@@ -2025,6 +2143,9 @@ function bindEvents() {
   $("delete-cancel").addEventListener("click", () => { state.deleting = null; $("delete-dialog").close(); });
   $("delete-confirm").addEventListener("click", confirmDelete);
   $("delete-job").addEventListener("click", deleteCurrentJob);
+  $("download-pdf").addEventListener("click", savePdf);
+  $("dl-pdf").addEventListener("click", savePdf);
+  $("preview").addEventListener("load", onPreviewLoaded);
   $("nav-new").addEventListener("click", () => go("#new"));
   $("nav-history").addEventListener("click", () => go("#history"));
   window.addEventListener("hashchange", route);
