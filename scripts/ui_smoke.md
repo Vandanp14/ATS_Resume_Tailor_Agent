@@ -11,17 +11,21 @@ Open http://127.0.0.1:8765. The server queues two jobs on start (about 20
 seconds to finish) and seeds one old command-line folder. Do each pass at
 1440px wide and again at 390px.
 
-1. **New resume.** Paste a job description, company, and role. Press
-   **Check skills**; the "Do you know these?" chips appear. Tick one. The
+1. **New resume.** Description on the left, company/role/skills on the
+   right; at 1440px nothing scrolls. Paste a job description, company, and
+   role. Press **Check skills**; the "Do you know these?" chips appear in the
+   right column and the action buttons stay visible below them. Tick one. The
    button reads **Tailor resume**; press it.
 2. **Running.** The page moves to `#job/<id>`. Five steps, the track across
-   the top fills in, the page on the right inks in, elapsed time counts up.
+   the top fills in, elapsed time counts up. No resume column on the right yet.
    A plain note "Gemini is busy, so it's using a backup model." shows during
    Match your experience. The top bar shows "<Company>: <step>" and links
    back here.
 3. **Done.** Big keyword-match percentage, "Everything your resume states is
    included", one amber "Not on your resume: Section 508, ADA" note, green
-   **Download PDF**, **Tailor again**, **Delete**. PDF preview on the right.
+   **Download PDF**, **Tailor again**, **Delete**. The PDF preview pops in on
+   the right once loaded. **Download PDF** opens a save dialog suggesting
+   `Company_Role_FirstName_Resume.pdf` (Chrome/Edge).
    **Details** opens Activity / Review / Files.
 4. **History.** Lists the jobs with Ready / Running / Failed / Queued tags.
    No old command-line folder rows.
